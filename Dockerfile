@@ -6,7 +6,8 @@ COPY pyproject.toml README.md /app/
 COPY nexusrag /app/nexusrag
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -e .
+    # Install dev extras so pytest is available inside the container.
+    && pip install --no-cache-dir -e .[dev]
 
 ENV PYTHONUNBUFFERED=1
 
