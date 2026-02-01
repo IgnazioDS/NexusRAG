@@ -11,6 +11,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from pgvector.sqlalchemy import Vector
 
+from nexusrag.core.config import EMBED_DIM
+
 # revision identifiers, used by Alembic.
 revision = "0001_init"
 down_revision = None
@@ -19,6 +21,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Ensure pgvector is enabled for every environment, not just manual setup.
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     op.create_table(
@@ -66,7 +69,8 @@ def upgrade() -> None:
         sa.Column("document_uri", sa.String(), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
-        sa.Column("embedding", Vector(768)),
+        # Keep schema aligned with the embedding dimension used at runtime.
+        sa.Column("embedding", Vector(EMBED_DIM)),
         sa.Column("metadata_json", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )

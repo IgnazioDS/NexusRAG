@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.1.6 - 2026-02-01
+
+- Enforced pgvector extension via migration for consistent environments.
+- Corrected cosine retrieval with similarity scoring and deterministic ordering.
+- Added embedding dimension invariants and controlled retrieval errors.
+- Expanded tests for embeddings and retrieval invariants.
+
 ## 0.1.5 - 2026-02-01
 
 - Hardened DB session lifecycle and explicit transaction boundaries for `/run`.

@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
+from nexusrag.core.config import EMBED_DIM
 
 class Base(DeclarativeBase):
     pass
@@ -60,7 +61,8 @@ class Chunk(Base):
     document_uri: Mapped[str] = mapped_column(String)
     chunk_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
-    embedding: Mapped[list[float]] = mapped_column(Vector(768))
+    # Keep vector dimension aligned with embedding generation and retrieval.
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
