@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.1.8 - 2026-02-01
+
+- Made test suite runnable in docker; added pytest dev deps.
+- Stabilized integration tests for SSE and persistence without external services.
+- Improved unit coverage for embeddings, retrieval, and Vertex provider config.
+
 ## 0.1.7 - 2026-02-01
 
 - Improved Vertex Gemini config/auth error mapping.
