@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.1.7 - 2026-02-01
+
+- Improved Vertex Gemini config/auth error mapping.
+- Added timeout and cancellation handling for streaming.
+- Ensured progressive token streaming with minimal buffering.
+- Expanded tests for missing-config provider path.
+
 ## 0.1.6 - 2026-02-01
 
 - Enforced pgvector extension via migration for consistent environments.
