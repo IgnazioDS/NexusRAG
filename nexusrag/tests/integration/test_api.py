@@ -33,6 +33,8 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     app = create_app()
 
     session_id = f"s1-{uuid4()}"
+    # Track error emission to ensure the stream emits a failure event.
+    seen_error = False
     payload = {
         "session_id": session_id,
         "tenant_id": "t1",
@@ -49,10 +51,10 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
                 assert response.headers["content-type"].startswith("text/event-stream")
                 lines = []
                 async for line in response.aiter_lines():
-                    if line:
-                        lines.append(line)
-                    if len(lines) >= 2:
-                        break
+                if line:
+                    lines.append(line)
+                if len(lines) >= 2:
+                    break
 
         # Validate SSE framing invariants: event line then data line.
         assert lines[0].startswith("event: message")
@@ -60,9 +62,13 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
         payload_json = json.loads(lines[1].removeprefix("data: ").strip())
         assert payload_json["type"] == "error"
         assert payload_json["data"]["code"] == "VERTEX_CONFIG_MISSING"
+        seen_error = True
         # Session id should be echoed for traceability during debugging.
         assert payload_json["session_id"] == session_id
         assert payload_json.get("request_id")
+        # Request ID should be a non-empty string for tracing.
+        assert isinstance(payload_json["request_id"], str)
+        assert payload_json["request_id"]
 
         async with SessionLocal() as db_session:
             # Ensure the session row exists and tenant_id is preserved.
@@ -77,6 +83,7 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
             assert len([m for m in messages if m.role == "user"]) == 1
             assert len([m for m in messages if m.role == "assistant"]) == 0
     finally:
+        assert seen_error
         # Clean up demo rows to keep the shared test database tidy.
         async with SessionLocal() as db_session:
             await db_session.execute(delete(Checkpoint).where(Checkpoint.session_id == session_id))
