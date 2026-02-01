@@ -4,6 +4,10 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Keep embedding dimension centralized to prevent drift across DB and retrieval logic.
+EMBED_DIM = 768
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
