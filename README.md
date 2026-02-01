@@ -120,4 +120,29 @@ pytest
 - Branch naming: `feat/<short-scope>` or `fix/<short-scope>`
 - Bump version: update `pyproject.toml` and add a new entry in `CHANGELOG.md`
 - Tag release: `git tag vX.Y.Z`
-- Use the repo's default branch name (e.g., `main`); do not assume a specific remote.
+- Use the repo's default branch name (do not assume `main` or `master`).
+- Check your upstream: `git rev-parse --abbrev-ref --symbolic-full-name @{u}`
+- If the remote has a valid default branch:
+  - `git fetch --prune origin`
+  - `git checkout <default-branch>`
+  - `git pull --ff-only`
+- If `origin/HEAD` is missing or undefined:
+  - `git fetch --prune origin`
+  - `git checkout -B <default-branch-local> origin/<remote-branch>`
+  - `git branch --set-upstream-to=origin/<remote-branch> <default-branch-local>`
+  - `git pull --ff-only`
+
+## Troubleshooting
+### git pull fails / origin/HEAD missing
+If `git remote show origin` reports `HEAD branch: (unknown)` or `git pull` errors:
+```
+git fetch --prune origin
+git ls-remote --heads origin
+git checkout -B <default-branch-local> origin/<remote-branch>
+git branch --set-upstream-to=origin/<remote-branch> <default-branch-local>
+git pull --ff-only
+```
+If the remote has no branches yet (empty repo), create the default branch by pushing:
+```
+git push -u origin <default-branch-local>
+```
