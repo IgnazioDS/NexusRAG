@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import AsyncClient
 
@@ -9,11 +11,13 @@ from nexusrag.core.errors import ProviderConfigError
 
 
 class DummySession:
+    # Minimal async session stub to satisfy route dependencies in integration-ish tests.
     async def commit(self) -> None:
         return None
 
 
 async def override_get_db():
+    # Override the DB dependency to avoid relying on a real database.
     yield DummySession()
 
 
@@ -30,6 +34,10 @@ async def test_health() -> None:
 async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
+
+    # Force missing Vertex configuration to validate error mapping without external calls.
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
 
     async def noop(*args, **kwargs):
         return None
@@ -56,9 +64,20 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     async with AsyncClient(app=app, base_url="http://test") as client:
         async with client.stream("POST", "/run", json=payload) as response:
             assert response.status_code == 200
-            body = ""
+            assert response.headers["content-type"].startswith("text/event-stream")
+            lines = []
             async for line in response.aiter_lines():
-                body += line
+                if line:
+                    lines.append(line)
+                if len(lines) >= 2:
+                    break
 
-    assert "provider_config_error" in body
-    assert "error" in body
+    # Validate SSE framing invariants: event line then data line.
+    assert lines[0].startswith("event: message")
+    assert lines[1].startswith("data: ")
+    payload_json = json.loads(lines[1].removeprefix("data: ").strip())
+    assert payload_json["type"] == "error"
+    assert payload_json["data"]["code"] == "VERTEX_CONFIG_MISSING"
+    # Session id should be echoed for traceability during debugging.
+    assert payload_json["session_id"] == "s1"
+    assert payload_json.get("request_id")
