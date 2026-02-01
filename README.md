@@ -90,3 +90,8 @@ curl -N -H "Content-Type: application/json" \
 ```
 pytest
 ```
+
+## Release process
+- Branch naming: `feat/<short-scope>` or `fix/<short-scope>`
+- Bump version: update `pyproject.toml` and add a new entry in `CHANGELOG.md`
+- Tag release: `git tag vX.Y.Z`
