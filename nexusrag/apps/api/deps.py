@@ -8,5 +8,6 @@ from nexusrag.persistence.db import get_session
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    # One AsyncSession per request; context manager ensures close on success/error.
     async with get_session() as session:
         yield session
