@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.agent.graph import run_graph
-from nexusrag.core.errors import ProviderConfigError, RetrievalError
+from nexusrag.core.errors import DatabaseError, ProviderConfigError, RetrievalError, SessionTenantMismatchError
 from nexusrag.domain.state import AgentState
 from nexusrag.persistence.repos import checkpoints as checkpoints_repo
 from nexusrag.persistence.repos import messages as messages_repo
@@ -55,10 +55,12 @@ def _map_error(exc: Exception) -> tuple[str, str]:
     # Map internal exceptions to stable client-facing codes without leaking stack traces.
     if isinstance(exc, ProviderConfigError):
         return "VERTEX_CONFIG_MISSING", str(exc)
+    if isinstance(exc, SessionTenantMismatchError):
+        return "SESSION_TENANT_MISMATCH", "Session tenant_id does not match."
     if isinstance(exc, RetrievalError):
         return "RETRIEVAL_ERROR", "Retrieval failed."
-    if isinstance(exc, SQLAlchemyError):
-        return "DB_ERROR", "Database error during run."
+    if isinstance(exc, (DatabaseError, SQLAlchemyError)):
+        return "DB_ERROR", "Database error during run. Check server logs."
     return "UNKNOWN_ERROR", "Internal error during generation."
 
 
@@ -70,12 +72,36 @@ async def run(
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
-    # Persist the user message before generation so history is consistent even if the model fails.
-    await sessions_repo.upsert_session(db, payload.session_id, payload.tenant_id)
-    await messages_repo.add_message(db, payload.session_id, "user", payload.message)
-    await db.commit()
+    # TX #1: persist session + user message so history is durable before streaming.
+    try:
+        await sessions_repo.upsert_session(db, payload.session_id, payload.tenant_id)
+        await messages_repo.add_message(db, payload.session_id, "user", payload.message)
+        await db.commit()
+    except Exception as exc:
+        # Ensure failed transactions do not poison the session state.
+        await db.rollback()
+        code, message = _map_error(exc)
+
+        async def early_error_stream() -> AsyncGenerator[str, None]:
+            # Emit a single SSE error event if pre-run persistence fails.
+            yield _sse_message(
+                _wrap_payload(
+                    "error",
+                    request_id,
+                    payload.session_id,
+                    {"code": code, "message": message},
+                )
+            )
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+            "Connection": "keep-alive",
+        }
+        return StreamingResponse(early_error_stream(), headers=headers, media_type="text/event-stream")
 
     retriever = LocalPgVectorRetriever(db)
+    # Use the same request-scoped session for read-only retrieval to avoid extra connections.
     llm = GeminiVertexProvider()
 
     queue: asyncio.Queue[str] = asyncio.Queue()
@@ -169,10 +195,13 @@ async def run(
             checkpoint_state = final_state.get("checkpoint_state") or {}
 
             try:
+                # TX #2: persist assistant + checkpoint only after a successful run.
                 await messages_repo.add_message(db, payload.session_id, "assistant", answer)
                 await checkpoints_repo.add_checkpoint(db, payload.session_id, checkpoint_state)
                 await db.commit()
             except Exception as exc:
+                # Roll back to avoid partial writes if post-run persistence fails.
+                await db.rollback()
                 code, message = _map_error(exc)
                 yield _sse_message(
                     _wrap_payload(

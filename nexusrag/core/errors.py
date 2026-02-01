@@ -15,3 +15,7 @@ class RetrievalError(NexusError):
 
 class DatabaseError(NexusError):
     """Database layer failure."""
+
+
+class SessionTenantMismatchError(NexusError):
+    """Session tenant mismatch; never mutate tenant_id for an existing session."""
