@@ -116,6 +116,14 @@ Expected behavior:
 pytest
 ```
 
+## Makefile shortcuts
+```
+make up
+make migrate
+make seed
+make test
+```
+
 ## Release process
 - Branch naming: `feat/<short-scope>` or `fix/<short-scope>`
 - Bump version: update `pyproject.toml` and add a new entry in `CHANGELOG.md`
