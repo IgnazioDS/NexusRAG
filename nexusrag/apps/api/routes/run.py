@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import AsyncGenerator
 from uuid import uuid4
 
@@ -13,7 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.agent.graph import run_graph
-from nexusrag.core.errors import DatabaseError, ProviderConfigError, RetrievalError, SessionTenantMismatchError
+from nexusrag.core.errors import (
+    DatabaseError,
+    ProviderConfigError,
+    RetrievalError,
+    SessionTenantMismatchError,
+    VertexAuthError,
+    VertexTimeoutError,
+)
 from nexusrag.domain.state import AgentState
 from nexusrag.persistence.repos import checkpoints as checkpoints_repo
 from nexusrag.persistence.repos import messages as messages_repo
@@ -55,6 +63,10 @@ def _map_error(exc: Exception) -> tuple[str, str]:
     # Map internal exceptions to stable client-facing codes without leaking stack traces.
     if isinstance(exc, ProviderConfigError):
         return "VERTEX_CONFIG_MISSING", str(exc)
+    if isinstance(exc, VertexAuthError):
+        return "VERTEX_AUTH_ERROR", str(exc)
+    if isinstance(exc, VertexTimeoutError):
+        return "VERTEX_TIMEOUT", str(exc)
     if isinstance(exc, SessionTenantMismatchError):
         return "SESSION_TENANT_MISMATCH", "Session tenant_id does not match."
     if isinstance(exc, RetrievalError):
@@ -100,15 +112,16 @@ async def run(
         }
         return StreamingResponse(early_error_stream(), headers=headers, media_type="text/event-stream")
 
-    retriever = LocalPgVectorRetriever(db)
-    # Use the same request-scoped session for read-only retrieval to avoid extra connections.
-    llm = GeminiVertexProvider()
-
     queue: asyncio.Queue[str] = asyncio.Queue()
     done = asyncio.Event()
     final_state: AgentState | None = None
     error: Exception | None = None
     disconnect_event = asyncio.Event()
+    # Thread-safe cancel signal so the blocking Vertex stream can exit promptly.
+    cancel_event = threading.Event()
+    retriever = LocalPgVectorRetriever(db)
+    # Use the same request-scoped session for read-only retrieval to avoid extra connections.
+    llm = GeminiVertexProvider(request_id=request_id, cancel_event=cancel_event)
 
     loop = asyncio.get_running_loop()
 
@@ -156,6 +169,7 @@ async def run(
                 if await http_request.is_disconnected():
                     # Stop streaming immediately when the client disconnects.
                     disconnect_event.set()
+                    cancel_event.set()
                     break
                 try:
                     delta = await asyncio.wait_for(queue.get(), timeout=0.1)

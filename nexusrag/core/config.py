@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None
     gemini_model: str = "gemini-2.0-flash-001"
+    # Streaming timeout avoids hanging connections if the provider stalls.
+    vertex_stream_timeout_s: int = 90
 
 
 @lru_cache
