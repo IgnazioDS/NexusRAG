@@ -80,13 +80,52 @@ curl -N -H "Content-Type: application/json" \
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
 - Retrieval uses a deterministic fake embedding (no external embedding APIs).
 
-## Verification checklist
-- [ ] `docker compose up --build`
-- [ ] `docker compose exec api alembic upgrade head`
-- [ ] `curl http://localhost:8000/health` returns `{"status":"ok"}`
-- [ ] `/run` streams `token.delta` events and ends with `message.final` (or `error` if Vertex config missing)
+## Validation Checklist
+1) Copy env file:
+```
+cp .env.example .env
+```
+2) Start services:
+```
+docker compose up --build -d
+```
+3) Run migrations:
+```
+docker compose exec api alembic upgrade head
+```
+4) Health check:
+```
+curl -s http://localhost:8000/health
+```
+5) Seed demo data:
+```
+skip until PHASE 2 (seed script will live at scripts/seed_demo.py)
+```
+6) SSE run (expect `token.delta` then `message.final`, or `error` if Vertex config missing):
+```
+curl -N -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/run \
+  -d '{
+    "session_id":"s1",
+    "tenant_id":"t1",
+    "corpus_id":"c1",
+    "message":"What is the testing strategy of agent 2.0?",
+    "top_k":5,
+    "audio":false
+  }'
+```
+7) Run tests in container:
+```
+docker compose exec api pytest -q
+```
 
 ## Tests
 ```
 pytest
 ```
+
+## Release process
+- Branch naming: `feat/<short-scope>` or `fix/<short-scope>`
+- Bump version: update `pyproject.toml` and add a new entry in `CHANGELOG.md`
+- Tag release: `git tag vX.Y.Z`
+- Use the repo's default branch name (e.g., `main`); do not assume a specific remote.
