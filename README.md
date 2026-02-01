@@ -25,42 +25,16 @@ docker compose exec api alembic upgrade head
 ```
 
 ## Seed a corpus + chunks (local pgvector)
-You can seed with a tiny script inside the container:
+Run the demo seed script inside the container:
 ```
-docker compose exec api python - <<'PY'
-import asyncio
-from uuid import uuid4
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from nexusrag.core.config import get_settings
-from nexusrag.domain.models import Corpus, Chunk
-from nexusrag.ingestion.embeddings import embed_text
-
-settings = get_settings()
-engine = create_async_engine(settings.database_url)
-Session = async_sessionmaker(engine, expire_on_commit=False)
-
-async def main():
-    async with Session() as session:
-        corpus_id = "c1"
-        existing = await session.get(Corpus, corpus_id)
-        if not existing:
-            session.add(Corpus(id=corpus_id, tenant_id="t1", name="Demo", provider_config_json={}))
-        text = "Agent 2.0 testing strategy focuses on integration coverage and deterministic mocks."
-        chunk = Chunk(
-            id=uuid4(),
-            corpus_id=corpus_id,
-            document_uri="doc://demo",
-            chunk_index=0,
-            text=text,
-            embedding=embed_text(text),
-            metadata_json={"title": "Demo Doc"},
-        )
-        session.add(chunk)
-        await session.commit()
-
-asyncio.run(main())
-PY
+docker compose exec api python scripts/seed_demo.py
 ```
+
+## What it seeds
+- corpus_id: `c1`
+- tenant_id: `t1`
+- chunks: 10 demo chunks across 3 documents
+- idempotency: if chunks for `c1` already exist, the script no-ops and prints “already seeded”
 
 ## Call `/run` (SSE)
 ```
@@ -99,7 +73,7 @@ curl -s http://localhost:8000/health
 ```
 5) Seed demo data:
 ```
-skip until PHASE 2 (seed script will live at scripts/seed_demo.py)
+docker compose exec api python scripts/seed_demo.py
 ```
 6) SSE run (expect `token.delta` then `message.final`, or `error` if Vertex config missing):
 ```
@@ -118,6 +92,24 @@ curl -N -H "Content-Type: application/json" \
 ```
 docker compose exec api pytest -q
 ```
+
+## Retrieval sanity check
+This query should match seeded content about testing strategy and release gates:
+```
+curl -N -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/run \
+  -d '{
+    "session_id":"s1",
+    "tenant_id":"t1",
+    "corpus_id":"c1",
+    "message":"What are the release gates for Agent 2.0?",
+    "top_k":5,
+    "audio":false
+  }'
+```
+Expected behavior:
+- If Vertex is configured, you will see `token.delta` events followed by `message.final`.
+- If Vertex is missing, you will see an `error` event, but retrieval and persistence still run before the LLM call.
 
 ## Tests
 ```
