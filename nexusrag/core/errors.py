@@ -21,6 +21,34 @@ class RetrievalError(NexusError):
     """Retrieval layer failure."""
 
 
+class RetrievalConfigError(RetrievalError):
+    """Invalid or missing retrieval configuration for a corpus."""
+
+
+class AwsConfigMissingError(RetrievalError):
+    """AWS retrieval configuration missing required fields."""
+
+
+class AwsAuthError(RetrievalError):
+    """AWS retrieval authentication/authorization failure."""
+
+
+class AwsRetrievalError(RetrievalError):
+    """AWS retrieval request failure."""
+
+
+class VertexRetrievalConfigError(RetrievalError):
+    """Vertex retrieval configuration missing required fields."""
+
+
+class VertexRetrievalAuthError(RetrievalError):
+    """Vertex retrieval authentication/authorization failure."""
+
+
+class VertexRetrievalError(RetrievalError):
+    """Vertex retrieval request failure."""
+
+
 class DatabaseError(NexusError):
     """Database layer failure."""
 

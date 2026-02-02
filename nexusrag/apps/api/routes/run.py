@@ -15,11 +15,18 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.agent.graph import run_graph
 from nexusrag.core.errors import (
+    AwsAuthError,
+    AwsConfigMissingError,
+    AwsRetrievalError,
     DatabaseError,
     ProviderConfigError,
+    RetrievalConfigError,
     RetrievalError,
     SessionTenantMismatchError,
     VertexAuthError,
+    VertexRetrievalAuthError,
+    VertexRetrievalConfigError,
+    VertexRetrievalError,
     VertexTimeoutError,
 )
 from nexusrag.domain.state import AgentState
@@ -27,7 +34,7 @@ from nexusrag.persistence.repos import checkpoints as checkpoints_repo
 from nexusrag.persistence.repos import messages as messages_repo
 from nexusrag.persistence.repos import sessions as sessions_repo
 from nexusrag.providers.llm.gemini_vertex import GeminiVertexProvider
-from nexusrag.providers.retrieval.local_pgvector import LocalPgVectorRetriever
+from nexusrag.providers.retrieval.router import RetrievalRouter
 from nexusrag.apps.api.deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -67,6 +74,20 @@ def _map_error(exc: Exception) -> tuple[str, str]:
         return "VERTEX_AUTH_ERROR", str(exc)
     if isinstance(exc, VertexTimeoutError):
         return "VERTEX_TIMEOUT", str(exc)
+    if isinstance(exc, RetrievalConfigError):
+        return "RETRIEVAL_CONFIG_INVALID", str(exc)
+    if isinstance(exc, AwsConfigMissingError):
+        return "AWS_CONFIG_MISSING", str(exc)
+    if isinstance(exc, AwsAuthError):
+        return "AWS_AUTH_ERROR", str(exc)
+    if isinstance(exc, AwsRetrievalError):
+        return "AWS_RETRIEVAL_ERROR", str(exc)
+    if isinstance(exc, VertexRetrievalConfigError):
+        return "VERTEX_RETRIEVAL_CONFIG_MISSING", str(exc)
+    if isinstance(exc, VertexRetrievalAuthError):
+        return "VERTEX_RETRIEVAL_AUTH_ERROR", str(exc)
+    if isinstance(exc, VertexRetrievalError):
+        return "VERTEX_RETRIEVAL_ERROR", str(exc)
     if isinstance(exc, SessionTenantMismatchError):
         return "SESSION_TENANT_MISMATCH", "Session tenant_id does not match."
     if isinstance(exc, RetrievalError):
@@ -119,8 +140,8 @@ async def run(
     disconnect_event = asyncio.Event()
     # Thread-safe cancel signal so the blocking Vertex stream can exit promptly.
     cancel_event = threading.Event()
-    retriever = LocalPgVectorRetriever(db)
     # Use the same request-scoped session for read-only retrieval to avoid extra connections.
+    retriever = RetrievalRouter(db)
     llm = GeminiVertexProvider(request_id=request_id, cancel_event=cancel_event)
 
     loop = asyncio.get_running_loop()

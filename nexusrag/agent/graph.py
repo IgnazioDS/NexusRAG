@@ -26,7 +26,12 @@ def build_graph(
         return {"history": history}
 
     async def retrieve(state: AgentState) -> dict:
-        retrieved = await retriever.retrieve(state["corpus_id"], state["user_message"], top_k)
+        retrieved = await retriever.retrieve(
+            state["tenant_id"],
+            state["corpus_id"],
+            state["user_message"],
+            top_k,
+        )
         citations = [
             {
                 "source": item.get("source"),

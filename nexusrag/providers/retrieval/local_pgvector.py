@@ -14,7 +14,8 @@ class LocalPgVectorRetriever:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def retrieve(self, corpus_id: str, query: str, top_k: int) -> list[dict]:
+    async def retrieve(self, tenant_id: str, corpus_id: str, query: str, top_k: int) -> list[dict]:
+        # tenant_id is unused for local retrieval but kept for a consistent interface.
         query_embedding = embed_text(query)
         if len(query_embedding) != EMBED_DIM:
             # Retrieval must fail fast if the embedding dimension doesn't match the schema.
