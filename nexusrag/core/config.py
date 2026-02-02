@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     vertex_stream_timeout_s: int = 90
     # Toggle verbose SSE debug events without changing the API surface.
     debug_events: bool = False
+    # Select the LLM provider for dev/test (vertex or fake).
+    llm_provider: str = "vertex"
+
+    # TTS provider selection: none/openai/fake for local development.
+    tts_provider: str = "none"
+    openai_api_key: str | None = None
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "alloy"
+    # Base URL used to build audio URLs in SSE payloads.
+    audio_base_url: str = "http://localhost:8000"
 
 
 @lru_cache

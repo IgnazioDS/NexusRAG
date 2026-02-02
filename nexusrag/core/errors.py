@@ -49,6 +49,18 @@ class VertexRetrievalError(RetrievalError):
     """Vertex retrieval request failure."""
 
 
+class TTSConfigMissingError(NexusError):
+    """TTS provider configuration missing required fields."""
+
+
+class TTSAuthError(NexusError):
+    """TTS provider authentication/authorization failure."""
+
+
+class TTSError(NexusError):
+    """TTS provider request failure."""
+
+
 class DatabaseError(NexusError):
     """Database layer failure."""
 
