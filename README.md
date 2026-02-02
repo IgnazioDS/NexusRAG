@@ -108,6 +108,34 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
   }'
 ```
 
+## Optional TTS audio output
+Enable TTS with environment variables:
+- `TTS_PROVIDER` = `openai` | `fake` | `none` (default `none`)
+- `OPENAI_API_KEY` (required for OpenAI)
+- `OPENAI_TTS_MODEL` (default `gpt-4o-mini-tts`)
+- `OPENAI_TTS_VOICE` (default `alloy`)
+- `AUDIO_BASE_URL` (default `http://localhost:8000`)
+
+Audio files are stored locally under `var/audio/` (dev-only).
+
+Example `/run` with audio enabled:
+```
+curl -N -H "Content-Type: application/json" \
+  -X POST http://localhost:8000/run \
+  -d '{
+    "session_id":"s-audio-1",
+    "tenant_id":"t1",
+    "corpus_id":"c1",
+    "message":"Summarize the demo corpus.",
+    "top_k":5,
+    "audio":true
+  }'
+```
+
+SSE events:
+- `audio.ready` → `{"type":"audio.ready","request_id":"...","data":{"audio_url":"http://localhost:8000/audio/<id>.mp3","audio_id":"<id>","mime":"audio/mpeg"}}`
+- `audio.error` → `{"type":"audio.error","request_id":"...","data":{"code":"TTS_ERROR","message":"..."}}`
+
 ## Cloud retrieval real-run (credentials required)
 Use the smoke script to validate retrieval routing without calling the LLM:
 ```
