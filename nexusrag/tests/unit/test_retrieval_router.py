@@ -5,7 +5,8 @@ from dataclasses import dataclass
 import pytest
 
 from nexusrag.core.errors import RetrievalConfigError
-from nexusrag.providers.retrieval.router import RetrievalRouter, parse_retrieval_config
+from nexusrag.providers.retrieval.config import parse_retrieval_config
+from nexusrag.providers.retrieval.router import RetrievalRouter
 
 
 @dataclass
@@ -42,5 +43,13 @@ async def test_router_routes_local_provider() -> None:
 
 
 def test_parse_retrieval_config_invalid() -> None:
+    # None should be rejected so callers know to supply config or accept defaults explicitly.
     with pytest.raises(RetrievalConfigError):
         parse_retrieval_config(None)
+
+
+def test_parse_retrieval_config_defaults() -> None:
+    # Empty config should normalize to the safe local defaults.
+    retrieval = parse_retrieval_config({})
+    assert retrieval["provider"] == "local_pgvector"
+    assert retrieval["top_k_default"] == 5
