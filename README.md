@@ -68,7 +68,7 @@ Vertex AI Search (Discovery Engine):
     "provider": "gcp_vertex",
     "project": "my-gcp-project",
     "location": "us-central1",
-    "datastore_id": "your-datastore-id",
+    "resource_id": "your-datastore-id",
     "top_k_default": 5
   }
 }
@@ -76,7 +76,37 @@ Vertex AI Search (Discovery Engine):
 
 Switching a corpus:
 1) Update `corpora.provider_config_json` for the target corpus.
-2) Ensure cloud credentials exist at runtime (AWS/Vertex), but tests do not require live creds.
+2) `{}` is accepted and normalized to `local_pgvector` with a default `top_k_default` of 5.
+3) Ensure cloud credentials exist at runtime (AWS/Vertex), but tests do not require live creds.
+
+## Corpora API (temporary tenant scoping)
+Tenant scoping is currently provided by the `X-Tenant-Id` header until auth is implemented.
+
+List corpora:
+```
+curl -s -H "X-Tenant-Id: t1" http://localhost:8000/corpora
+```
+
+Get a corpus:
+```
+curl -s -H "X-Tenant-Id: t1" http://localhost:8000/corpora/c1
+```
+
+Patch provider_config_json:
+```
+curl -s -X PATCH -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
+  http://localhost:8000/corpora/c1 \
+  -d '{
+    "provider_config_json": {
+      "retrieval": {
+        "provider": "aws_bedrock_kb",
+        "knowledge_base_id": "KB123",
+        "region": "us-east-1",
+        "top_k_default": 5
+      }
+    }
+  }'
+```
 
 ## Call `/run` (SSE)
 ```
@@ -95,6 +125,7 @@ curl -N -H "Content-Type: application/json" \
 ## Notes
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
 - Retrieval uses a deterministic fake embedding (no external embedding APIs).
+- Set `DEBUG_EVENTS=true` to emit `debug.retrieval` SSE events after retrieval for validation.
 
 ## Validation Checklist
 1) Copy env file:
