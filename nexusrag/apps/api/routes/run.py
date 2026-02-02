@@ -24,6 +24,9 @@ from nexusrag.core.errors import (
     RetrievalConfigError,
     RetrievalError,
     SessionTenantMismatchError,
+    TTSAuthError,
+    TTSConfigMissingError,
+    TTSError,
     VertexAuthError,
     VertexRetrievalAuthError,
     VertexRetrievalConfigError,
@@ -34,8 +37,10 @@ from nexusrag.domain.state import AgentState
 from nexusrag.persistence.repos import checkpoints as checkpoints_repo
 from nexusrag.persistence.repos import messages as messages_repo
 from nexusrag.persistence.repos import sessions as sessions_repo
-from nexusrag.providers.llm.gemini_vertex import GeminiVertexProvider
+from nexusrag.providers.llm.factory import get_llm_provider
 from nexusrag.providers.retrieval.router import RetrievalRouter
+from nexusrag.providers.tts.factory import get_tts_provider
+from nexusrag.services.audio.storage import save_audio
 from nexusrag.apps.api.deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -98,6 +103,17 @@ def _map_error(exc: Exception) -> tuple[str, str]:
     return "UNKNOWN_ERROR", "Internal error during generation."
 
 
+def _map_tts_error(exc: Exception) -> tuple[str, str]:
+    # Keep TTS errors out of the main error channel to avoid confusing core failures.
+    if isinstance(exc, TTSConfigMissingError):
+        return "TTS_CONFIG_MISSING", str(exc)
+    if isinstance(exc, TTSAuthError):
+        return "TTS_AUTH_ERROR", str(exc)
+    if isinstance(exc, TTSError):
+        return "TTS_ERROR", str(exc)
+    return "TTS_ERROR", "TTS request failed."
+
+
 @router.post("/run")
 async def run(
     payload: RunRequest,
@@ -144,7 +160,7 @@ async def run(
     cancel_event = threading.Event()
     # Use the same request-scoped session for read-only retrieval to avoid extra connections.
     retriever = RetrievalRouter(db)
-    llm = GeminiVertexProvider(request_id=request_id, cancel_event=cancel_event)
+    llm = get_llm_provider(request_id=request_id, cancel_event=cancel_event)
 
     loop = asyncio.get_running_loop()
 
@@ -284,6 +300,34 @@ async def run(
                     {"text": answer, "citations": citations},
                 )
             )
+
+            if not payload.audio:
+                return
+            if await http_request.is_disconnected():
+                # Skip TTS if the client disconnects after the text response.
+                return
+            try:
+                tts = get_tts_provider()
+                audio_bytes = await tts.synthesize(answer)
+                audio_id, _path, audio_url = save_audio(audio_bytes, settings.audio_base_url)
+                yield _sse_message(
+                    _wrap_payload(
+                        "audio.ready",
+                        request_id,
+                        payload.session_id,
+                        {"audio_url": audio_url, "audio_id": audio_id, "mime": "audio/mpeg"},
+                    )
+                )
+            except Exception as exc:
+                code, message = _map_tts_error(exc)
+                yield _sse_message(
+                    _wrap_payload(
+                        "audio.error",
+                        request_id,
+                        payload.session_id,
+                        {"code": code, "message": message},
+                    )
+                )
         finally:
             if not task.done():
                 task.cancel()
