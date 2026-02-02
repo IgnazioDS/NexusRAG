@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.agent.graph import run_graph
+from nexusrag.core.config import get_settings
 from nexusrag.core.errors import (
     AwsAuthError,
     AwsConfigMissingError,
@@ -133,7 +134,8 @@ async def run(
         }
         return StreamingResponse(early_error_stream(), headers=headers, media_type="text/event-stream")
 
-    queue: asyncio.Queue[str] = asyncio.Queue()
+    # Use a shared queue for token and debug events to preserve stream order.
+    queue: asyncio.Queue[dict] = asyncio.Queue()
     done = asyncio.Event()
     final_state: AgentState | None = None
     error: Exception | None = None
@@ -150,7 +152,25 @@ async def run(
         # Drop tokens once the client disconnects to avoid buffering unused output.
         if disconnect_event.is_set():
             return
-        loop.call_soon_threadsafe(queue.put_nowait, delta)
+        loop.call_soon_threadsafe(queue.put_nowait, {"kind": "token", "delta": delta})
+
+    settings = get_settings()
+
+    def retrieval_callback(provider: str, num_chunks: int) -> None:
+        # Emit optional debug events only when explicitly enabled.
+        if not settings.debug_events:
+            return
+        queue.put_nowait(
+            {
+                "kind": "event",
+                "payload": _wrap_payload(
+                    "debug.retrieval",
+                    request_id,
+                    payload.session_id,
+                    {"provider": provider, "num_chunks": num_chunks},
+                ),
+            }
+        )
 
     async def run_agent() -> None:
         nonlocal final_state, error
@@ -173,6 +193,7 @@ async def run(
                 state=state,
                 top_k=payload.top_k,
                 token_callback=token_callback,
+                retrieval_callback=retrieval_callback,
             )
         except asyncio.CancelledError:
             # Allow cancellation to propagate so disconnects stop streaming quickly.
@@ -193,10 +214,17 @@ async def run(
                     cancel_event.set()
                     break
                 try:
-                    delta = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    item = await asyncio.wait_for(queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
+                if item.get("kind") == "event":
+                    # Send debug events as fully-formed SSE payloads.
+                    yield _sse_message(item["payload"])
+                    continue
                 # Stream each delta as its own SSE message to avoid buffering output.
+                delta = item.get("delta")
+                if not isinstance(delta, str):
+                    continue
                 yield _sse_message(
                     _wrap_payload(
                         "token.delta",
