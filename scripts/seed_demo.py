@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from nexusrag.domain.models import Chunk, Corpus
+from nexusrag.core.config import EMBED_DIM
 from nexusrag.ingestion.embeddings import embed_text
 from nexusrag.persistence.db import SessionLocal
 
@@ -103,8 +104,8 @@ def build_demo_chunks() -> list[Chunk]:
         for index, section in enumerate(document.sections):
             text = f"{section.title}: {section.text}"
             embedding = embed_text(text)
-            if len(embedding) != 768:
-                raise ValueError("Embedding dimension mismatch; expected 768.")
+            if len(embedding) != EMBED_DIM:
+                raise ValueError(f"Embedding dimension mismatch; expected {EMBED_DIM}.")
             chunks.append(
                 Chunk(
                     id=uuid4(),
@@ -132,14 +133,19 @@ async def seed_demo() -> int:
                 id=DEMO_CORPUS_ID,
                 tenant_id=DEMO_TENANT_ID,
                 name=DEMO_CORPUS_NAME,
-                provider_config_json={},
+                # Configure local retrieval so the router works out of the box.
+                provider_config_json={
+                    "retrieval": {"provider": "local_pgvector", "top_k_default": 5}
+                },
             )
             session.add(corpus)
         else:
             # Keep demo corpus metadata aligned without touching non-demo corpora.
             corpus.tenant_id = DEMO_TENANT_ID
             corpus.name = DEMO_CORPUS_NAME
-            corpus.provider_config_json = {}
+            corpus.provider_config_json = {
+                "retrieval": {"provider": "local_pgvector", "top_k_default": 5}
+            }
 
         existing = await session.execute(
             select(Chunk.id).where(Chunk.corpus_id == DEMO_CORPUS_ID).limit(1)

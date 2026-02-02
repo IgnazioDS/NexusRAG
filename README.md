@@ -36,6 +36,48 @@ docker compose exec api python scripts/seed_demo.py
 - chunks: 10 demo chunks across 3 documents
 - idempotency: if chunks for `c1` already exist, the script no-ops and prints “already seeded”
 
+## Retrieval routing (per corpus)
+Each corpus specifies its retrieval provider in `corpora.provider_config_json`:
+
+Local pgvector:
+```
+{
+  "retrieval": {
+    "provider": "local_pgvector",
+    "top_k_default": 5
+  }
+}
+```
+
+AWS Bedrock Knowledge Bases:
+```
+{
+  "retrieval": {
+    "provider": "aws_bedrock_kb",
+    "knowledge_base_id": "KB123",
+    "region": "us-east-1",
+    "top_k_default": 5
+  }
+}
+```
+
+Vertex AI Search (Discovery Engine):
+```
+{
+  "retrieval": {
+    "provider": "gcp_vertex",
+    "project": "my-gcp-project",
+    "location": "us-central1",
+    "datastore_id": "your-datastore-id",
+    "top_k_default": 5
+  }
+}
+```
+
+Switching a corpus:
+1) Update `corpora.provider_config_json` for the target corpus.
+2) Ensure cloud credentials exist at runtime (AWS/Vertex), but tests do not require live creds.
+
 ## Call `/run` (SSE)
 ```
 curl -N -H "Content-Type: application/json" \
