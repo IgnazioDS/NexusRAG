@@ -19,4 +19,4 @@ async def test_retriever_rejects_dimension_mismatch(monkeypatch) -> None:
 
     retriever = local_pgvector.LocalPgVectorRetriever(DummySession())
     with pytest.raises(RetrievalError):
-        await retriever.retrieve("c1", "query", top_k=5)
+        await retriever.retrieve("t1", "c1", "query", top_k=5)

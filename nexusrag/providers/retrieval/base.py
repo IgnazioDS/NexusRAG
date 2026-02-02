@@ -4,5 +4,5 @@ from typing import Protocol
 
 
 class RetrievalProvider(Protocol):
-    async def retrieve(self, corpus_id: str, query: str, top_k: int) -> list[dict]:
+    async def retrieve(self, tenant_id: str, corpus_id: str, query: str, top_k: int) -> list[dict]:
         ...

@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 
 from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import Checkpoint, Message, Session
+from nexusrag.domain.models import Checkpoint, Corpus, Message, Session
 from nexusrag.persistence.db import SessionLocal
 
 
@@ -34,18 +34,32 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     app = create_app()
 
     session_id = f"s1-{uuid4()}"
+    corpus_id = f"c1-{uuid4()}"
     # Track error emission to ensure the stream emits a failure event.
     seen_error = False
     payload = {
         "session_id": session_id,
         "tenant_id": "t1",
-        "corpus_id": "c1",
+        "corpus_id": corpus_id,
         "message": "Hello?",
         "top_k": 3,
         "audio": False,
     }
 
     try:
+        async with SessionLocal() as db_session:
+            # Insert a local retrieval config so routing does not fail on missing corpus config.
+            db_session.add(
+                Corpus(
+                    id=corpus_id,
+                    tenant_id="t1",
+                    name="Test Corpus",
+                    provider_config_json={
+                        "retrieval": {"provider": "local_pgvector", "top_k_default": 5}
+                    },
+                )
+            )
+            await db_session.commit()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             async with client.stream("POST", "/run", json=payload) as response:
@@ -91,4 +105,5 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
             await db_session.execute(delete(Checkpoint).where(Checkpoint.session_id == session_id))
             await db_session.execute(delete(Message).where(Message.session_id == session_id))
             await db_session.execute(delete(Session).where(Session.id == session_id))
+            await db_session.execute(delete(Corpus).where(Corpus.id == corpus_id))
             await db_session.commit()

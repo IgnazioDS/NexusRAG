@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.2.0 - 2026-02-02
+
+- Added multi-cloud retrieval routing per corpus config.
+- Added Bedrock KB and Vertex retrieval adapters (mock-tested).
+- Seed demo corpus configured for router defaults.
+
 ## 0.1.8 - 2026-02-01
 
 - Made test suite runnable in docker; added pytest dev deps.
