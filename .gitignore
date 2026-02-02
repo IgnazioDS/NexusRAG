@@ -11,5 +11,8 @@ __pycache__/
 # Test artifacts
 .pytest_cache/
 
+# Editable install artifacts
+*.egg-info/
+
 # Editor settings
 .vscode/
