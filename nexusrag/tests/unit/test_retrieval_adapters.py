@@ -51,7 +51,7 @@ async def test_vertex_adapter_normalization() -> None:
     retriever = VertexAIRetriever(
         project="proj",
         location="us-central1",
-        datastore_id="ds1",
+        resource_id="ds1",
         client=DummyVertexClient(),
     )
     results = await retriever.retrieve("t1", "c1", "query", top_k=3)

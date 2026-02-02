@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash-001"
     # Streaming timeout avoids hanging connections if the provider stalls.
     vertex_stream_timeout_s: int = 90
+    # Toggle verbose SSE debug events without changing the API surface.
+    debug_events: bool = False
 
 
 @lru_cache

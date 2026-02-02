@@ -17,6 +17,7 @@ def build_graph(
     session,
     top_k: int,
     token_callback: Callable[[str], None],
+    retrieval_callback: Callable[[str, int], None] | None = None,
 ):
     graph = StateGraph(AgentState)
 
@@ -32,6 +33,10 @@ def build_graph(
             state["user_message"],
             top_k,
         )
+        if retrieval_callback is not None:
+            # Surface provider and chunk counts for optional debug SSE events.
+            provider_name = getattr(retriever, "last_provider", "unknown")
+            retrieval_callback(provider_name, len(retrieved))
         citations = [
             {
                 "source": item.get("source"),
@@ -87,6 +92,7 @@ async def run_graph(
     state: AgentState,
     top_k: int,
     token_callback: Callable[[str], None],
+    retrieval_callback: Callable[[str, int], None] | None = None,
 ) -> AgentState:
     graph = build_graph(
         retriever=retriever,
@@ -94,5 +100,6 @@ async def run_graph(
         session=session,
         top_k=top_k,
         token_callback=token_callback,
+        retrieval_callback=retrieval_callback,
     )
     return await graph.ainvoke(state)

@@ -15,14 +15,16 @@ class VertexAIRetriever:
         self,
         project: str,
         location: str,
-        datastore_id: str,
+        resource_id: str,
         client: Any | None = None,
     ) -> None:
-        if not project or not location or not datastore_id:
-            raise VertexRetrievalConfigError("project, location, and datastore_id are required")
+        # Validate early so callers get stable config errors instead of SDK stack traces.
+        if not project or not location or not resource_id:
+            raise VertexRetrievalConfigError("project, location, and resource_id are required")
         self._project = project
         self._location = location
-        self._datastore_id = datastore_id
+        # Keep the name generic so we can map to different Vertex retrieval resources later.
+        self._resource_id = resource_id
         self._client = client
 
     def _get_client(self) -> Any:
@@ -43,7 +45,7 @@ class VertexAIRetriever:
         client = self._get_client()
         serving_config = (
             f"projects/{self._project}/locations/{self._location}/dataStores/"
-            f"{self._datastore_id}/servingConfigs/default_search"
+            f"{self._resource_id}/servingConfigs/default_search"
         )
         request = {
             "serving_config": serving_config,
