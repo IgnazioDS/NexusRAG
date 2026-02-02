@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.4.0 - 2026-02-02
+
+- Added document ingestion API (upload/status/list) with tenant scoping.
+- Added deterministic chunking, embedding, and pgvector storage for ingested documents.
+- Added integration tests covering upload → ingest → retrieval.
+
 ## 0.3.0 - 2026-02-02
 
 - Added optional TTS with audio.ready SSE events and local /audio serving route.
