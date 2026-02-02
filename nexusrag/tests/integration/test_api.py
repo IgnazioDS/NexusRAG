@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from nexusrag.apps.api.main import create_app
@@ -16,7 +16,8 @@ from nexusrag.persistence.db import SessionLocal
 @pytest.mark.asyncio
 async def test_health() -> None:
     app = create_app()
-    async with AsyncClient(app=app, base_url="http://test") as client:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
@@ -45,16 +46,17 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     }
 
     try:
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
             async with client.stream("POST", "/run", json=payload) as response:
                 assert response.status_code == 200
                 assert response.headers["content-type"].startswith("text/event-stream")
                 lines = []
                 async for line in response.aiter_lines():
-                if line:
-                    lines.append(line)
-                if len(lines) >= 2:
-                    break
+                    if line:
+                        lines.append(line)
+                    if len(lines) >= 2:
+                        break
 
         # Validate SSE framing invariants: event line then data line.
         assert lines[0].startswith("event: message")

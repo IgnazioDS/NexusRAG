@@ -27,7 +27,8 @@ def upgrade() -> None:
     op.create_table(
         "sessions",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("tenant_id", sa.String(), nullable=False, index=True),
+        # Avoid index=True here because we create explicit indexes below.
+        sa.Column("tenant_id", sa.String(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("last_seen_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
@@ -36,7 +37,8 @@ def upgrade() -> None:
     op.create_table(
         "messages",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("session_id", sa.String(), sa.ForeignKey("sessions.id"), index=True),
+        # Avoid index=True here because we create explicit indexes below.
+        sa.Column("session_id", sa.String(), sa.ForeignKey("sessions.id")),
         sa.Column("role", sa.String(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
@@ -46,7 +48,8 @@ def upgrade() -> None:
     op.create_table(
         "checkpoints",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("session_id", sa.String(), sa.ForeignKey("sessions.id"), index=True),
+        # Avoid index=True here because we create explicit indexes below.
+        sa.Column("session_id", sa.String(), sa.ForeignKey("sessions.id")),
         sa.Column("state_json", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
@@ -55,7 +58,8 @@ def upgrade() -> None:
     op.create_table(
         "corpora",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("tenant_id", sa.String(), nullable=False, index=True),
+        # Avoid index=True here because we create explicit indexes below.
+        sa.Column("tenant_id", sa.String(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("provider_config_json", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
@@ -65,7 +69,8 @@ def upgrade() -> None:
     op.create_table(
         "chunks",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("corpus_id", sa.String(), nullable=False, index=True),
+        # Avoid index=True here because we create explicit indexes below.
+        sa.Column("corpus_id", sa.String(), nullable=False),
         sa.Column("document_uri", sa.String(), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
