@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -101,6 +102,84 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     finally:
         assert seen_error
         # Clean up demo rows to keep the shared test database tidy.
+        async with SessionLocal() as db_session:
+            await db_session.execute(delete(Checkpoint).where(Checkpoint.session_id == session_id))
+            await db_session.execute(delete(Message).where(Message.session_id == session_id))
+            await db_session.execute(delete(Session).where(Session.id == session_id))
+            await db_session.execute(delete(Corpus).where(Corpus.id == corpus_id))
+            await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_run_emits_audio_ready_with_fake_tts(monkeypatch) -> None:
+    # Force fake providers to avoid external dependencies.
+    monkeypatch.setenv("LLM_PROVIDER", "fake")
+    monkeypatch.setenv("TTS_PROVIDER", "fake")
+    monkeypatch.setenv("AUDIO_BASE_URL", "http://test")
+    get_settings.cache_clear()
+
+    app = create_app()
+    session_id = f"s-audio-{uuid4()}"
+    corpus_id = f"c-audio-{uuid4()}"
+    payload = {
+        "session_id": session_id,
+        "tenant_id": "t1",
+        "corpus_id": corpus_id,
+        "message": "Hello?",
+        "top_k": 3,
+        "audio": True,
+    }
+
+    audio_id = None
+    try:
+        async with SessionLocal() as db_session:
+            db_session.add(
+                Corpus(
+                    id=corpus_id,
+                    tenant_id="t1",
+                    name="Audio Corpus",
+                    provider_config_json={
+                        "retrieval": {"provider": "local_pgvector", "top_k_default": 5}
+                    },
+                )
+            )
+            await db_session.commit()
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream("POST", "/run", json=payload) as response:
+                assert response.status_code == 200
+                lines = []
+                async for line in response.aiter_lines():
+                    if line:
+                        lines.append(line)
+                    # Stop after we see audio.ready.
+                    if any("audio.ready" in l for l in lines):
+                        break
+
+            data_lines = [l for l in lines if l.startswith("data: ")]
+            assert data_lines
+            audio_events = [
+                json.loads(l.removeprefix("data: ").strip())
+                for l in data_lines
+                if "audio.ready" in l
+            ]
+            assert audio_events
+            audio_payload = audio_events[-1]["data"]
+            audio_id = audio_payload["audio_id"]
+            audio_url = audio_payload["audio_url"]
+
+            path = Path("var") / "audio" / f"{audio_id}.mp3"
+            assert path.exists()
+
+            # Validate the audio route serves the generated file.
+            response = await client.get(audio_url)
+            assert response.status_code == 200
+    finally:
+        if audio_id:
+            path = Path("var") / "audio" / f"{audio_id}.mp3"
+            if path.exists():
+                path.unlink()
         async with SessionLocal() as db_session:
             await db_session.execute(delete(Checkpoint).where(Checkpoint.session_id == session_id))
             await db_session.execute(delete(Message).where(Message.session_id == session_id))

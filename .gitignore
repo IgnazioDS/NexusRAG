@@ -16,3 +16,6 @@ __pycache__/
 
 # Editor settings
 .vscode/
+
+# Local audio artifacts
+var/audio/
