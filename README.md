@@ -108,6 +108,47 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
   }'
 ```
 
+## Cloud retrieval real-run (credentials required)
+Use the smoke script to validate retrieval routing without calling the LLM:
+```
+docker compose exec api python scripts/provider_smoke.py \
+  --tenant t1 --corpus c1 --query "test query" --top-k 5
+```
+
+### AWS Bedrock Knowledge Bases
+Required environment (examples):
+- `AWS_REGION` (or `AWS_DEFAULT_REGION`)
+- `AWS_PROFILE` (or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + optional `AWS_SESSION_TOKEN`)
+
+Permissions (high level):
+- `bedrock:Retrieve` on the target knowledge base
+
+Smoke validation:
+```
+docker compose exec api python scripts/provider_smoke.py \
+  --tenant t1 --corpus c1 --query "bedrock test" --top-k 5
+```
+
+### Vertex AI Search (Discovery Engine)
+Required environment (examples):
+- `GOOGLE_CLOUD_PROJECT`
+- `GOOGLE_CLOUD_LOCATION` (or `VERTEX_LOCATION`)
+- Application Default Credentials (ADC), e.g. `gcloud auth application-default login`
+
+Smoke validation:
+```
+docker compose exec api python scripts/provider_smoke.py \
+  --tenant t1 --corpus c1 --query "vertex test" --top-k 5
+```
+
+### Troubleshooting error codes
+- `AWS_CONFIG_MISSING`: required AWS env vars or KB config missing
+- `AWS_AUTH_ERROR`: missing/invalid AWS credentials
+- `AWS_RETRIEVAL_ERROR`: Bedrock retrieval failed (check permissions or KB id)
+- `VERTEX_RETRIEVAL_CONFIG_MISSING`: missing Vertex config in corpus or env
+- `VERTEX_RETRIEVAL_AUTH_ERROR`: missing/invalid Google ADC credentials
+- `VERTEX_RETRIEVAL_ERROR`: Vertex retrieval failed (check resource id)
+
 ## Call `/run` (SSE)
 ```
 curl -N -H "Content-Type: application/json" \

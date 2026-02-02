@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.2.2 - 2026-02-02
+
+- Added provider_smoke script to validate retrieval routing without LLM calls.
+- Documented cloud retrieval credentials and troubleshooting guidance.
+- Added smoke-script unit tests for error mapping.
+
 ## 0.2.1 - 2026-02-02
 
 - Added corpora list/get/patch endpoints with tenant scoping.
