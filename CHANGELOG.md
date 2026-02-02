@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.3.0 - 2026-02-02
+
+- Added optional TTS with audio.ready SSE events and local /audio serving route.
+- Added fake TTS and fake LLM paths for deterministic, no-cloud tests.
+- Documented TTS configuration and audio event behavior.
+
 ## 0.2.2 - 2026-02-02
 
 - Added provider_smoke script to validate retrieval routing without LLM calls.
