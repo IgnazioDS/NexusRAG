@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.2.1 - 2026-02-02
+
+- Added corpora list/get/patch endpoints with tenant scoping.
+- Reused retrieval config validation across API and router.
+- Added integration tests for corpora management API.
+
 ## 0.2.0 - 2026-02-02
 
 - Added multi-cloud retrieval routing per corpus config.
