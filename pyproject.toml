@@ -1,14 +1,15 @@
 [project]
 name = "nexusrag"
-version = "0.3.0"
+version = "0.5.0"
 description = "NexusRAG: a multi-cloud, stateful, streaming RAG agent platform"
 requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "MIT" }
 
 dependencies = [
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.29",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
   "sqlalchemy>=2.0",

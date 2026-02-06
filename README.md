@@ -136,6 +136,56 @@ SSE events:
 - `audio.ready` → `{"type":"audio.ready","request_id":"...","data":{"audio_url":"http://localhost:8000/audio/<id>.mp3","audio_id":"<id>","mime":"audio/mpeg"}}`
 - `audio.error` → `{"type":"audio.error","request_id":"...","data":{"code":"TTS_ERROR","message":"..."}}`
 
+## Ingestion (documents → chunks)
+Supported types: `text/plain`, `text/markdown` (JSON with `{"text": "..."}` is accepted as a file upload).
+Background processing uses FastAPI `BackgroundTasks` for now.
+Raw text ingestion is deterministic and idempotent when a `document_id` is supplied.
+
+Upload a document:
+```
+curl -s -X POST -H "X-Tenant-Id: t1" \
+  -F "corpus_id=c1" \
+  -F "file=@./example.txt;type=text/plain" \
+  http://localhost:8000/documents
+```
+
+Ingest raw text:
+```
+curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
+  http://localhost:8000/documents/text \
+  -d '{
+    "corpus_id": "c1",
+    "text": "Some raw text to ingest.",
+    "document_id": "doc-123",
+    "filename": "notes.txt"
+  }'
+```
+
+Check status:
+```
+curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
+```
+
+List documents:
+```
+curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents
+```
+
+Reindex a document:
+```
+curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
+  http://localhost:8000/documents/<document_id>/reindex \
+  -d '{
+    "chunk_size_chars": 1200,
+    "chunk_overlap_chars": 150
+  }'
+```
+
+Delete a document:
+```
+curl -s -X DELETE -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
+```
+
 ## Cloud retrieval real-run (credentials required)
 Use the smoke script to validate retrieval routing without calling the LLM:
 ```
