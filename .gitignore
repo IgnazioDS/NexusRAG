@@ -19,3 +19,6 @@ __pycache__/
 
 # Local audio artifacts
 var/audio/
+
+# Local document storage artifacts
+var/documents/

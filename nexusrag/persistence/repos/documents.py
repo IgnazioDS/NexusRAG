@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Iterable
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.domain.models import Document
+from nexusrag.domain.models import Chunk, Document
 
 
 async def create_document(
@@ -16,7 +16,9 @@ async def create_document(
     corpus_id: str,
     filename: str,
     content_type: str,
-    source: str,
+    ingest_source: str,
+    storage_path: str | None,
+    metadata_json: dict,
     status: str,
 ) -> Document:
     # Create a document row explicitly so status transitions are tracked.
@@ -26,7 +28,11 @@ async def create_document(
         corpus_id=corpus_id,
         filename=filename,
         content_type=content_type,
-        source=source,
+        # Keep source aligned with ingest_source for backward compatibility.
+        source=ingest_source,
+        ingest_source=ingest_source,
+        storage_path=storage_path,
+        metadata_json=metadata_json,
         status=status,
     )
     session.add(doc)
@@ -52,12 +58,26 @@ async def get_document(session: AsyncSession, tenant_id: str, document_id: str) 
     return result.scalar_one_or_none()
 
 
+async def get_document_by_id(session: AsyncSession, document_id: str) -> Document | None:
+    # Use with care; tenant checks should be enforced by callers.
+    result = await session.execute(select(Document).where(Document.id == document_id))
+    return result.scalar_one_or_none()
+
+
+async def count_chunks(session: AsyncSession, document_id: str) -> int:
+    result = await session.execute(
+        select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id)
+    )
+    return int(result.scalar() or 0)
+
+
 async def update_status(
     session: AsyncSession,
     document_id: str,
     *,
     status: str,
     error_message: str | None = None,
+    last_reindexed_at: datetime | None = None,
 ) -> None:
     # Update status in-place so background tasks can progress state.
     result = await session.execute(select(Document).where(Document.id == document_id))
@@ -66,3 +86,5 @@ async def update_status(
         return
     doc.status = status
     doc.error_message = error_message
+    if last_reindexed_at is not None:
+        doc.last_reindexed_at = last_reindexed_at

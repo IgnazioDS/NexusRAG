@@ -61,13 +61,24 @@ class Document(Base):
     corpus_id: Mapped[str] = mapped_column(String, index=True)
     filename: Mapped[str] = mapped_column(String)
     content_type: Mapped[str] = mapped_column(String)
-    source: Mapped[str] = mapped_column(String, default="upload")
+    # Preserve the original source field for compatibility; align value with ingest_source.
+    source: Mapped[str] = mapped_column(String, default="upload_file")
+    # Track ingestion origin explicitly for lifecycle endpoints.
+    ingest_source: Mapped[str] = mapped_column(String, default="upload_file")
+    # Store a local path for reindexing; production will move to object storage.
+    storage_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Capture user-provided metadata for reuse on reindex.
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String, index=True)
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # Track ingestion state transitions without relying on app clocks.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    # Capture the last time content was reindexed for operational visibility.
+    last_reindexed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

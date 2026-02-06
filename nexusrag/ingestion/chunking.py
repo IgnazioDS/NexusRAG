@@ -20,16 +20,21 @@ def _window_text(text: str, size: int, overlap: int) -> Iterable[tuple[str, int,
         start = max(0, end - overlap)
 
 
-def chunk_text(text: str) -> Iterable[tuple[str, int, int]]:
+def chunk_text(
+    text: str,
+    *,
+    chunk_size: int = CHUNK_SIZE_CHARS,
+    chunk_overlap: int = CHUNK_OVERLAP_CHARS,
+) -> Iterable[tuple[str, int, int]]:
     # Prefer paragraph boundaries for readability; fall back to windows for long blocks.
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     cursor = 0
     for paragraph in paragraphs:
-        if len(paragraph) <= CHUNK_SIZE_CHARS:
+        if len(paragraph) <= chunk_size:
             start = text.find(paragraph, cursor)
             end = start + len(paragraph)
             cursor = end
             yield paragraph, start, end
             continue
-        for chunk, start, end in _window_text(paragraph, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS):
+        for chunk, start, end in _window_text(paragraph, chunk_size, chunk_overlap):
             yield chunk, start, end

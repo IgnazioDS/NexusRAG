@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.5.0 - 2026-02-06
+
+- Added document lifecycle endpoints (delete, reindex, raw text ingest).
+- Added document lifecycle metadata (ingest source, reindex timestamp, storage path).
+- Added integration tests for idempotent text ingest, delete, and reindex flows.
+
 ## 0.4.0 - 2026-02-02
 
 - Added document ingestion API (upload/status/list) with tenant scoping.
