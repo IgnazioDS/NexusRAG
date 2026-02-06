@@ -136,6 +136,28 @@ SSE events:
 - `audio.ready` → `{"type":"audio.ready","request_id":"...","data":{"audio_url":"http://localhost:8000/audio/<id>.mp3","audio_id":"<id>","mime":"audio/mpeg"}}`
 - `audio.error` → `{"type":"audio.error","request_id":"...","data":{"code":"TTS_ERROR","message":"..."}}`
 
+## Ingestion (documents → chunks)
+Supported types: `text/plain`, `text/markdown` (JSON with `{"text": "..."}` is accepted as a file upload).
+Background processing uses FastAPI `BackgroundTasks` for now.
+
+Upload a document:
+```
+curl -s -X POST -H "X-Tenant-Id: t1" \
+  -F "corpus_id=c1" \
+  -F "file=@./example.txt;type=text/plain" \
+  http://localhost:8000/documents
+```
+
+Check status:
+```
+curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
+```
+
+List documents:
+```
+curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents
+```
+
 ## Cloud retrieval real-run (credentials required)
 Use the smoke script to validate retrieval routing without calling the LLM:
 ```

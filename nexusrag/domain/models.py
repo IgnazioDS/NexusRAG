@@ -53,11 +53,30 @@ class Corpus(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    corpus_id: Mapped[str] = mapped_column(String, index=True)
+    filename: Mapped[str] = mapped_column(String)
+    content_type: Mapped[str] = mapped_column(String)
+    source: Mapped[str] = mapped_column(String, default="upload")
+    status: Mapped[str] = mapped_column(String, index=True)
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Track ingestion state transitions without relying on app clocks.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Chunk(Base):
     __tablename__ = "chunks"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     corpus_id: Mapped[str] = mapped_column(String, index=True)
+    document_id: Mapped[str | None] = mapped_column(String, ForeignKey("documents.id"), nullable=True)
     document_uri: Mapped[str] = mapped_column(String)
     chunk_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
