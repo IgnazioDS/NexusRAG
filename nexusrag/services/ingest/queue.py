@@ -21,7 +21,15 @@ from nexusrag.services.ingest.ingestion import (
 logger = logging.getLogger(__name__)
 
 _redis_pool = None
+_redis_pool_loop = None
 _redis_lock = asyncio.Lock()
+# Keep heartbeat key stable for ops endpoint lookups.
+WORKER_HEARTBEAT_KEY = "nexusrag:worker:heartbeat"
+
+
+def _queue_key(queue_name: str) -> str:
+    # Use arq's queue naming convention for depth checks.
+    return f"arq:queue:{queue_name}"
 
 
 class IngestionJobPayload(BaseModel):
@@ -48,9 +56,13 @@ def _utc_now() -> datetime:
 
 async def get_redis_pool():
     # Cache the Redis pool to avoid reconnecting on every enqueue.
-    global _redis_pool
-    if _redis_pool is not None:
+    global _redis_pool, _redis_pool_loop
+    current_loop = asyncio.get_running_loop()
+    if _redis_pool is not None and _redis_pool_loop == current_loop:
         return _redis_pool
+    if _redis_pool is not None and _redis_pool_loop != current_loop:
+        # Drop loop-bound pools to avoid cross-loop errors in tests.
+        _redis_pool = None
     async with _redis_lock:
         if _redis_pool is None:
             settings = get_settings()
@@ -58,7 +70,52 @@ async def get_redis_pool():
                 RedisSettings.from_dsn(settings.redis_url),
                 default_queue_name=settings.ingest_queue_name,
             )
+            _redis_pool_loop = current_loop
     return _redis_pool
+
+
+async def get_queue_depth() -> int | None:
+    # Return None to signal Redis unavailability to ops endpoints.
+    settings = get_settings()
+    if settings.ingest_execution_mode.lower() == "inline":
+        # Inline mode bypasses Redis, so queue depth is always zero.
+        return 0
+    try:
+        redis = await get_redis_pool()
+        depth = await redis.llen(_queue_key(settings.ingest_queue_name))
+        return int(depth)
+    except Exception:  # noqa: BLE001 - ops endpoints handle degraded Redis
+        return None
+
+
+async def set_worker_heartbeat(*, timestamp: datetime | None = None) -> None:
+    # Persist a heartbeat for the ops health endpoint.
+    settings = get_settings()
+    if settings.ingest_execution_mode.lower() == "inline":
+        # Inline mode does not run a worker, so skip heartbeat updates.
+        return
+    redis = await get_redis_pool()
+    heartbeat_time = timestamp or _utc_now()
+    await redis.set(WORKER_HEARTBEAT_KEY, heartbeat_time.isoformat())
+
+
+async def get_worker_heartbeat() -> datetime | None:
+    # Return None when the heartbeat is missing or Redis is unavailable.
+    settings = get_settings()
+    if settings.ingest_execution_mode.lower() == "inline":
+        return None
+    try:
+        redis = await get_redis_pool()
+        raw_value = await redis.get(WORKER_HEARTBEAT_KEY)
+    except Exception:  # noqa: BLE001 - ops endpoints handle degraded Redis
+        return None
+    if not raw_value:
+        return None
+    value = raw_value.decode("utf-8") if isinstance(raw_value, (bytes, bytearray)) else str(raw_value)
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 async def enqueue_ingestion_job(payload: IngestionJobPayload) -> str:

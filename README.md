@@ -195,6 +195,32 @@ Troubleshooting:
 - If status is `failed`, inspect `failure_reason` and worker logs, then reindex or re-upload.
 - Delete returns `409` for in-flight documents (`queued`/`processing`).
 
+## Ops Endpoints
+Ops endpoints return `200` even when dependencies are degraded, surfacing the degraded field instead of failing.
+
+Health summary:
+```
+curl -s http://localhost:8000/ops/health
+```
+
+Ingestion stats (last 24 hours by default):
+```
+curl -s "http://localhost:8000/ops/ingestion?hours=24"
+```
+
+Metrics snapshot (JSON):
+```
+curl -s http://localhost:8000/ops/metrics
+```
+
+Heartbeat interpretation:
+- `worker_heartbeat_age_s` shows seconds since the last worker heartbeat.
+- If the heartbeat is missing or stale, `/ops/health` reports `status: degraded`.
+
+Queue depth:
+- `queue_depth` reports pending jobs in the Redis ingestion queue.
+- If Redis is unavailable, `queue_depth` is `null` and `/ops/health` reports `redis: degraded`.
+
 ## Cloud retrieval real-run (credentials required)
 Use the smoke script to validate retrieval routing without calling the LLM:
 ```

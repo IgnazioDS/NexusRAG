@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.6.1 - 2026-02-07
+
+- Added ops health and ingestion visibility endpoints.
+- Added worker heartbeat reporting and queue depth status.
+- Added ingestion metrics endpoint for dashboards/alerts.
+
 ## 0.6.0 - 2026-02-06
 
 - Added Redis-backed async ingestion worker with ARQ.
