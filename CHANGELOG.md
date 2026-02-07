@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.0.0 - 2026-02-07
+
+- Added tenant quotas with daily/monthly limits and soft/hard cap modes.
+- Added quota response headers and 402 QUOTA_EXCEEDED contract.
+- Added admin quota management and usage summary endpoints.
+- Added billing webhook hooks for quota events (best-effort).
+
 ## 0.9.0 - 2026-02-07
 
 - Added Redis-backed token-bucket rate limiting.

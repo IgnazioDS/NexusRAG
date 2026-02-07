@@ -4,7 +4,19 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func, Index
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -80,6 +92,62 @@ class AuditEvent(Base):
     # Keep metadata sanitized and JSONB for flexible investigation.
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=dict)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlanLimit(Base):
+    __tablename__ = "plan_limits"
+
+    # Track per-tenant quota limits for billing and abuse protection.
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    daily_requests_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_requests_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Placeholder token quotas for future LLM usage accounting.
+    daily_tokens_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_tokens_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Default soft cap ratio allows warnings before hard enforcement.
+    soft_cap_ratio: Mapped[float] = mapped_column(Float, default=0.8)
+    # Toggle hard cap enforcement for overage observation modes.
+    hard_cap_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UsageCounter(Base):
+    __tablename__ = "usage_counters"
+
+    # Track per-tenant usage counts within day/month boundaries.
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    period_type: Mapped[str] = mapped_column(String, primary_key=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Placeholder for future token metering support.
+    estimated_tokens_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class QuotaSoftCapEvent(Base):
+    __tablename__ = "quota_soft_cap_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "period_type",
+            "period_start",
+            "metric",
+            name="uq_quota_soft_cap_events_scope",
+        ),
+    )
+
+    # Deduplicate soft cap alerts per tenant/period/metric.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    period_type: Mapped[str] = mapped_column(String)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    metric: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -185,3 +253,11 @@ Index(
     AuditEvent.outcome,
     AuditEvent.occurred_at.desc(),
 )
+Index("ix_plan_limits_tenant_id", PlanLimit.tenant_id)
+Index(
+    "ix_usage_counters_tenant_period",
+    UsageCounter.tenant_id,
+    UsageCounter.period_type,
+    UsageCounter.period_start,
+)
+Index("ix_quota_soft_cap_events_tenant", QuotaSoftCapEvent.tenant_id)

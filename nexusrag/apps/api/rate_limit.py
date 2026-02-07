@@ -144,7 +144,12 @@ def route_class_for_request(request: Request) -> tuple[str, int]:
         return ROUTE_CLASS_OPS, 1
 
     if method in {"POST", "PATCH", "DELETE"}:
-        if path.startswith("/documents") or path.startswith("/corpora") or path.startswith("/audit"):
+        if (
+            path.startswith("/documents")
+            or path.startswith("/corpora")
+            or path.startswith("/audit")
+            or path.startswith("/admin")
+        ):
             return ROUTE_CLASS_MUTATION, 1
 
     return ROUTE_CLASS_READ, 1

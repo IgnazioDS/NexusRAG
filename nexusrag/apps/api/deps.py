@@ -15,7 +15,8 @@ from nexusrag.domain.models import ApiKey, User
 from nexusrag.persistence.db import SessionLocal, get_session
 from nexusrag.services.auth.api_keys import hash_api_key, normalize_role, role_allows
 from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.apps.api.rate_limit import enforce_rate_limit
+from nexusrag.apps.api.rate_limit import enforce_rate_limit, route_class_for_request
+from nexusrag.services.quota import enforce_quota
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -470,6 +471,15 @@ def require_role(minimum_role: str):
             raise _forbidden_error("Insufficient role for this operation")
         # Apply rate limits after auth + RBAC checks to protect capacity.
         await enforce_rate_limit(request=request, response=response, principal=principal, db=db)
+        # Apply quota checks after rate limiting to avoid counting throttled requests.
+        _route_class, cost = route_class_for_request(request)
+        await enforce_quota(
+            request=request,
+            response=response,
+            principal=principal,
+            db=db,
+            estimated_cost=cost,
+        )
         return principal
 
     return _dependency
