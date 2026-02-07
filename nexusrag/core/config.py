@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     rl_tenant_ops_burst: int = 20
     # Prefix rate limit keys to avoid collisions with other Redis data.
     rl_redis_prefix: str = "nexusrag:rl"
+    # Toggle billing webhook emission for quota events.
+    billing_webhook_enabled: bool = False
+    billing_webhook_url: str | None = None
+    billing_webhook_secret: str | None = None
+    # Keep webhook timeouts short to avoid blocking API responses.
+    billing_webhook_timeout_ms: int = 2000
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None

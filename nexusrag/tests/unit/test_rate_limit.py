@@ -67,3 +67,6 @@ def test_route_class_mapping() -> None:
 
     audit_events = _make_request("/audit/events", "GET")
     assert rate_limit.route_class_for_request(audit_events) == (rate_limit.ROUTE_CLASS_OPS, 1)
+
+    admin_patch = _make_request("/admin/quotas/t1", "PATCH")
+    assert rate_limit.route_class_for_request(admin_patch) == (rate_limit.ROUTE_CLASS_MUTATION, 1)

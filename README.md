@@ -132,6 +132,11 @@ Event taxonomy:
 | Data operations | `ops.viewed` | Ops endpoints accessed |
 | Security | `security.rate_limited` | Request throttled by rate limiting |
 | System | `system.rate_limit.degraded` | Rate limiting degraded due to Redis error |
+| Quota | `quota.soft_cap_reached` | Soft cap threshold reached for a tenant period |
+| Quota | `quota.hard_cap_blocked` | Request blocked due to hard cap enforcement |
+| Quota | `quota.overage_observed` | Overage observed when hard cap is disabled |
+| Billing | `billing.usage_recorded` | Sampled usage snapshot for metering |
+| Billing | `billing.webhook.failure` | Billing webhook delivery failed |
 | System | `system.worker.heartbeat.missed` | Optional: worker heartbeat missing |
 | System | `system.error` | Optional: handled internal error |
 
@@ -159,7 +164,7 @@ Route classes:
 | Class | Scope | Paths |
 | --- | --- | --- |
 | run | strict | `POST /run` |
-| mutation | write | `POST/PATCH/DELETE /documents`, `PATCH /corpora`, audit write endpoints (if added) |
+| mutation | write | `POST/PATCH/DELETE /documents`, `PATCH /corpora`, `/admin/quotas/*`, audit write endpoints (if added) |
 | read | read | `GET` endpoints (except ops/audit events) |
 | ops | ops | `/ops/*` and `/audit/events*` |
 
@@ -388,6 +393,66 @@ curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" 
   }'
 ```
 If you receive `429 RATE_LIMITED`, back off using the `Retry-After` header and retry.
+
+## Usage Quotas
+Usage quotas enforce daily and monthly request caps per tenant. Soft caps emit warnings; hard caps can block or observe overages.
+
+Quota behavior:
+- Soft cap (default 80% of limit): request allowed + warning header + event emitted once per period.
+- Hard cap: block with `402 QUOTA_EXCEEDED` (when `hard_cap_enabled=true`), or allow with overage event (when `hard_cap_enabled=false`).
+- `/run` counts as 3 request units to reflect higher cost.
+
+Quota headers (always included on successful requests):
+- `X-Quota-Day-Limit`, `X-Quota-Day-Used`, `X-Quota-Day-Remaining`
+- `X-Quota-Month-Limit`, `X-Quota-Month-Used`, `X-Quota-Month-Remaining`
+- `X-Quota-SoftCap-Reached`: `true|false`
+- `X-Quota-HardCap-Mode`: `enforce|observe`
+
+Example 402 response:
+```
+HTTP/1.1 402 Payment Required
+{
+  "detail": {
+    "code": "QUOTA_EXCEEDED",
+    "message": "Monthly request quota exceeded",
+    "period": "month",
+    "limit": 10000,
+    "used": 10000,
+    "remaining": 0
+  }
+}
+```
+
+Admin quota endpoints (admin role only, tenant-scoped):
+```
+# Get limits
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/admin/quotas/t1
+
+# Update limits
+curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/admin/quotas/t1 \
+  -d '{
+    "daily_requests_limit": 500,
+    "monthly_requests_limit": 10000,
+    "soft_cap_ratio": 0.8,
+    "hard_cap_enabled": true
+  }'
+
+# Usage summary
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/admin/usage/t1?period=month&start=2026-02-01"
+```
+
+Billing webhook configuration:
+- `BILLING_WEBHOOK_ENABLED=true`
+- `BILLING_WEBHOOK_URL=https://billing.example.com/hooks`
+- `BILLING_WEBHOOK_SECRET=...`
+- `BILLING_WEBHOOK_TIMEOUT_MS=2000`
+
+Webhook signature:
+- Header `X-Billing-Signature` is `hex(HMAC_SHA256(secret, raw_body))`.
+- Header `X-Billing-Event` includes the event type (e.g., `quota.soft_cap_reached`).
 
 ## Notes
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
