@@ -36,6 +36,32 @@ class Settings(BaseSettings):
     auth_api_key_header: str = "Authorization"
     # Small cache window to reduce auth DB lookups without delaying revocations too long.
     auth_cache_ttl_s: int = 15
+    # Toggle rate limiting for abuse protection and capacity control.
+    rate_limit_enabled: bool = True
+    # Choose fail-open or fail-closed behavior when Redis is unavailable.
+    rl_fail_mode: str = "open"
+    # Configure per-key and per-tenant rate limits for /run (strict path).
+    rl_key_run_rps: float = 1
+    rl_key_run_burst: int = 5
+    rl_tenant_run_rps: float = 3
+    rl_tenant_run_burst: int = 15
+    # Configure per-key and per-tenant rate limits for mutations.
+    rl_key_mutation_rps: float = 2
+    rl_key_mutation_burst: int = 10
+    rl_tenant_mutation_rps: float = 5
+    rl_tenant_mutation_burst: int = 25
+    # Configure per-key and per-tenant rate limits for read endpoints.
+    rl_key_read_rps: float = 5
+    rl_key_read_burst: int = 20
+    rl_tenant_read_rps: float = 15
+    rl_tenant_read_burst: int = 60
+    # Configure per-key and per-tenant rate limits for ops/audit endpoints.
+    rl_key_ops_rps: float = 2
+    rl_key_ops_burst: int = 10
+    rl_tenant_ops_rps: float = 4
+    rl_tenant_ops_burst: int = 20
+    # Prefix rate limit keys to avoid collisions with other Redis data.
+    rl_redis_prefix: str = "nexusrag:rl"
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None

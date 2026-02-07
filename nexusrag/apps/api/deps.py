@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 import asyncio
 import time
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -15,6 +15,7 @@ from nexusrag.domain.models import ApiKey, User
 from nexusrag.persistence.db import SessionLocal, get_session
 from nexusrag.services.auth.api_keys import hash_api_key, normalize_role, role_allows
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.apps.api.rate_limit import enforce_rate_limit
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -442,6 +443,7 @@ def require_role(minimum_role: str):
     # Dependency factory to enforce RBAC at the route level.
     async def _dependency(
         request: Request,
+        response: Response,
         principal: Principal = Depends(get_current_principal),
         db: AsyncSession = Depends(get_db),
     ) -> Principal:
@@ -466,6 +468,8 @@ def require_role(minimum_role: str):
                 best_effort=True,
             )
             raise _forbidden_error("Insufficient role for this operation")
+        # Apply rate limits after auth + RBAC checks to protect capacity.
+        await enforce_rate_limit(request=request, response=response, principal=principal, db=db)
         return principal
 
     return _dependency
