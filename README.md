@@ -130,6 +130,8 @@ Event taxonomy:
 | Data operations | `corpora.updated` | Corpus fields updated |
 | Data operations | `run.invoked` | `/run` invocation accepted |
 | Data operations | `ops.viewed` | Ops endpoints accessed |
+| Security | `security.rate_limited` | Request throttled by rate limiting |
+| System | `system.rate_limit.degraded` | Rate limiting degraded due to Redis error |
 | System | `system.worker.heartbeat.missed` | Optional: worker heartbeat missing |
 | System | `system.error` | Optional: handled internal error |
 
@@ -148,6 +150,48 @@ Filter events:
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/audit/events?event_type=rbac.forbidden&outcome=failure&limit=20"
+```
+
+## Rate Limiting
+Rate limits use a Redis-backed token bucket with sustained rate + burst capacity. Limits are enforced per API key and per tenant; requests are allowed only when both buckets have capacity.
+
+Route classes:
+| Class | Scope | Paths |
+| --- | --- | --- |
+| run | strict | `POST /run` |
+| mutation | write | `POST/PATCH/DELETE /documents`, `PATCH /corpora`, audit write endpoints (if added) |
+| read | read | `GET` endpoints (except ops/audit events) |
+| ops | ops | `/ops/*` and `/audit/events*` |
+
+Default thresholds:
+| Route class | Key RPS | Key burst | Tenant RPS | Tenant burst |
+| --- | --- | --- | --- | --- |
+| run | 1 | 5 | 3 | 15 |
+| mutation | 2 | 10 | 5 | 25 |
+| read | 5 | 20 | 15 | 60 |
+| ops | 2 | 10 | 4 | 20 |
+
+Fail behavior:
+- `RL_FAIL_MODE=open` (default): allow traffic if Redis is unavailable and set `X-RateLimit-Status: degraded`.
+- `RL_FAIL_MODE=closed`: return `503 RATE_LIMIT_UNAVAILABLE`.
+
+Example 429 response:
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 2
+X-RateLimit-Scope: api_key
+X-RateLimit-Route-Class: run
+X-RateLimit-Retry-After-Ms: 1200
+
+{
+  "detail": {
+    "code": "RATE_LIMITED",
+    "message": "Rate limit exceeded",
+    "scope": "api_key",
+    "route_class": "run",
+    "retry_after_ms": 1200
+  }
+}
 ```
 
 ## Corpora API
@@ -343,6 +387,7 @@ curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" 
     "audio":false
   }'
 ```
+If you receive `429 RATE_LIMITED`, back off using the `Retry-After` header and retry.
 
 ## Notes
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.

@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.9.0 - 2026-02-07
+
+- Added Redis-backed token-bucket rate limiting.
+- Added per-key and per-tenant dual enforcement with route-class policies.
+- Added stable 429 schema with retry hints and throttling headers.
+- Added audit events for throttling and degraded mode.
+
 ## 0.8.0 - 2026-02-07
 
 - Added audit_events table and central audit service.
