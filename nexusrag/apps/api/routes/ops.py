@@ -4,7 +4,7 @@ import math
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.services.ingest import queue as ingest_queue
+from nexusrag.services.audit import get_request_context, record_event
 
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -79,6 +80,7 @@ async def _get_worker_heartbeat() -> datetime | None:
 
 @router.get("/health")
 async def ops_health(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict:
@@ -98,7 +100,7 @@ async def ops_health(
 
     status = "ok" if db_ok and redis_ok and not heartbeat_stale else "degraded"
 
-    return {
+    payload = {
         "status": status,
         "api": "ok",
         "db": "ok" if db_ok else "degraded",
@@ -107,10 +109,31 @@ async def ops_health(
         "queue_depth": queue_depth,
         "timestamp": now.isoformat(),
     }
+    request_ctx = get_request_context(request)
+    # Record ops views for administrative investigations.
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="ops.viewed",
+        outcome="success",
+        resource_type="ops",
+        resource_id="health",
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={"path": request.url.path},
+        commit=True,
+        best_effort=True,
+    )
+    return payload
 
 
 @router.get("/ingestion")
 async def ops_ingestion(
+    request: Request,
     hours: int = Query(default=24, ge=1, le=168),
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(require_role("admin")),
@@ -192,7 +215,7 @@ async def ops_ingestion(
     queue_depth = await _get_queue_depth()
     worker_last_seen = await _get_worker_heartbeat()
 
-    return {
+    payload = {
         "window_hours": hours,
         "documents": {
             "queued": int(queued_count or 0),
@@ -209,10 +232,31 @@ async def ops_ingestion(
         "queue_depth": queue_depth,
         "worker_last_seen_at": worker_last_seen.isoformat() if worker_last_seen else None,
     }
+    request_ctx = get_request_context(request)
+    # Record ops views for administrative investigations.
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="ops.viewed",
+        outcome="success",
+        resource_type="ops",
+        resource_id="ingestion",
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={"path": request.url.path, "window_hours": hours},
+        commit=True,
+        best_effort=True,
+    )
+    return payload
 
 
 @router.get("/metrics")
 async def ops_metrics(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict:
@@ -238,7 +282,7 @@ async def ops_metrics(
     except SQLAlchemyError as exc:
         raise _db_error("Database error while aggregating ingestion metrics") from exc
 
-    return {
+    payload = {
         "counters": {
             "nexusrag_ingest_enqueued_total": int(enqueued_total or 0),
             "nexusrag_ingest_succeeded_total": int(succeeded_total or 0),
@@ -249,3 +293,23 @@ async def ops_metrics(
             "nexusrag_ingest_queue_depth": queue_depth,
         },
     }
+    request_ctx = get_request_context(request)
+    # Record ops views for administrative investigations.
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="ops.viewed",
+        outcome="success",
+        resource_type="ops",
+        resource_id="metrics",
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={"path": request.url.path},
+        commit=True,
+        best_effort=True,
+    )
+    return payload

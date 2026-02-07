@@ -8,6 +8,7 @@ from uuid import uuid4
 from nexusrag.domain.models import ApiKey, User
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.auth.api_keys import generate_api_key, normalize_role
+from nexusrag.services.audit import record_event
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -59,6 +60,26 @@ async def _create_key(args: argparse.Namespace) -> int:
         )
         session.add(api_key)
         await session.commit()
+
+        # Record API key creation for security investigations.
+        await record_event(
+            session=session,
+            tenant_id=user.tenant_id,
+            actor_type="system",
+            actor_id="create_api_key",
+            actor_role=role,
+            event_type="auth.api_key.created",
+            outcome="success",
+            resource_type="api_key",
+            resource_id=key_id,
+            metadata={
+                "user_id": user.id,
+                "key_prefix": key_prefix,
+                "key_name": args.name,
+            },
+            commit=True,
+            best_effort=False,
+        )
 
     print("API key created:")
     print(f"  key_id: {key_id}")

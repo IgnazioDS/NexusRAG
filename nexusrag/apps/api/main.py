@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from nexusrag.apps.api.routes.audio import router as audio_router
+from nexusrag.apps.api.routes.audit import router as audit_router
 from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.documents import router as documents_router
 from nexusrag.apps.api.routes.health import router as health_router
@@ -15,6 +16,8 @@ def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="NexusRAG API")
     app.include_router(audio_router)
+    # Expose admin-only audit endpoints for security investigations.
+    app.include_router(audit_router)
     app.include_router(documents_router)
     app.include_router(health_router)
     # Expose ops endpoints for ingestion observability and health checks.

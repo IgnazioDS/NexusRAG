@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, Index
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -52,6 +52,34 @@ class ApiKey(Base):
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    # Use a monotonic numeric id for efficient pagination and ordering.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # Store the event timestamp separately from creation to preserve source clocks.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # Allow null tenant_id for pre-auth or system events.
+    tenant_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    # Capture the actor identity for audit trails across auth types.
+    actor_type: Mapped[str] = mapped_column(String)
+    actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Persist a stable event taxonomy for investigation queries.
+    event_type: Mapped[str] = mapped_column(String, index=True)
+    outcome: Mapped[str] = mapped_column(String)
+    resource_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Store request identifiers to connect API calls to audit entries.
+    request_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Keep metadata sanitized and JSONB for flexible investigation.
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -142,3 +170,18 @@ class Chunk(Base):
 
 
 Index("ix_chunks_corpus_id", Chunk.corpus_id)
+Index(
+    "ix_audit_events_tenant_occurred_at",
+    AuditEvent.tenant_id,
+    AuditEvent.occurred_at.desc(),
+)
+Index(
+    "ix_audit_events_event_type_occurred_at",
+    AuditEvent.event_type,
+    AuditEvent.occurred_at.desc(),
+)
+Index(
+    "ix_audit_events_outcome_occurred_at",
+    AuditEvent.outcome,
+    AuditEvent.occurred_at.desc(),
+)
