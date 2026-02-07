@@ -7,6 +7,19 @@ services:
       - .env
     depends_on:
       - postgres
+      - redis
+    volumes:
+      - .:/app
+
+  ingestion-worker:
+    build: .
+    # Run the ARQ worker in a separate process to keep API responsive.
+    command: ["arq", "nexusrag.workers.ingestion_worker.WorkerSettings"]
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
     volumes:
       - .:/app
 

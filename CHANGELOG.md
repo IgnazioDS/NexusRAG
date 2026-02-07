@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.6.0 - 2026-02-06
+
+- Added Redis-backed async ingestion worker with ARQ.
+- Added enqueue-based API semantics returning 202 Accepted.
+- Added document status tracking with failure reasons and timestamps.
+- Added worker service to docker-compose for ingestion processing.
+- Added integration tests for queued/succeeded/failed lifecycle flows.
+
 ## 0.5.0 - 2026-02-06
 
 - Added document lifecycle endpoints (delete, reindex, raw text ingest).

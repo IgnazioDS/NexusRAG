@@ -70,7 +70,20 @@ class Document(Base):
     # Capture user-provided metadata for reuse on reindex.
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String, index=True)
+    # Preserve legacy error_message for compatibility; new APIs use failure_reason.
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Store short, actionable failure descriptions for async ingestion status.
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Capture when the document entered the queue for observability.
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Capture when the worker started processing for SLA tracking.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Capture when ingestion finished (success or failure).
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Store the last ingestion job id for tracing.
+    last_job_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # Track ingestion state transitions without relying on app clocks.
     updated_at: Mapped[datetime] = mapped_column(

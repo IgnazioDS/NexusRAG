@@ -16,6 +16,15 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://nexusrag:nexusrag@localhost:5432/nexusrag"
 
+    # Redis connection for ingestion queue and worker coordination.
+    redis_url: str = "redis://localhost:6379/0"
+    # Keep queue name configurable for multi-environment isolation.
+    ingest_queue_name: str = "ingest"
+    # Limit retries for transient ingestion failures to avoid infinite loops.
+    ingest_max_retries: int = 3
+    # Inline mode executes ingestion immediately for deterministic tests.
+    ingest_execution_mode: str = "queue"
+
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None
     gemini_model: str = "gemini-2.0-flash-001"
