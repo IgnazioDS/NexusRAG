@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ingest_max_retries: int = 3
     # Inline mode executes ingestion immediately for deterministic tests.
     ingest_execution_mode: str = "queue"
+    # Emit worker heartbeats for ops health and alerting.
+    worker_heartbeat_interval_s: int = 10
+    # Treat stale heartbeats as degraded to surface worker outages.
+    worker_heartbeat_stale_after_s: int = 60
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None
