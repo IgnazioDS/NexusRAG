@@ -113,6 +113,43 @@ Dev-only bypass:
 - Set `AUTH_DEV_BYPASS=true` to allow `X-Tenant-Id` + optional `X-Role` (defaults to `admin`).
 - This is intended for local development only; keep it disabled in production.
 
+## Audit Logs
+Audit events are stored in the `audit_events` table and exposed via admin-only endpoints for investigations.
+
+Event taxonomy:
+| Category | event_type | Description |
+| --- | --- | --- |
+| Auth/security | `auth.api_key.created` | API key created via script |
+| Auth/security | `auth.api_key.revoked` | API key revoked via script |
+| Auth/security | `auth.access.success` | API key authenticated successfully |
+| Auth/security | `auth.access.failure` | API key authentication failed |
+| Auth/security | `rbac.forbidden` | Authenticated principal lacked required role |
+| Data operations | `documents.ingest.enqueued` | Document ingestion enqueued |
+| Data operations | `documents.reindex.enqueued` | Document reindex enqueued |
+| Data operations | `documents.deleted` | Document deleted |
+| Data operations | `corpora.updated` | Corpus fields updated |
+| Data operations | `run.invoked` | `/run` invocation accepted |
+| Data operations | `ops.viewed` | Ops endpoints accessed |
+| System | `system.worker.heartbeat.missed` | Optional: worker heartbeat missing |
+| System | `system.error` | Optional: handled internal error |
+
+Redaction policy:
+- Never store plaintext API keys, Authorization headers, full user message content, or raw document text.
+- Keys matching `api_key`, `authorization`, `token`, `secret`, `password`, `text`, or `content` are stored as `[REDACTED]`.
+- Store only identifiers, counts, and high-level metadata.
+
+List events:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/audit/events?limit=50"
+```
+
+Filter events:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/audit/events?event_type=rbac.forbidden&outcome=failure&limit=20"
+```
+
 ## Corpora API
 List corpora:
 ```

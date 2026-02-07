@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from nexusrag.apps.api.deps import (
 from nexusrag.core.errors import RetrievalConfigError
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.providers.retrieval.config import normalize_provider_config
+from nexusrag.services.audit import get_request_context, record_event
 
 
 router = APIRouter(prefix="/corpora", tags=["corpora"])
@@ -87,6 +88,7 @@ async def get_corpus(
 @router.patch("/{corpus_id}")
 async def patch_corpus(
     corpus_id: str,
+    request: Request,
     payload: CorpusPatchRequest,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
     principal: Principal = Depends(require_role("editor")),
@@ -101,6 +103,12 @@ async def patch_corpus(
             provider_config_json = normalize_provider_config(payload.provider_config_json)
         except RetrievalConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    updated_fields: list[str] = []
+    if payload.name is not None:
+        updated_fields.append("name")
+    if payload.provider_config_json is not None:
+        updated_fields.append("provider_config_json")
 
     try:
         corpus = await corpora_repo.update_fields(
@@ -119,4 +127,24 @@ async def patch_corpus(
         await db.rollback()
         # Surface a generic error and keep the transaction clean for the caller.
         raise HTTPException(status_code=500, detail="Database error while updating corpus") from exc
+
+    request_ctx = get_request_context(request)
+    # Record the corpus mutation after the update succeeds.
+    await record_event(
+        session=db,
+        tenant_id=tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="corpora.updated",
+        outcome="success",
+        resource_type="corpus",
+        resource_id=corpus_id,
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={"updated_fields": updated_fields},
+        commit=True,
+        best_effort=True,
+    )
     return _to_response(corpus)

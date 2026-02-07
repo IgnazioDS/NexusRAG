@@ -12,6 +12,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     Response,
     UploadFile,
 )
@@ -32,6 +33,7 @@ from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.services.ingest.ingestion import write_text_to_storage
 from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestion_job
+from nexusrag.services.audit import get_request_context, record_event
 
 
 logger = logging.getLogger(__name__)
@@ -203,6 +205,7 @@ async def _enqueue_or_fail(
 
 @router.post("", status_code=202)
 async def upload_document(
+    request: Request,
     response: Response,
     corpus_id: str = Form(...),
     file: UploadFile = File(...),
@@ -297,11 +300,38 @@ async def upload_document(
         request_id=request_id,
     )
     await _enqueue_or_fail(db, document_id, payload)
+    request_ctx = get_request_context(request)
+    # Record queued ingestion only after the enqueue succeeds.
+    await record_event(
+        session=db,
+        tenant_id=tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="documents.ingest.enqueued",
+        outcome="success",
+        resource_type="document",
+        resource_id=document_id,
+        request_id=request_id,
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={
+            "corpus_id": corpus_id,
+            "ingest_source": "upload_file",
+            "file_name": file.filename or "upload",
+            "file_mime": file.content_type or "application/octet-stream",
+            "byte_count": len(body),
+            "overwrite": overwrite,
+        },
+        commit=True,
+        best_effort=True,
+    )
     return _accepted_response(document_id, "queued", request_id)
 
 
 @router.post("/text", status_code=202)
 async def ingest_text_document(
+    request: Request,
     payload: TextIngestRequest,
     response: Response,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
@@ -402,6 +432,32 @@ async def ingest_text_document(
         request_id=request_id,
     )
     await _enqueue_or_fail(db, document_id, ingest_payload)
+    request_ctx = get_request_context(request)
+    # Record queued ingestion only after the enqueue succeeds.
+    await record_event(
+        session=db,
+        tenant_id=tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="documents.ingest.enqueued",
+        outcome="success",
+        resource_type="document",
+        resource_id=document_id,
+        request_id=request_id,
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={
+            "corpus_id": payload.corpus_id,
+            "ingest_source": "raw_text",
+            "file_name": payload.filename or "raw_text.txt",
+            "char_count": len(payload.text),
+            "metadata_keys": sorted(metadata_json.keys()),
+            "overwrite": payload.overwrite,
+        },
+        commit=True,
+        best_effort=True,
+    )
     return _accepted_response(document_id, "queued", request_id)
 
 
@@ -456,6 +512,7 @@ async def get_document(
 @router.post("/{document_id}/reindex", status_code=202)
 async def reindex_document(
     document_id: str,
+    request: Request,
     payload: ReindexRequest | None = None,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
     principal: Principal = Depends(require_role("editor")),
@@ -525,12 +582,37 @@ async def reindex_document(
         is_reindex=True,
     )
     await _enqueue_or_fail(db, document_id, ingest_payload)
+    request_ctx = get_request_context(request)
+    # Record queued reindex only after the enqueue succeeds.
+    await record_event(
+        session=db,
+        tenant_id=tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="documents.reindex.enqueued",
+        outcome="success",
+        resource_type="document",
+        resource_id=document_id,
+        request_id=request_id,
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={
+            "corpus_id": doc.corpus_id,
+            "ingest_source": doc.ingest_source,
+            "chunk_size_chars": chunk_size,
+            "chunk_overlap_chars": chunk_overlap,
+        },
+        commit=True,
+        best_effort=True,
+    )
     return _accepted_response(document_id, "queued", request_id)
 
 
 @router.delete("/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
+    request: Request,
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -574,4 +656,26 @@ async def delete_document(
             # Deleting local artifacts should not block API responses.
             logger.warning("Failed to remove document storage %s", storage_path)
 
+    request_ctx = get_request_context(request)
+    # Record deletions after the document and chunks are removed successfully.
+    await record_event(
+        session=db,
+        tenant_id=tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="documents.deleted",
+        outcome="success",
+        resource_type="document",
+        resource_id=document_id,
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={
+            "corpus_id": doc.corpus_id,
+            "had_storage": bool(storage_path),
+        },
+        commit=True,
+        best_effort=True,
+    )
     return Response(status_code=204)

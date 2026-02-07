@@ -41,6 +41,7 @@ from nexusrag.providers.llm.factory import get_llm_provider
 from nexusrag.providers.retrieval.router import RetrievalRouter
 from nexusrag.providers.tts.factory import get_tts_provider
 from nexusrag.services.audio.storage import save_audio
+from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.apps.api.deps import (
     Principal,
     get_db,
@@ -159,6 +160,31 @@ async def run(
             "Connection": "keep-alive",
         }
         return StreamingResponse(early_error_stream(), headers=headers, media_type="text/event-stream")
+
+    request_ctx = get_request_context(http_request)
+    # Record the run invocation after persistence succeeds to avoid logging failed writes.
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="run.invoked",
+        outcome="success",
+        resource_type="run",
+        resource_id=request_id,
+        request_id=request_id,
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={
+            "session_id": payload.session_id,
+            "corpus_id": payload.corpus_id,
+            "top_k": payload.top_k,
+            "audio": payload.audio,
+        },
+        commit=True,
+        best_effort=True,
+    )
 
     # Use a shared queue for token and debug events to preserve stream order.
     queue: asyncio.Queue[dict] = asyncio.Queue()

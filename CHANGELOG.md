@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.8.0 - 2026-02-07
+
+- Added audit_events table and central audit service.
+- Added auth/security and data mutation event logging across the API.
+- Added admin-only audit query endpoints with tenant scoping.
+- Implemented metadata redaction policy for sensitive fields.
+
 ## 0.7.0 - 2026-02-07
 
 - Added API key authentication with hashed key storage.
