@@ -11,6 +11,7 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.ingest import queue as ingest_queue
+from nexusrag.tests.utils.auth import create_test_api_key
 
 
 def _utc_now() -> datetime:
@@ -58,19 +59,29 @@ async def _cleanup_documents() -> None:
         await session.commit()
 
 
+async def _admin_headers() -> dict[str, str]:
+    # Use an admin key to access ops endpoints in tests.
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id="t-ops",
+        role="admin",
+    )
+    return headers
+
+
 @pytest.mark.asyncio
 async def test_ops_health_heartbeat_degraded(monkeypatch) -> None:
     # Ensure the ops health endpoint degrades when heartbeat is missing.
     monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
     get_settings.cache_clear()
     app = create_app()
+    headers = await _admin_headers()
 
     redis = await ingest_queue.get_redis_pool()
     await redis.delete(ingest_queue.WORKER_HEARTBEAT_KEY)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/ops/health")
+        response = await client.get("/ops/health", headers=headers)
     payload = response.json()
     assert response.status_code == 200
     assert payload["status"] == "degraded"
@@ -84,12 +95,13 @@ async def test_ops_health_heartbeat_ok(monkeypatch) -> None:
     monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
     get_settings.cache_clear()
     app = create_app()
+    headers = await _admin_headers()
 
     await ingest_queue.set_worker_heartbeat(timestamp=_utc_now() - timedelta(seconds=5))
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/ops/health")
+        response = await client.get("/ops/health", headers=headers)
     payload = response.json()
     assert response.status_code == 200
     assert payload["status"] == "ok"
@@ -103,6 +115,7 @@ async def test_ops_health_degrades_when_redis_missing(monkeypatch) -> None:
     monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
     get_settings.cache_clear()
     app = create_app()
+    headers = await _admin_headers()
 
     async def _no_queue_depth() -> int | None:
         return None
@@ -115,7 +128,7 @@ async def test_ops_health_degrades_when_redis_missing(monkeypatch) -> None:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/ops/health")
+        response = await client.get("/ops/health", headers=headers)
     payload = response.json()
     assert response.status_code == 200
     assert payload["redis"] == "degraded"
@@ -127,6 +140,7 @@ async def test_ops_ingestion_returns_counts(monkeypatch) -> None:
     monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
     get_settings.cache_clear()
     app = create_app()
+    headers = await _admin_headers()
 
     now = _utc_now()
     queued_id = await _seed_document(status="queued", queued_at=now - timedelta(hours=1))
@@ -148,7 +162,7 @@ async def test_ops_ingestion_returns_counts(monkeypatch) -> None:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/ops/ingestion?hours=24")
+        response = await client.get("/ops/ingestion?hours=24", headers=headers)
     payload = response.json()
     assert response.status_code == 200
     assert payload["documents"]["queued"] >= 1
@@ -172,10 +186,11 @@ async def test_ops_metrics_shape(monkeypatch) -> None:
     monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
     get_settings.cache_clear()
     app = create_app()
+    headers = await _admin_headers()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/ops/metrics")
+        response = await client.get("/ops/metrics", headers=headers)
     payload = response.json()
     assert response.status_code == 200
     assert "counters" in payload

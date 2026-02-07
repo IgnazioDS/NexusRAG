@@ -41,7 +41,12 @@ from nexusrag.providers.llm.factory import get_llm_provider
 from nexusrag.providers.retrieval.router import RetrievalRouter
 from nexusrag.providers.tts.factory import get_tts_provider
 from nexusrag.services.audio.storage import save_audio
-from nexusrag.apps.api.deps import get_db
+from nexusrag.apps.api.deps import (
+    Principal,
+    get_db,
+    reject_tenant_id_in_body,
+    require_role,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -49,11 +54,13 @@ router = APIRouter()
 
 class RunRequest(BaseModel):
     session_id: str
-    tenant_id: str
     corpus_id: str
     message: str
     top_k: int = Field(default=5, ge=1, le=50)
     audio: bool = False
+
+    # Reject unknown fields so tenant_id cannot be supplied in the payload.
+    model_config = {"extra": "forbid"}
 
 
 def _wrap_payload(payload_type: str, request_id: str, session_id: str, data: dict) -> dict:
@@ -118,13 +125,16 @@ def _map_tts_error(exc: Exception) -> tuple[str, str]:
 async def run(
     payload: RunRequest,
     http_request: Request,
+    _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    principal: Principal = Depends(require_role("reader")),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
     # TX #1: persist session + user message so history is durable before streaming.
     try:
-        await sessions_repo.upsert_session(db, payload.session_id, payload.tenant_id)
+        await sessions_repo.upsert_session(db, payload.session_id, principal.tenant_id)
         await messages_repo.add_message(db, payload.session_id, "user", payload.message)
         await db.commit()
     except Exception as exc:
@@ -193,7 +203,7 @@ async def run(
         try:
             state: AgentState = {
                 "session_id": payload.session_id,
-                "tenant_id": payload.tenant_id,
+                "tenant_id": principal.tenant_id,
                 "corpus_id": payload.corpus_id,
                 "user_message": payload.message,
                 "history": [],

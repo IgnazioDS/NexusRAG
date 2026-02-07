@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_s: int = 10
     # Treat stale heartbeats as degraded to surface worker outages.
     worker_heartbeat_stale_after_s: int = 60
+    # Require API key auth for all protected endpoints by default.
+    auth_enabled: bool = True
+    # Allow legacy X-Tenant-Id + X-Role only when explicitly enabled for dev.
+    auth_dev_bypass: bool = False
+    # Header used to carry the bearer API key.
+    auth_api_key_header: str = "Authorization"
+    # Small cache window to reduce auth DB lookups without delaying revocations too long.
+    auth_cache_ttl_s: int = 15
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None

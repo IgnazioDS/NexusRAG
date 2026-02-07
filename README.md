@@ -79,22 +79,54 @@ Switching a corpus:
 2) `{}` is accepted and normalized to `local_pgvector` with a default `top_k_default` of 5.
 3) Ensure cloud credentials exist at runtime (AWS/Vertex), but tests do not require live creds.
 
-## Corpora API (temporary tenant scoping)
-Tenant scoping is currently provided by the `X-Tenant-Id` header until auth is implemented.
+## Authentication & RBAC
+All protected endpoints require API keys via:
+```
+Authorization: Bearer <api_key>
+```
 
+Create a key (example):
+```
+docker compose exec api python scripts/create_api_key.py --tenant t1 --role admin --name local-admin
+```
+Export the key for curl examples:
+```
+export API_KEY=<api_key_from_script>
+export ADMIN_API_KEY=$API_KEY
+```
+Revoke a key:
+```
+docker compose exec api python scripts/revoke_api_key.py <key_id>
+```
+
+Role matrix:
+| Endpoint | reader | editor | admin |
+| --- | --- | --- | --- |
+| `/run` | ✅ | ✅ | ✅ |
+| `GET /documents` | ✅ | ✅ | ✅ |
+| `POST/DELETE /documents`, `/documents/*/reindex` | ❌ | ✅ | ✅ |
+| `GET /corpora` | ✅ | ✅ | ✅ |
+| `PATCH /corpora` | ❌ | ✅ | ✅ |
+| `/ops/*` | ❌ | ❌ | ✅ |
+
+Dev-only bypass:
+- Set `AUTH_DEV_BYPASS=true` to allow `X-Tenant-Id` + optional `X-Role` (defaults to `admin`).
+- This is intended for local development only; keep it disabled in production.
+
+## Corpora API
 List corpora:
 ```
-curl -s -H "X-Tenant-Id: t1" http://localhost:8000/corpora
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/corpora
 ```
 
 Get a corpus:
 ```
-curl -s -H "X-Tenant-Id: t1" http://localhost:8000/corpora/c1
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/corpora/c1
 ```
 
 Patch provider_config_json:
 ```
-curl -s -X PATCH -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
+curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   http://localhost:8000/corpora/c1 \
   -d '{
     "provider_config_json": {
@@ -120,11 +152,10 @@ Audio files are stored locally under `var/audio/` (dev-only).
 
 Example `/run` with audio enabled:
 ```
-curl -N -H "Content-Type: application/json" \
+curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/run \
   -d '{
     "session_id":"s-audio-1",
-    "tenant_id":"t1",
     "corpus_id":"c1",
     "message":"Summarize the demo corpus.",
     "top_k":5,
@@ -144,7 +175,7 @@ Raw text ingestion is deterministic and idempotent when a `document_id` is suppl
 
 Upload a document (returns `202` with `job_id` + `status_url`):
 ```
-curl -s -X POST -H "X-Tenant-Id: t1" \
+curl -s -X POST -H "Authorization: Bearer $API_KEY" \
   -F "corpus_id=c1" \
   -F "file=@./example.txt;type=text/plain" \
   http://localhost:8000/documents
@@ -153,7 +184,7 @@ curl -s -X POST -H "X-Tenant-Id: t1" \
 Ingest raw text (returns `202` with `job_id` + `status_url`):
 ```
 Set `overwrite: true` to requeue a failed or succeeded document with the same `document_id`.
-curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   http://localhost:8000/documents/text \
   -d '{
     "corpus_id": "c1",
@@ -166,17 +197,17 @@ curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
 
 Check status / poll:
 ```
-curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/documents/<document_id>
 ```
 
 List documents:
 ```
-curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/documents
 ```
 
 Reindex a document (returns `202` with `job_id` + `status_url`):
 ```
-curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   http://localhost:8000/documents/<document_id>/reindex \
   -d '{
     "chunk_size_chars": 1200,
@@ -186,7 +217,7 @@ curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
 
 Delete a document:
 ```
-curl -s -X DELETE -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
+curl -s -X DELETE -H "Authorization: Bearer $API_KEY" http://localhost:8000/documents/<document_id>
 ```
 
 Troubleshooting:
@@ -197,20 +228,21 @@ Troubleshooting:
 
 ## Ops Endpoints
 Ops endpoints return `200` even when dependencies are degraded, surfacing the degraded field instead of failing.
+Ops endpoints require an admin API key.
 
 Health summary:
 ```
-curl -s http://localhost:8000/ops/health
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/ops/health
 ```
 
 Ingestion stats (last 24 hours by default):
 ```
-curl -s "http://localhost:8000/ops/ingestion?hours=24"
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" "http://localhost:8000/ops/ingestion?hours=24"
 ```
 
 Metrics snapshot (JSON):
 ```
-curl -s http://localhost:8000/ops/metrics
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/ops/metrics
 ```
 
 Heartbeat interpretation:
@@ -264,11 +296,10 @@ docker compose exec api python scripts/provider_smoke.py \
 
 ## Call `/run` (SSE)
 ```
-curl -N -H "Content-Type: application/json" \
+curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/run \
   -d '{
     "session_id":"s1",
-    "tenant_id":"t1",
     "corpus_id":"c1",
     "message":"What is the testing strategy of agent 2.0?",
     "top_k":5,
@@ -294,28 +325,35 @@ docker compose up --build -d
 ```
 docker compose exec api alembic upgrade head
 ```
-4) Health check:
+4) Create an API key:
+```
+docker compose exec api python scripts/create_api_key.py --tenant t1 --role admin --name local-admin
+```
+5) Export the key:
+```
+export API_KEY=<api_key_from_script>
+```
+6) Health check:
 ```
 curl -s http://localhost:8000/health
 ```
-5) Seed demo data:
+7) Seed demo data:
 ```
 docker compose exec api python scripts/seed_demo.py
 ```
-6) SSE run (expect `token.delta` then `message.final`, or `error` if Vertex config missing):
+8) SSE run (expect `token.delta` then `message.final`, or `error` if Vertex config missing):
 ```
-curl -N -H "Content-Type: application/json" \
+curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/run \
   -d '{
     "session_id":"s1",
-    "tenant_id":"t1",
     "corpus_id":"c1",
     "message":"What is the testing strategy of agent 2.0?",
     "top_k":5,
     "audio":false
   }'
 ```
-7) Run tests in container:
+9) Run tests in container:
 ```
 docker compose exec api pytest -q
 ```
@@ -324,10 +362,10 @@ docker compose exec api pytest -q
 This query should match seeded content about testing strategy and release gates:
 ```
 curl -N -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/run \
   -d '{
     "session_id":"s1",
-    "tenant_id":"t1",
     "corpus_id":"c1",
     "message":"What are the release gates for Agent 2.0?",
     "top_k":5,

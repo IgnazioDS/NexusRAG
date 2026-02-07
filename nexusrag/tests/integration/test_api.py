@@ -12,6 +12,7 @@ from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Checkpoint, Corpus, Message, Session
 from nexusrag.persistence.db import SessionLocal
+from nexusrag.tests.utils.auth import create_test_api_key
 
 
 @pytest.mark.asyncio
@@ -38,9 +39,13 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     corpus_id = f"c1-{uuid4()}"
     # Track error emission to ensure the stream emits a failure event.
     seen_error = False
+    # Provision a reader key so /run passes auth for this tenant.
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id="t1",
+        role="reader",
+    )
     payload = {
         "session_id": session_id,
-        "tenant_id": "t1",
         "corpus_id": corpus_id,
         "message": "Hello?",
         "top_k": 3,
@@ -63,7 +68,7 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
             await db_session.commit()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            async with client.stream("POST", "/run", json=payload) as response:
+            async with client.stream("POST", "/run", json=payload, headers=headers) as response:
                 assert response.status_code == 200
                 assert response.headers["content-type"].startswith("text/event-stream")
                 lines = []
@@ -121,9 +126,13 @@ async def test_run_emits_audio_ready_with_fake_tts(monkeypatch) -> None:
     app = create_app()
     session_id = f"s-audio-{uuid4()}"
     corpus_id = f"c-audio-{uuid4()}"
+    # Provision a reader key so /run passes auth for this tenant.
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id="t1",
+        role="reader",
+    )
     payload = {
         "session_id": session_id,
-        "tenant_id": "t1",
         "corpus_id": corpus_id,
         "message": "Hello?",
         "top_k": 3,
@@ -147,7 +156,7 @@ async def test_run_emits_audio_ready_with_fake_tts(monkeypatch) -> None:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            async with client.stream("POST", "/run", json=payload) as response:
+            async with client.stream("POST", "/run", json=payload, headers=headers) as response:
                 assert response.status_code == 200
                 lines = []
                 async for line in response.aiter_lines():

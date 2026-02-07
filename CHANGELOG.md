@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 0.7.0 - 2026-02-07
+
+- Added API key authentication with hashed key storage.
+- Added RBAC roles and tenant binding from authenticated principals.
+- Protected run, documents, corpora, and ops endpoints by role.
+- Added API key management scripts for create/revoke workflows.
+- Added auth/RBAC integration tests and tenant isolation coverage.
+
 ## 0.6.1 - 2026-02-07
 
 - Added ops health and ingestion visibility endpoints.

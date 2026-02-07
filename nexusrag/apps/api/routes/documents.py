@@ -20,7 +20,12 @@ from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.apps.api.deps import get_db, get_tenant_id
+from nexusrag.apps.api.deps import (
+    Principal,
+    get_db,
+    reject_tenant_id_in_body,
+    require_role,
+)
 from nexusrag.domain.models import Chunk, Document
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import corpora as corpora_repo
@@ -70,10 +75,16 @@ class TextIngestRequest(BaseModel):
     chunk_overlap_chars: int | None = Field(default=None, ge=0)
     overwrite: bool = False
 
+    # Reject unknown fields so tenant_id cannot be supplied in the payload.
+    model_config = {"extra": "forbid"}
+
 
 class ReindexRequest(BaseModel):
     chunk_size_chars: int | None = Field(default=None, ge=1)
     chunk_overlap_chars: int | None = Field(default=None, ge=0)
+
+    # Reject unknown fields so tenant_id cannot be supplied in the payload.
+    model_config = {"extra": "forbid"}
 
 
 def _to_response(doc, *, num_chunks: int | None = None) -> DocumentResponse:
@@ -197,9 +208,11 @@ async def upload_document(
     file: UploadFile = File(...),
     document_id: str | None = Form(default=None),
     overwrite: bool = Form(default=False),
-    tenant_id: str = Depends(get_tenant_id),
+    principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     # Enforce tenant scoping to avoid cross-tenant corpus access.
     corpus = await corpora_repo.get_by_tenant_and_id(db, tenant_id, corpus_id)
     if corpus is None:
@@ -291,9 +304,12 @@ async def upload_document(
 async def ingest_text_document(
     payload: TextIngestRequest,
     response: Response,
-    tenant_id: str = Depends(get_tenant_id),
+    _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     _validate_text_payload(payload.text)
     metadata_json = payload.metadata_json or {}
     if not isinstance(metadata_json, dict):
@@ -391,10 +407,12 @@ async def ingest_text_document(
 
 @router.get("")
 async def list_documents(
-    tenant_id: str = Depends(get_tenant_id),
+    principal: Principal = Depends(require_role("reader")),
     corpus_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[DocumentResponse]:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     try:
         docs = await documents_repo.list_documents(db, tenant_id, corpus_id)
     except SQLAlchemyError as exc:
@@ -408,9 +426,11 @@ async def list_documents(
 @router.get("/{document_id}")
 async def get_document(
     document_id: str,
-    tenant_id: str = Depends(get_tenant_id),
+    principal: Principal = Depends(require_role("reader")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentResponse:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     try:
         doc = await documents_repo.get_document(db, tenant_id, document_id)
     except SQLAlchemyError as exc:
@@ -437,9 +457,12 @@ async def get_document(
 async def reindex_document(
     document_id: str,
     payload: ReindexRequest | None = None,
-    tenant_id: str = Depends(get_tenant_id),
+    _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     try:
         doc = await documents_repo.get_document(db, tenant_id, document_id)
     except SQLAlchemyError as exc:
@@ -508,9 +531,11 @@ async def reindex_document(
 @router.delete("/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
-    tenant_id: str = Depends(get_tenant_id),
+    principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     try:
         doc = await documents_repo.get_document(db, tenant_id, document_id)
     except SQLAlchemyError as exc:

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, Index
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -22,6 +22,37 @@ class Session(Base):
     tenant_id: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    # Store optional identity hints without making them required for bootstrap flows.
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Persist RBAC role as a simple string for fast lookup and migration safety.
+    role: Mapped[str] = mapped_column(String)
+    # Gate access for disabled users without deleting historical keys.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    # Keep a short prefix for operator display without exposing the secret.
+    key_prefix: Mapped[str] = mapped_column(String)
+    # Store only the hashed key to avoid plaintext credentials at rest.
+    key_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    # Optional label for key management scripts and auditing.
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Message(Base):

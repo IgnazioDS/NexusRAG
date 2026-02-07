@@ -14,6 +14,7 @@ from nexusrag.domain.models import Chunk, Corpus, Document
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.providers.retrieval.router import RetrievalRouter
+from nexusrag.tests.utils.auth import create_test_api_key
 
 
 async def _create_corpus(corpus_id: str, tenant_id: str) -> None:
@@ -54,18 +55,27 @@ def _utc_now() -> datetime:
 
 
 async def _wait_for_status(
-    client: AsyncClient, tenant_id: str, document_id: str, target: str = "succeeded"
+    client: AsyncClient, headers: dict[str, str], document_id: str, target: str = "succeeded"
 ) -> str:
     # Poll the status endpoint until a target status appears.
     status = None
     for _ in range(30):
-        resp = await client.get(f"/documents/{document_id}", headers={"X-Tenant-Id": tenant_id})
+        resp = await client.get(f"/documents/{document_id}", headers=headers)
         assert resp.status_code == 200
         status = resp.json()["status"]
         if status == target:
             break
         await asyncio.sleep(0.1)
     return status
+
+
+async def _auth_headers(tenant_id: str, role: str) -> dict[str, str]:
+    # Provision a scoped API key for document API tests.
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role=role,
+    )
+    return headers
 
 
 @pytest.mark.asyncio
@@ -76,12 +86,14 @@ async def test_documents_upload_ingest_and_retrieve(monkeypatch) -> None:
     text = "Hello ingestion.\n\nThis paragraph should be retrievable."
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             data={"corpus_id": corpus_id},
             files={"file": ("test.txt", text, "text/plain")},
         )
@@ -91,7 +103,7 @@ async def test_documents_upload_ingest_and_retrieve(monkeypatch) -> None:
         assert payload["job_id"]
         assert payload["status_url"].endswith(document_id)
 
-        status = await _wait_for_status(client, tenant_id, document_id)
+        status = await _wait_for_status(client, headers, document_id)
         assert status == "succeeded"
 
     async with SessionLocal() as db_session:
@@ -112,17 +124,19 @@ async def test_documents_text_ingest_is_idempotent(monkeypatch) -> None:
     document_id = f"doc-{uuid4()}"
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text, "document_id": document_id},
         )
         assert response.status_code == 202
 
-        status = await _wait_for_status(client, tenant_id, document_id)
+        status = await _wait_for_status(client, headers, document_id)
         assert status == "succeeded"
 
         async with SessionLocal() as db_session:
@@ -130,7 +144,7 @@ async def test_documents_text_ingest_is_idempotent(monkeypatch) -> None:
 
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text, "document_id": document_id},
         )
         assert response.status_code == 200
@@ -153,12 +167,14 @@ async def test_documents_text_ingest_idempotent_while_queued(monkeypatch) -> Non
     document_id = f"doc-{uuid4()}"
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text, "document_id": document_id},
         )
         assert response.status_code == 202
@@ -175,7 +191,7 @@ async def test_documents_text_ingest_idempotent_while_queued(monkeypatch) -> Non
 
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text, "document_id": document_id},
         )
         assert response.status_code == 200
@@ -192,27 +208,29 @@ async def test_documents_delete_removes_chunks(monkeypatch) -> None:
     text = "Delete me."
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text},
         )
         assert response.status_code == 202
         document_id = response.json()["document_id"]
 
-        status = await _wait_for_status(client, tenant_id, document_id)
+        status = await _wait_for_status(client, headers, document_id)
         assert status == "succeeded"
 
         response = await client.delete(
-            f"/documents/{document_id}", headers={"X-Tenant-Id": tenant_id}
+            f"/documents/{document_id}", headers=headers
         )
         assert response.status_code == 204
 
         response = await client.get(
-            f"/documents/{document_id}", headers={"X-Tenant-Id": tenant_id}
+            f"/documents/{document_id}", headers=headers
         )
         assert response.status_code == 404
 
@@ -233,18 +251,20 @@ async def test_documents_reindex_updates_chunking(monkeypatch) -> None:
     text = "A" * 2600
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text},
         )
         document_id = response.json()["document_id"]
         assert response.status_code == 202
 
-        status = await _wait_for_status(client, tenant_id, document_id)
+        status = await _wait_for_status(client, headers, document_id)
         assert status == "succeeded"
 
         async with SessionLocal() as db_session:
@@ -252,12 +272,12 @@ async def test_documents_reindex_updates_chunking(monkeypatch) -> None:
 
         response = await client.post(
             f"/documents/{document_id}/reindex",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"chunk_size_chars": 800, "chunk_overlap_chars": 100},
         )
         assert response.status_code == 202
 
-        status = await _wait_for_status(client, tenant_id, document_id)
+        status = await _wait_for_status(client, headers, document_id)
         assert status == "succeeded"
 
         async with SessionLocal() as db_session:
@@ -265,7 +285,7 @@ async def test_documents_reindex_updates_chunking(monkeypatch) -> None:
             assert reindexed_chunks != original_chunks
 
         response = await client.get(
-            f"/documents/{document_id}", headers={"X-Tenant-Id": tenant_id}
+            f"/documents/{document_id}", headers=headers
         )
         assert response.status_code == 200
         assert response.json()["last_reindexed_at"] is not None
@@ -281,12 +301,14 @@ async def test_documents_failure_sets_failure_reason(monkeypatch) -> None:
     text = "Failure case."
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={
                 "corpus_id": corpus_id,
                 "text": text,
@@ -297,11 +319,11 @@ async def test_documents_failure_sets_failure_reason(monkeypatch) -> None:
         assert response.status_code == 202
         document_id = response.json()["document_id"]
 
-        status = await _wait_for_status(client, tenant_id, document_id, target="failed")
+        status = await _wait_for_status(client, headers, document_id, target="failed")
         assert status == "failed"
 
         resp = await client.get(
-            f"/documents/{document_id}", headers={"X-Tenant-Id": tenant_id}
+            f"/documents/{document_id}", headers=headers
         )
         assert resp.status_code == 200
         assert "chunk_overlap_chars" in (resp.json().get("failure_reason") or "")
@@ -317,12 +339,14 @@ async def test_documents_delete_while_processing_returns_409(monkeypatch) -> Non
     text = "Processing delete."
 
     await _create_corpus(corpus_id, tenant_id)
+    # Use an editor key to allow document ingestion endpoints.
+    headers = await _auth_headers(tenant_id, "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": text},
         )
         assert response.status_code == 202
@@ -338,7 +362,7 @@ async def test_documents_delete_while_processing_returns_409(monkeypatch) -> Non
             await db_session.commit()
 
         response = await client.delete(
-            f"/documents/{document_id}", headers={"X-Tenant-Id": tenant_id}
+            f"/documents/{document_id}", headers=headers
         )
         assert response.status_code == 409
 
@@ -352,25 +376,28 @@ async def test_documents_tenant_mismatch_returns_404(monkeypatch) -> None:
     tenant_id = "t1"
 
     await _create_corpus(corpus_id, tenant_id)
+    # Create tenant-scoped keys to validate isolation semantics.
+    headers = await _auth_headers(tenant_id, "editor")
+    wrong_headers = await _auth_headers("wrong", "editor")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/documents/text",
-            headers={"X-Tenant-Id": tenant_id},
+            headers=headers,
             json={"corpus_id": corpus_id, "text": "text"},
         )
         document_id = response.json()["document_id"]
         assert response.status_code == 202
 
         response = await client.delete(
-            f"/documents/{document_id}", headers={"X-Tenant-Id": "wrong"}
+            f"/documents/{document_id}", headers=wrong_headers
         )
         assert response.status_code == 404
 
         response = await client.post(
             f"/documents/{document_id}/reindex",
-            headers={"X-Tenant-Id": "wrong"},
+            headers=wrong_headers,
         )
         assert response.status_code == 404
 
@@ -378,9 +405,9 @@ async def test_documents_tenant_mismatch_returns_404(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_documents_requires_tenant_header() -> None:
+async def test_documents_requires_auth() -> None:
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/documents")
-        assert response.status_code == 400
+        assert response.status_code == 401

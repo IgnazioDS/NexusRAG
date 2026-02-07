@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.apps.api.deps import get_db
+from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.services.ingest import queue as ingest_queue
@@ -78,7 +78,11 @@ async def _get_worker_heartbeat() -> datetime | None:
 
 
 @router.get("/health")
-async def ops_health(db: AsyncSession = Depends(get_db)) -> dict:
+async def ops_health(
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict:
+    # Require admin role for operational visibility endpoints.
     settings = get_settings()
     now = _utc_now()
     db_ok = await _check_db_health(db)
@@ -109,7 +113,9 @@ async def ops_health(db: AsyncSession = Depends(get_db)) -> dict:
 async def ops_ingestion(
     hours: int = Query(default=24, ge=1, le=168),
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict:
+    # Require admin role for operational visibility endpoints.
     # Bound the window to keep ops queries predictable.
     now = _utc_now()
     window_start = now - timedelta(hours=hours)
@@ -206,7 +212,11 @@ async def ops_ingestion(
 
 
 @router.get("/metrics")
-async def ops_metrics(db: AsyncSession = Depends(get_db)) -> dict:
+async def ops_metrics(
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict:
+    # Require admin role for operational visibility endpoints.
     # Provide JSON metrics for dashboards when Prometheus scraping is unavailable.
     queue_depth = await _get_queue_depth()
 

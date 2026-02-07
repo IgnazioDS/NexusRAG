@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.apps.api.deps import get_db, get_tenant_id
+from nexusrag.apps.api.deps import (
+    Principal,
+    get_db,
+    reject_tenant_id_in_body,
+    require_role,
+)
 from nexusrag.core.errors import RetrievalConfigError
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.providers.retrieval.config import normalize_provider_config
@@ -29,6 +34,9 @@ class CorpusPatchRequest(BaseModel):
     name: str | None = Field(default=None)
     provider_config_json: dict[str, Any] | None = Field(default=None)
 
+    # Reject unknown fields so tenant_id cannot be supplied in the payload.
+    model_config = {"extra": "forbid"}
+
 
 def _to_response(corpus) -> CorpusResponse:
     # Serialize datetimes for JSON output while keeping response fields explicit.
@@ -44,9 +52,11 @@ def _to_response(corpus) -> CorpusResponse:
 
 @router.get("")
 async def list_corpora(
-    tenant_id: str = Depends(get_tenant_id),
+    principal: Principal = Depends(require_role("reader")),
     db: AsyncSession = Depends(get_db),
 ) -> list[CorpusResponse]:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     try:
         corpora = await corpora_repo.list_corpora_by_tenant(db, tenant_id)
     except SQLAlchemyError as exc:
@@ -58,9 +68,11 @@ async def list_corpora(
 @router.get("/{corpus_id}")
 async def get_corpus(
     corpus_id: str,
-    tenant_id: str = Depends(get_tenant_id),
+    principal: Principal = Depends(require_role("reader")),
     db: AsyncSession = Depends(get_db),
 ) -> CorpusResponse:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     try:
         corpus = await corpora_repo.get_by_tenant_and_id(db, tenant_id, corpus_id)
     except SQLAlchemyError as exc:
@@ -76,9 +88,12 @@ async def get_corpus(
 async def patch_corpus(
     corpus_id: str,
     payload: CorpusPatchRequest,
-    tenant_id: str = Depends(get_tenant_id),
+    _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> CorpusResponse:
+    # Bind tenant scope from the authenticated principal to prevent spoofing.
+    tenant_id = principal.tenant_id
     provider_config_json = None
     if payload.provider_config_json is not None:
         try:
