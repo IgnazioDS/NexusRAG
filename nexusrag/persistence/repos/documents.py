@@ -20,6 +20,8 @@ async def create_document(
     storage_path: str | None,
     metadata_json: dict,
     status: str,
+    queued_at: datetime | None = None,
+    last_job_id: str | None = None,
 ) -> Document:
     # Create a document row explicitly so status transitions are tracked.
     doc = Document(
@@ -34,6 +36,8 @@ async def create_document(
         storage_path=storage_path,
         metadata_json=metadata_json,
         status=status,
+        queued_at=queued_at,
+        last_job_id=last_job_id,
     )
     session.add(doc)
     return doc
@@ -77,6 +81,11 @@ async def update_status(
     *,
     status: str,
     error_message: str | None = None,
+    failure_reason: str | None = None,
+    queued_at: datetime | None = None,
+    processing_started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    last_job_id: str | None = None,
     last_reindexed_at: datetime | None = None,
 ) -> None:
     # Update status in-place so background tasks can progress state.
@@ -85,6 +94,16 @@ async def update_status(
     if doc is None:
         return
     doc.status = status
+    # Preserve legacy error_message while storing actionable failure_reason.
     doc.error_message = error_message
+    doc.failure_reason = failure_reason
+    if queued_at is not None:
+        doc.queued_at = queued_at
+    if processing_started_at is not None:
+        doc.processing_started_at = processing_started_at
+    if completed_at is not None:
+        doc.completed_at = completed_at
+    if last_job_id is not None:
+        doc.last_job_id = last_job_id
     if last_reindexed_at is not None:
         doc.last_reindexed_at = last_reindexed_at

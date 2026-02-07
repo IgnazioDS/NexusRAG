@@ -138,10 +138,11 @@ SSE events:
 
 ## Ingestion (documents → chunks)
 Supported types: `text/plain`, `text/markdown` (JSON with `{"text": "..."}` is accepted as a file upload).
-Background processing uses FastAPI `BackgroundTasks` for now.
+Ingestion is async: the API enqueues a Redis-backed job and returns `202 Accepted`.
+Lifecycle: `queued` → `processing` → `succeeded|failed` (see `failure_reason` on failures).
 Raw text ingestion is deterministic and idempotent when a `document_id` is supplied.
 
-Upload a document:
+Upload a document (returns `202` with `job_id` + `status_url`):
 ```
 curl -s -X POST -H "X-Tenant-Id: t1" \
   -F "corpus_id=c1" \
@@ -149,19 +150,21 @@ curl -s -X POST -H "X-Tenant-Id: t1" \
   http://localhost:8000/documents
 ```
 
-Ingest raw text:
+Ingest raw text (returns `202` with `job_id` + `status_url`):
 ```
+Set `overwrite: true` to requeue a failed or succeeded document with the same `document_id`.
 curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
   http://localhost:8000/documents/text \
   -d '{
     "corpus_id": "c1",
     "text": "Some raw text to ingest.",
     "document_id": "doc-123",
-    "filename": "notes.txt"
+    "filename": "notes.txt",
+    "overwrite": false
   }'
 ```
 
-Check status:
+Check status / poll:
 ```
 curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
 ```
@@ -171,7 +174,7 @@ List documents:
 curl -s -H "X-Tenant-Id: t1" http://localhost:8000/documents
 ```
 
-Reindex a document:
+Reindex a document (returns `202` with `job_id` + `status_url`):
 ```
 curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: t1" \
   http://localhost:8000/documents/<document_id>/reindex \
@@ -185,6 +188,12 @@ Delete a document:
 ```
 curl -s -X DELETE -H "X-Tenant-Id: t1" http://localhost:8000/documents/<document_id>
 ```
+
+Troubleshooting:
+- If status stays `queued`, ensure the ingestion worker is running and Redis is reachable.
+- If status stays `processing`, check for queue backlog or long-running ingestions.
+- If status is `failed`, inspect `failure_reason` and worker logs, then reindex or re-upload.
+- Delete returns `409` for in-flight documents (`queued`/`processing`).
 
 ## Cloud retrieval real-run (credentials required)
 Use the smoke script to validate retrieval routing without calling the LLM:

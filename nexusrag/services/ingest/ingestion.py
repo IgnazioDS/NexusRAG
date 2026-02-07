@@ -16,10 +16,14 @@ from nexusrag.ingestion.chunking import (
 )
 from nexusrag.ingestion.embeddings import embed_text
 from nexusrag.persistence.db import SessionLocal
-from nexusrag.persistence.repos import documents as documents_repo
 
 
 DOCUMENT_STORAGE_DIR = Path("var/documents")
+
+
+def _utc_now() -> datetime:
+    # Use UTC timestamps for deterministic status tracking across hosts.
+    return datetime.now(timezone.utc)
 
 
 def _ensure_storage_dir() -> Path:
@@ -58,15 +62,24 @@ async def _ingest_with_session(
     chunk_size: int,
     chunk_overlap: int,
     is_reindex: bool,
+    job_id: str | None,
 ) -> int:
     # Mark processing early so operators can see progress on long ingestions.
     doc.status = "processing"
     doc.error_message = None
+    doc.failure_reason = None
+    doc.processing_started_at = _utc_now()
+    doc.completed_at = None
+    if job_id:
+        # Persist the job id so operators can trace worker activity.
+        doc.last_job_id = job_id
     await session.commit()
 
     await session.execute(delete(Chunk).where(Chunk.document_id == doc.id))
 
     chunks: list[Chunk] = []
+    # Validate chunk parameters to avoid infinite loops in windowing.
+    _validate_chunk_params(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     for index, (chunk_text_value, start, end) in enumerate(
         chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     ):
@@ -98,9 +111,11 @@ async def _ingest_with_session(
     session.add_all(chunks)
     doc.status = "succeeded"
     doc.error_message = None
+    doc.failure_reason = None
+    doc.completed_at = _utc_now()
     if is_reindex:
         # Use UTC timestamps to keep status fields deterministic across hosts.
-        doc.last_reindexed_at = datetime.now(timezone.utc)
+        doc.last_reindexed_at = _utc_now()
     await session.commit()
     return len(chunks)
 
@@ -112,6 +127,7 @@ async def ingest_document(
     chunk_size: int = CHUNK_SIZE_CHARS,
     chunk_overlap: int = CHUNK_OVERLAP_CHARS,
     is_reindex: bool = False,
+    job_id: str | None = None,
 ) -> int:
     # Run ingestion in a background task with its own DB session.
     async with SessionLocal() as session:
@@ -127,16 +143,10 @@ async def ingest_document(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 is_reindex=is_reindex,
+                job_id=job_id,
             )
-        except Exception as exc:  # noqa: BLE001 - store an error message for operators
+        except Exception:  # noqa: BLE001 - upstream handles failure state and retries
             await session.rollback()
-            await documents_repo.update_status(
-                session,
-                document_id,
-                status="failed",
-                error_message=str(exc),
-            )
-            await session.commit()
             raise
 
 
@@ -147,6 +157,7 @@ async def ingest_document_from_storage(
     chunk_size: int = CHUNK_SIZE_CHARS,
     chunk_overlap: int = CHUNK_OVERLAP_CHARS,
     is_reindex: bool = False,
+    job_id: str | None = None,
 ) -> int:
     # Read the stored source text to keep ingestion repeatable.
     text = read_text_from_storage(storage_path)
@@ -156,4 +167,13 @@ async def ingest_document_from_storage(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         is_reindex=is_reindex,
+        job_id=job_id,
     )
+
+
+def _validate_chunk_params(*, chunk_size: int, chunk_overlap: int) -> None:
+    # Guard against invalid ranges that would cause non-terminating chunking.
+    if chunk_size < 1 or chunk_overlap < 0:
+        raise ValueError("chunk_size_chars must be >= 1 and chunk_overlap_chars must be >= 0")
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap_chars must be smaller than chunk_size_chars")
