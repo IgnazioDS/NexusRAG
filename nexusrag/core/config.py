@@ -68,6 +68,41 @@ class Settings(BaseSettings):
     billing_webhook_secret: str | None = None
     # Keep webhook timeouts short to avoid blocking API responses.
     billing_webhook_timeout_ms: int = 2000
+    # Centralize external call timeouts for integrations (ms).
+    ext_call_timeout_ms: int = 8000
+    # Retry transient integration failures for a bounded number of attempts.
+    ext_retry_max_attempts: int = 2
+    # Base backoff between retry attempts (ms), jittered per call.
+    ext_retry_backoff_ms: int = 200
+    # Circuit breaker thresholds for external integrations.
+    cb_failure_threshold: int = 5
+    cb_open_seconds: int = 30
+    cb_half_open_trials: int = 2
+    # Prefix circuit breaker keys to isolate environments.
+    cb_redis_prefix: str = "nexusrag:cb"
+    # Cap concurrent expensive operations to protect core capacity.
+    run_max_concurrency: int = 10
+    ingest_max_concurrency: int = 4
+    # Runtime kill switches to disable features during incidents.
+    kill_run: bool = False
+    kill_ingest: bool = False
+    kill_tts: bool = False
+    kill_external_retrieval: bool = False
+    # Percentage rollouts for gated features (0-100).
+    rollout_tts_pct: int = 0
+    rollout_external_retrieval_pct: int = 0
+    # Prefix rollout keys stored in Redis.
+    rollout_redis_prefix: str = "nexusrag:rollout"
+    # SLO targets and latency thresholds for ops visibility.
+    slo_availability_target: float = 99.9
+    slo_p95_run_ms: int = 3000
+    slo_p95_api_ms: int = 800
+    # Retention window for audit event pruning.
+    audit_retention_days: int = 90
+    # Retention window for UI action cleanup.
+    ui_action_retention_days: int = 30
+    # Retention window for usage counter pruning/rollup.
+    usage_counter_retention_days: int = 120
     # Limit the number of active self-serve API keys per tenant.
     self_serve_max_active_keys: int = 20
     # Enable idempotency key support for write endpoints.
