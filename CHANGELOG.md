@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.4.0 - 2026-02-09
+
+- Added `/v1/ui` BFF endpoints for bootstrap, dashboard, documents, activity, and actions.
+- Added standardized cursor/filter/sort query contracts for UI lists.
+- Added optimistic UI action contract and persisted UI action records.
+- Added SSE sequence + heartbeat protocol and reconnect semantics for `/v1/run`.
+- Added frontend TypeScript integration SDK with helpers and examples.
+
 ## 1.3.0 - 2026-02-09
 
 - Added `/v1` versioned API routes with legacy deprecation headers.

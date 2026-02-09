@@ -79,3 +79,9 @@ def test_route_class_mapping() -> None:
 
     self_serve_create = _make_request("/self-serve/api-keys", "POST")
     assert rate_limit.route_class_for_request(self_serve_create) == (rate_limit.ROUTE_CLASS_MUTATION, 1)
+
+    ui_list = _make_request("/v1/ui/documents", "GET")
+    assert rate_limit.route_class_for_request(ui_list) == (rate_limit.ROUTE_CLASS_READ, 1)
+
+    ui_action = _make_request("/v1/ui/actions/reindex-document", "POST")
+    assert rate_limit.route_class_for_request(ui_action) == (rate_limit.ROUTE_CLASS_MUTATION, 1)

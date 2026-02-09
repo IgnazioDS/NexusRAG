@@ -71,18 +71,20 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
             async with client.stream("POST", "/run", json=payload, headers=headers) as response:
                 assert response.status_code == 200
                 assert response.headers["content-type"].startswith("text/event-stream")
-                lines = []
+                payloads = []
                 async for line in response.aiter_lines():
-                    if line:
-                        lines.append(line)
-                    if len(lines) >= 2:
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line.removeprefix("data: ").strip())
+                    payloads.append(payload)
+                    if payload.get("type") == "error":
                         break
 
-        # Validate SSE framing invariants: event line then data line.
-        assert lines[0].startswith("event: message")
-        assert lines[1].startswith("data: ")
-        payload_json = json.loads(lines[1].removeprefix("data: ").strip())
-        assert payload_json["type"] == "error"
+        typed_payloads = [payload for payload in payloads if "type" in payload]
+        # Ensure request.accepted is emitted before the error event.
+        assert typed_payloads[0]["type"] == "request.accepted"
+        assert typed_payloads[1]["type"] == "error"
+        payload_json = typed_payloads[1]
         assert payload_json["data"]["code"] == "VERTEX_CONFIG_MISSING"
         seen_error = True
         # Session id should be echoed for traceability during debugging.
@@ -91,6 +93,9 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
         # Request ID should be a non-empty string for tracing.
         assert isinstance(payload_json["request_id"], str)
         assert payload_json["request_id"]
+        # Sequence numbers should be present and increasing.
+        seqs = [payload["seq"] for payload in typed_payloads]
+        assert seqs == sorted(seqs)
 
         async with SessionLocal() as db_session:
             # Ensure the session row exists and tenant_id is preserved.

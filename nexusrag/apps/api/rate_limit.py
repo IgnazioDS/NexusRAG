@@ -145,6 +145,12 @@ def route_class_for_path(path: str, method: str) -> tuple[str, int]:
     if normalized_path.startswith("/audit/events"):
         return ROUTE_CLASS_OPS, 1
 
+    if normalized_path.startswith("/ui/"):
+        # Classify UI BFF mutations separately to protect write-heavy actions.
+        if normalized_method in {"POST", "PATCH", "DELETE"}:
+            return ROUTE_CLASS_MUTATION, 1
+        return ROUTE_CLASS_READ, 1
+
     if normalized_method in {"POST", "PATCH", "DELETE"}:
         if (
             normalized_path.startswith("/documents")

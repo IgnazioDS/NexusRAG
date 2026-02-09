@@ -216,6 +216,59 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/audit/events?event_type=rbac.forbidden&outcome=failure&limit=20"
 ```
 
+## Frontend Integration (BFF)
+UI-focused endpoints live under `/v1/ui/*` and return normalized shapes for web apps:
+- `GET /v1/ui/bootstrap`
+- `GET /v1/ui/dashboard/summary`
+- `GET /v1/ui/documents`
+- `GET /v1/ui/activity`
+- `POST /v1/ui/actions/reindex-document`
+
+Query conventions:
+- `q` full-text filter
+- `sort` comma list (e.g., `-created_at,name`)
+- `limit` 1..100 (default 25)
+- `cursor` opaque token (preferred)
+- filters: `status`, `corpus_id`, `created_from`, `created_to`, `actor_type`, `event_type`
+
+Pagination response shape:
+```
+{
+  "data": {
+    "items": [...],
+    "page": { "next_cursor": "...", "has_more": true },
+    "facets": { "status": [{"value":"succeeded","count":12}] }
+  },
+  "meta": { "request_id": "...", "api_version": "v1" }
+}
+```
+
+Invalid cursors return `400` with `INVALID_CURSOR`.
+
+Optimistic action response shape:
+```
+{
+  "data": {
+    "action_id": "...",
+    "status": "accepted",
+    "accepted_at": "...",
+    "optimistic": { "entity": "document", "id": "...", "patch": { "status": "queued" } },
+    "poll_url": "/v1/documents/<id>"
+  },
+  "meta": { "request_id": "...", "api_version": "v1" }
+}
+```
+
+SSE protocol for `/v1/run`:
+- Order: `request.accepted` → `token.delta*` → `message.final` → `audio.ready|audio.error` → `done`
+- Every event payload includes `seq`
+- Heartbeat:
+```
+event: heartbeat
+data: {"ts":"...","request_id":"...","seq":7}
+```
+- Reconnects send `Last-Event-ID`; server responds with `resume.unsupported` (restart required).
+
 ## Rate Limiting
 Rate limits use a Redis-backed token bucket with sustained rate + burst capacity. Limits are enforced per API key and per tenant; requests are allowed only when both buckets have capacity.
 Clients should respect `Retry-After` and `X-RateLimit-Retry-After-Ms` headers and apply exponential backoff on `429`/`503` responses (SDKs include retry helpers).
@@ -627,6 +680,7 @@ Note: plaintext API keys are returned once on creation and must be stored secure
 Generated SDKs live under:
 - `sdk/typescript/`
 - `sdk/python/`
+- `sdk/frontend/` (frontend BFF + SSE helpers)
 
 Regenerate from OpenAPI:
 ```
@@ -659,7 +713,28 @@ api = create_client(api_key="your_api_key", base_url="http://localhost:8000")
 health = api.health_health_get()
 ```
 
+Frontend SDK example:
+```
+import { UiClient, buildQuery, connectRunStream } from "./sdk/frontend/src";
+
+const client = new UiClient({
+  baseUrl: "http://localhost:8000",
+  apiKey: process.env.NEXUSRAG_API_KEY!,
+});
+
+const docs = await client.listDocuments(buildQuery({ limit: 25, sort: "-created_at" }));
+
+connectRunStream({
+  baseUrl: "http://localhost:8000",
+  apiKey: process.env.NEXUSRAG_API_KEY!,
+  body: { session_id: "s1", corpus_id: "c1", message: "Hello", top_k: 5 },
+  onEvent: ({ data }) => console.log(data),
+});
+```
+
 ## Notes
+- `/run` emits `request.accepted`, `token.delta`, `message.final`, optional `audio.*`, and `done` events with a monotonic `seq`.
+- Heartbeat events are emitted for long streams (`event: heartbeat`).
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
 - Retrieval uses a deterministic fake embedding (no external embedding APIs).
 - Set `DEBUG_EVENTS=true` to emit `debug.retrieval` SSE events after retrieval for validation.
@@ -693,7 +768,7 @@ curl -s http://localhost:8000/v1/health
 ```
 docker compose exec api python scripts/seed_demo.py
 ```
-8) SSE run (expect `token.delta` then `message.final`, or `error` if Vertex config missing):
+8) SSE run (expect `request.accepted`, `token.delta`, `message.final`, optional `audio.*`, and `done`):
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/v1/run \

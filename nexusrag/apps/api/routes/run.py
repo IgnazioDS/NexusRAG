@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import threading
+import time
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
@@ -89,10 +91,14 @@ def _wrap_payload(payload_type: str, request_id: str, session_id: str, data: dic
     }
 
 
-def _sse_message(payload: dict) -> str:
-    # SSE framing invariants: event name must be "message" and data must be a compact JSON line.
+def _sse_message(payload: dict, *, event_name: str = "message", event_id: int | None = None) -> str:
+    # SSE framing invariants: emit explicit event names and compact JSON payloads.
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: message\ndata: {data}\n\n"
+    lines = [f"event: {event_name}"]
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"data: {data}")
+    return "\n".join(lines) + "\n\n"
 
 
 def _map_error(exc: Exception) -> tuple[str, str]:
@@ -147,6 +153,40 @@ async def run(
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
+    # Reject resume attempts with an explicit SSE event to guide clients.
+    last_event_id = http_request.headers.get("Last-Event-ID")
+    if last_event_id:
+        async def resume_stream() -> AsyncGenerator[str, None]:
+            seq = 0
+
+            def next_seq() -> int:
+                nonlocal seq
+                seq += 1
+                return seq
+
+            resume_payload = {
+                "type": "resume.unsupported",
+                "request_id": request_id,
+                "session_id": payload.session_id,
+                "seq": next_seq(),
+                "data": {"message": "Resume is not supported; restart the request."},
+            }
+            yield _sse_message(resume_payload, event_id=resume_payload["seq"])
+            done_payload = {
+                "type": "done",
+                "request_id": request_id,
+                "session_id": payload.session_id,
+                "seq": next_seq(),
+                "data": {},
+            }
+            yield _sse_message(done_payload, event_id=done_payload["seq"])
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+            "Connection": "keep-alive",
+        }
+        return StreamingResponse(resume_stream(), headers=headers, media_type="text/event-stream")
     # Enforce plan entitlements for optional TTS usage before persistence.
     if payload.audio:
         await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_TTS)
@@ -169,15 +209,35 @@ async def run(
         code, message = _map_error(exc)
 
         async def early_error_stream() -> AsyncGenerator[str, None]:
-            # Emit a single SSE error event if pre-run persistence fails.
-            yield _sse_message(
-                _wrap_payload(
-                    "error",
-                    request_id,
-                    payload.session_id,
-                    {"code": code, "message": message},
-                )
+            # Emit ordered SSE events even when persistence fails before streaming.
+            seq = 0
+
+            def next_seq() -> int:
+                nonlocal seq
+                seq += 1
+                return seq
+
+            accepted_payload = _wrap_payload(
+                "request.accepted",
+                request_id,
+                payload.session_id,
+                {"accepted_at": datetime.now(timezone.utc).isoformat()},
             )
+            accepted_payload["seq"] = next_seq()
+            yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
+
+            error_payload = _wrap_payload(
+                "error",
+                request_id,
+                payload.session_id,
+                {"code": code, "message": message},
+            )
+            error_payload["seq"] = next_seq()
+            yield _sse_message(error_payload, event_id=error_payload["seq"])
+
+            done_payload = _wrap_payload("done", request_id, payload.session_id, {})
+            done_payload["seq"] = next_seq()
+            yield _sse_message(done_payload, event_id=done_payload["seq"])
 
         headers = {
             "Cache-Control": "no-cache",
@@ -281,6 +341,30 @@ async def run(
             done.set()
 
     async def event_stream() -> AsyncGenerator[str, None]:
+        seq = 0
+        heartbeat_interval = max(1, int(settings.run_sse_heartbeat_s))
+        last_emit = time.monotonic()
+
+        def next_seq() -> int:
+            # Monotonic sequence numbers help clients reconcile stream ordering.
+            nonlocal seq
+            seq += 1
+            return seq
+
+        def emit(payload: dict, *, event_name: str = "message") -> str:
+            # Attach sequence numbers to every event payload before streaming.
+            nonlocal last_emit
+            payload["seq"] = next_seq()
+            last_emit = time.monotonic()
+            return _sse_message(payload, event_name=event_name, event_id=payload["seq"])
+
+        accepted_payload = _wrap_payload(
+            "request.accepted",
+            request_id,
+            payload.session_id,
+            {"accepted_at": datetime.now(timezone.utc).isoformat()},
+        )
+        yield emit(accepted_payload)
         task = asyncio.create_task(run_agent())
         try:
             while not done.is_set() or not queue.empty():
@@ -292,16 +376,28 @@ async def run(
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
+                    now = time.monotonic()
+                    if now - last_emit >= heartbeat_interval:
+                        heartbeat_payload = {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "request_id": request_id,
+                        }
+                        yield _sse_message(
+                            {**heartbeat_payload, "seq": next_seq()},
+                            event_name="heartbeat",
+                            event_id=seq,
+                        )
+                        last_emit = now
                     continue
                 if item.get("kind") == "event":
                     # Send debug events as fully-formed SSE payloads.
-                    yield _sse_message(item["payload"])
+                    yield emit(item["payload"])
                     continue
                 # Stream each delta as its own SSE message to avoid buffering output.
                 delta = item.get("delta")
                 if not isinstance(delta, str):
                     continue
-                yield _sse_message(
+                yield emit(
                     _wrap_payload(
                         "token.delta",
                         request_id,
@@ -318,13 +414,16 @@ async def run(
 
             if error:
                 code, message = _map_error(error)
-                yield _sse_message(
+                yield emit(
                     _wrap_payload(
                         "error",
                         request_id,
                         payload.session_id,
                         {"code": code, "message": message},
                     )
+                )
+                yield emit(
+                    _wrap_payload("done", request_id, payload.session_id, {})
                 )
                 return
 
@@ -352,7 +451,7 @@ async def run(
                 )
                 return
 
-            yield _sse_message(
+            yield emit(
                 _wrap_payload(
                     "message.final",
                     request_id,
@@ -362,6 +461,7 @@ async def run(
             )
 
             if not payload.audio:
+                yield emit(_wrap_payload("done", request_id, payload.session_id, {}))
                 return
             if await http_request.is_disconnected():
                 # Skip TTS if the client disconnects after the text response.
@@ -370,7 +470,7 @@ async def run(
                 tts = get_tts_provider()
                 audio_bytes = await tts.synthesize(answer)
                 audio_id, _path, audio_url = save_audio(audio_bytes, settings.audio_base_url)
-                yield _sse_message(
+                yield emit(
                     _wrap_payload(
                         "audio.ready",
                         request_id,
@@ -380,7 +480,7 @@ async def run(
                 )
             except Exception as exc:
                 code, message = _map_tts_error(exc)
-                yield _sse_message(
+                yield emit(
                     _wrap_payload(
                         "audio.error",
                         request_id,
@@ -388,6 +488,7 @@ async def run(
                         {"code": code, "message": message},
                     )
                 )
+            yield emit(_wrap_payload("done", request_id, payload.session_id, {}))
         finally:
             if not task.done():
                 task.cancel()

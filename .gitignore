@@ -22,3 +22,7 @@ var/audio/
 
 # Local document storage artifacts
 var/documents/
+
+# Frontend SDK artifacts
+sdk/frontend/node_modules/
+sdk/frontend/dist/
