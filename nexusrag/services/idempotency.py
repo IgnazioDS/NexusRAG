@@ -107,12 +107,14 @@ async def check_idempotency(
     tenant_id: str,
     actor_id: str,
     request_hash: str,
+    key_override: str | None = None,
 ) -> tuple[IdempotencyContext | None, IdempotencyReplay | None]:
     # Resolve idempotency behavior for versioned write endpoints.
     settings = get_settings()
     if not settings.idempotency_enabled or not is_versioned_request(request):
         return None, None
-    raw_key = request.headers.get(IDEMPOTENCY_HEADER)
+    # Allow trusted callers to supply a key (e.g., UI bodies) when headers are unavailable.
+    raw_key = key_override or request.headers.get(IDEMPOTENCY_HEADER)
     if not raw_key:
         return None, None
     key = _normalize_key(raw_key)

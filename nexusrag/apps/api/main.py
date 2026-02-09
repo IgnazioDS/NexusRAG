@@ -22,6 +22,7 @@ from nexusrag.apps.api.routes.health import router as health_router
 from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.run import router as run_router
 from nexusrag.apps.api.routes.self_serve import router as self_serve_router
+from nexusrag.apps.api.routes.ui import router as ui_router
 from nexusrag.core.logging import configure_logging
 from nexusrag.apps.api.errors import (
     http_exception_handler,
@@ -130,6 +131,8 @@ def create_app() -> FastAPI:
     app.include_router(ops_router, prefix=f"/{API_VERSION}")
     # Expose tenant self-serve endpoints for admin lifecycle operations.
     app.include_router(self_serve_router, prefix=f"/{API_VERSION}")
+    # Expose UI-focused BFF endpoints for frontend integration.
+    app.include_router(ui_router, prefix=f"/{API_VERSION}")
     app.include_router(corpora_router, prefix=f"/{API_VERSION}")
     app.include_router(run_router, prefix=f"/{API_VERSION}")
 
