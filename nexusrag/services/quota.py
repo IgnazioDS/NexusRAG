@@ -2,14 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-import hmac
-import hashlib
-import json
 import logging
 import random
 from typing import Any, Callable
 
-import httpx
 from fastapi import HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -18,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PlanLimit, QuotaSoftCapEvent, UsageCounter
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.billing_webhook import send_billing_webhook_event
+from nexusrag.services.telemetry import increment_counter
 
 
 logger = logging.getLogger(__name__)
@@ -294,6 +292,7 @@ async def enforce_quota(
             request=request,
             result=result,
         )
+        increment_counter("quota_exceeded_total")
         raise build_quota_exception(result)
 
     for key, value in quota_headers(result).items():
@@ -302,31 +301,14 @@ async def enforce_quota(
     await _emit_overage_if_needed(db, principal, request, result)
 
 
-def _billing_signature(secret: str, payload: bytes) -> str:
-    # Compute HMAC SHA256 signature for billing webhook payloads.
-    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
-
-
 async def _send_webhook(event_type: str, payload: dict[str, Any]) -> None:
     # Post signed billing payloads without blocking request success.
-    settings = get_settings()
-    if not settings.billing_webhook_enabled:
+    result = await send_billing_webhook_event(event_type=event_type, payload=payload, require_enabled=True)
+    if result.sent:
         return
-    if not settings.billing_webhook_url or not settings.billing_webhook_secret:
-        logger.warning("billing_webhook_missing_config")
+    if result.message in {"Billing webhook is disabled", "Billing webhook is not configured"}:
         return
-
-    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    signature = _billing_signature(settings.billing_webhook_secret, body)
-    headers = {
-        "Content-Type": "application/json",
-        "X-Billing-Signature": signature,
-        "X-Billing-Event": event_type,
-    }
-
-    timeout = settings.billing_webhook_timeout_ms / 1000.0
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        await client.post(settings.billing_webhook_url, content=body, headers=headers)
+    raise RuntimeError(result.message)
 
 
 async def _emit_usage_events(

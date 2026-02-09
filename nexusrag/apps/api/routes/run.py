@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,10 +22,12 @@ from nexusrag.core.errors import (
     AwsConfigMissingError,
     AwsRetrievalError,
     DatabaseError,
+    IntegrationUnavailableError,
     ProviderConfigError,
     RetrievalConfigError,
     RetrievalError,
     SessionTenantMismatchError,
+    ServiceBusyError,
     TTSAuthError,
     TTSConfigMissingError,
     TTSError,
@@ -45,6 +47,9 @@ from nexusrag.providers.tts.factory import get_tts_provider
 from nexusrag.services.audio.storage import save_audio
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.entitlements import FEATURE_TTS, require_feature
+from nexusrag.services.resilience import deterministic_canary, get_run_bulkhead
+from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_switch
+from nexusrag.services.telemetry import increment_counter, record_stream_duration
 from nexusrag.apps.api.deps import (
     Principal,
     get_db,
@@ -125,6 +130,10 @@ def _map_error(exc: Exception) -> tuple[str, str]:
         return "VERTEX_RETRIEVAL_ERROR", str(exc)
     if isinstance(exc, SessionTenantMismatchError):
         return "SESSION_TENANT_MISMATCH", "Session tenant_id does not match."
+    if isinstance(exc, IntegrationUnavailableError):
+        return "INTEGRATION_UNAVAILABLE", "Integration temporarily unavailable."
+    if isinstance(exc, ServiceBusyError):
+        return "SERVICE_BUSY", "Service is at capacity; retry shortly."
     if isinstance(exc, RetrievalError):
         return "RETRIEVAL_ERROR", "Retrieval failed."
     if isinstance(exc, (DatabaseError, SQLAlchemyError)):
@@ -138,9 +147,19 @@ def _map_tts_error(exc: Exception) -> tuple[str, str]:
         return "TTS_CONFIG_MISSING", str(exc)
     if isinstance(exc, TTSAuthError):
         return "TTS_AUTH_ERROR", str(exc)
+    if isinstance(exc, IntegrationUnavailableError):
+        return "INTEGRATION_UNAVAILABLE", "TTS temporarily unavailable."
     if isinstance(exc, TTSError):
         return "TTS_ERROR", str(exc)
     return "TTS_ERROR", "TTS request failed."
+
+
+def _feature_disabled(message: str) -> HTTPException:
+    # Return a stable 503 error envelope for disabled features.
+    return HTTPException(
+        status_code=503,
+        detail={"code": "FEATURE_TEMPORARILY_DISABLED", "message": message},
+    )
 
 
 @router.post("/run")
@@ -153,6 +172,9 @@ async def run(
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
+    # Honor kill switches before allocating run capacity.
+    if await resolve_kill_switch("kill.run"):
+        raise _feature_disabled("Run is temporarily disabled")
     # Reject resume attempts with an explicit SSE event to guide clients.
     last_event_id = http_request.headers.get("Last-Event-ID")
     if last_event_id:
@@ -187,16 +209,47 @@ async def run(
             "Connection": "keep-alive",
         }
         return StreamingResponse(resume_stream(), headers=headers, media_type="text/event-stream")
+    bulkhead = get_run_bulkhead()
+    bulkhead_acquired = await bulkhead.acquire()
+    if not bulkhead_acquired:
+        increment_counter("service_busy_total")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "SERVICE_BUSY", "message": "Run capacity is saturated"},
+            headers={"Retry-After": "1"},
+        )
+
+    def _release_and_raise(exc: HTTPException) -> None:
+        # Ensure bulkhead capacity is released on early request failures.
+        bulkhead.release()
+        raise exc
     # Enforce plan entitlements for optional TTS usage before persistence.
     if payload.audio:
-        await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_TTS)
+        try:
+            await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_TTS)
+        except HTTPException as exc:
+            _release_and_raise(exc)
+        if await resolve_kill_switch("kill.tts"):
+            _release_and_raise(_feature_disabled("TTS is temporarily disabled"))
+        tts_pct = await resolve_canary_percentage("rollout.tts")
+        if not deterministic_canary(principal.tenant_id, tts_pct):
+            _release_and_raise(_feature_disabled("TTS is not enabled for this tenant yet"))
     # Resolve retrieval provider entitlements early to return stable 403s.
     retriever = RetrievalRouter(db)
     try:
-        await retriever.resolve_provider(principal.tenant_id, payload.corpus_id)
+        provider = await retriever.resolve_provider(principal.tenant_id, payload.corpus_id)
     except RetrievalConfigError:
         # Preserve existing run error behavior when corpus config is invalid.
         pass
+    except HTTPException as exc:
+        _release_and_raise(exc)
+    else:
+        if provider in {"aws_bedrock_kb", "gcp_vertex"}:
+            if await resolve_kill_switch("kill.external_retrieval"):
+                _release_and_raise(_feature_disabled("External retrieval is temporarily disabled"))
+            rollout_pct = await resolve_canary_percentage("rollout.external_retrieval")
+            if not deterministic_canary(principal.tenant_id, rollout_pct):
+                _release_and_raise(_feature_disabled("External retrieval is not enabled for this tenant yet"))
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     # TX #1: persist session + user message so history is durable before streaming.
     try:
@@ -216,28 +269,30 @@ async def run(
                 nonlocal seq
                 seq += 1
                 return seq
+            try:
+                accepted_payload = _wrap_payload(
+                    "request.accepted",
+                    request_id,
+                    payload.session_id,
+                    {"accepted_at": datetime.now(timezone.utc).isoformat()},
+                )
+                accepted_payload["seq"] = next_seq()
+                yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
 
-            accepted_payload = _wrap_payload(
-                "request.accepted",
-                request_id,
-                payload.session_id,
-                {"accepted_at": datetime.now(timezone.utc).isoformat()},
-            )
-            accepted_payload["seq"] = next_seq()
-            yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
+                error_payload = _wrap_payload(
+                    "error",
+                    request_id,
+                    payload.session_id,
+                    {"code": code, "message": message},
+                )
+                error_payload["seq"] = next_seq()
+                yield _sse_message(error_payload, event_id=error_payload["seq"])
 
-            error_payload = _wrap_payload(
-                "error",
-                request_id,
-                payload.session_id,
-                {"code": code, "message": message},
-            )
-            error_payload["seq"] = next_seq()
-            yield _sse_message(error_payload, event_id=error_payload["seq"])
-
-            done_payload = _wrap_payload("done", request_id, payload.session_id, {})
-            done_payload["seq"] = next_seq()
-            yield _sse_message(done_payload, event_id=done_payload["seq"])
+                done_payload = _wrap_payload("done", request_id, payload.session_id, {})
+                done_payload["seq"] = next_seq()
+                yield _sse_message(done_payload, event_id=done_payload["seq"])
+            finally:
+                bulkhead.release()
 
         headers = {
             "Cache-Control": "no-cache",
@@ -344,6 +399,7 @@ async def run(
         seq = 0
         heartbeat_interval = max(1, int(settings.run_sse_heartbeat_s))
         last_emit = time.monotonic()
+        stream_start = time.monotonic()
 
         def next_seq() -> int:
             # Monotonic sequence numbers help clients reconcile stream ordering.
@@ -492,6 +548,9 @@ async def run(
         finally:
             if not task.done():
                 task.cancel()
+            bulkhead.release()
+            increment_counter("sse_streams_completed")
+            record_stream_duration((time.monotonic() - stream_start) * 1000.0)
 
     headers = {
         "Cache-Control": "no-cache",
