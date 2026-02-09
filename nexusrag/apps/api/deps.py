@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 import asyncio
 import time
 
-from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi import Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -99,6 +99,13 @@ def _parse_bearer_token(header_value: str | None) -> str | None:
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise _auth_error("Missing or invalid bearer token")
     return parts[1]
+
+
+def idempotency_key_header(
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=128),
+) -> str | None:
+    # Expose Idempotency-Key in OpenAPI without forcing usage in handlers.
+    return idempotency_key
 
 
 def _principal_from_dev_headers(request: Request) -> Principal:

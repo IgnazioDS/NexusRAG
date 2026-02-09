@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     billing_webhook_timeout_ms: int = 2000
     # Limit the number of active self-serve API keys per tenant.
     self_serve_max_active_keys: int = 20
+    # Enable idempotency key support for write endpoints.
+    idempotency_enabled: bool = True
+    # Control TTL for stored idempotency responses.
+    idempotency_ttl_hours: int = 24
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None

@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.3.0 - 2026-02-09
+
+- Added `/v1` versioned API routes with legacy deprecation headers.
+- Standardized success/error envelopes for versioned JSON endpoints.
+- Added idempotency-key support for write endpoints with conflict detection.
+- Improved OpenAPI schemas and examples plus generated SDK scaffolding.
+- Added contract tests for envelopes, idempotency, and compatibility headers.
+
 ## 1.2.0 - 2026-02-09
 
 - Added tenant self-serve API key lifecycle endpoints.

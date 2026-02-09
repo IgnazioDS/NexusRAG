@@ -3,13 +3,16 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.apps.api.deps import Principal, get_db, require_role
+from nexusrag.apps.api.deps import Principal, get_db, idempotency_key_header, require_role
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.domain.models import (
     Plan,
     PlanFeature,
@@ -29,9 +32,15 @@ from nexusrag.services.entitlements import (
     list_plan_features,
 )
 from nexusrag.services.quota import parse_period_start
+from nexusrag.services.idempotency import (
+    build_replay_response,
+    check_idempotency,
+    compute_request_hash,
+    store_idempotency_response,
+)
 
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["admin"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 class PlanLimitResponse(BaseModel):
@@ -83,6 +92,33 @@ class TenantPlanResponse(BaseModel):
     is_active: bool
     entitlements: list[PlanFeatureResponse]
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "tenant_id": "tenant_123",
+                    "plan_id": "pro",
+                    "plan_name": "Pro",
+                    "effective_from": "2026-02-01T00:00:00Z",
+                    "effective_to": None,
+                    "is_active": True,
+                    "entitlements": [
+                        {
+                            "feature_key": "feature.retrieval.local_pgvector",
+                            "enabled": True,
+                            "config_json": None,
+                        },
+                        {
+                            "feature_key": "feature.tts",
+                            "enabled": True,
+                            "config_json": None,
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
 
 class PlanAssignmentRequest(BaseModel):
     plan_id: str
@@ -113,7 +149,11 @@ def _to_plan_response(tenant_id: str, plan: PlanLimit | None) -> PlanLimitRespon
     )
 
 
-@router.get("/quotas/{tenant_id}")
+# Allow legacy unwrapped responses; v1 middleware wraps envelopes.
+@router.get(
+    "/quotas/{tenant_id}",
+    response_model=SuccessEnvelope[PlanLimitResponse] | PlanLimitResponse,
+)
 async def get_quota_limits(
     tenant_id: str,
     principal: Principal = Depends(require_role("admin")),
@@ -129,15 +169,32 @@ async def get_quota_limits(
     return _to_plan_response(tenant_id, plan)
 
 
-@router.patch("/quotas/{tenant_id}")
+@router.patch(
+    "/quotas/{tenant_id}",
+    response_model=SuccessEnvelope[PlanLimitResponse] | PlanLimitResponse,
+)
 async def patch_quota_limits(
     tenant_id: str,
+    request: Request,
     payload: PlanLimitPatchRequest,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> PlanLimitResponse:
     # Allow admins to update quota limits for their tenant.
     _ensure_same_tenant(principal, tenant_id)
+    request_hash = compute_request_hash(
+        {"tenant_id": tenant_id, "payload": payload.model_dump()}
+    )
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
     try:
         result = await db.execute(select(PlanLimit).where(PlanLimit.tenant_id == tenant_id))
         plan = result.scalar_one_or_none()
@@ -163,10 +220,21 @@ async def patch_quota_limits(
         await db.rollback()
         raise HTTPException(status_code=500, detail="Database error while updating quota limits") from exc
 
-    return _to_plan_response(tenant_id, plan)
+    response_payload = _to_plan_response(tenant_id, plan)
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=200,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
-@router.get("/usage/{tenant_id}")
+@router.get(
+    "/usage/{tenant_id}",
+    response_model=SuccessEnvelope[UsageSummaryResponse] | UsageSummaryResponse,
+)
 async def get_usage_summary(
     tenant_id: str,
     period: str = Query(default="day", pattern="^(day|month)$"),
@@ -247,7 +315,7 @@ async def _build_tenant_plan_response(
     )
 
 
-@router.get("/plans")
+@router.get("/plans", response_model=SuccessEnvelope[list[PlanResponse]] | list[PlanResponse])
 async def list_plans(
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
@@ -274,7 +342,10 @@ async def list_plans(
     ]
 
 
-@router.get("/plans/{tenant_id}")
+@router.get(
+    "/plans/{tenant_id}",
+    response_model=SuccessEnvelope[TenantPlanResponse] | TenantPlanResponse,
+)
 async def get_tenant_plan(
     tenant_id: str,
     principal: Principal = Depends(require_role("admin")),
@@ -285,15 +356,32 @@ async def get_tenant_plan(
     return await _build_tenant_plan_response(db, tenant_id)
 
 
-@router.patch("/plans/{tenant_id}")
+@router.patch(
+    "/plans/{tenant_id}",
+    response_model=SuccessEnvelope[TenantPlanResponse] | TenantPlanResponse,
+)
 async def assign_tenant_plan(
     tenant_id: str,
+    request: Request,
     payload: PlanAssignmentRequest,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> TenantPlanResponse:
     # Allow tenant admins to update plan assignments.
     _ensure_same_tenant(principal, tenant_id)
+    request_hash = compute_request_hash(
+        {"tenant_id": tenant_id, "payload": payload.model_dump()}
+    )
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
     try:
         result = await db.execute(select(Plan).where(Plan.id == payload.plan_id))
         plan = result.scalar_one_or_none()
@@ -303,7 +391,15 @@ async def assign_tenant_plan(
         now = datetime.now(timezone.utc)
         current = await get_active_plan_assignment(db, tenant_id)
         if current and current.plan_id == payload.plan_id:
-            return await _build_tenant_plan_response(db, tenant_id)
+            response_payload = await _build_tenant_plan_response(db, tenant_id)
+            payload_body = success_response(request=request, data=response_payload)
+            await store_idempotency_response(
+                db=db,
+                context=idempotency_ctx,
+                response_status=200,
+                response_body=jsonable_encoder(payload_body),
+            )
+            return payload_body
 
         if current:
             current.is_active = False
@@ -326,13 +422,26 @@ async def assign_tenant_plan(
         await db.rollback()
         raise HTTPException(status_code=500, detail="Database error while updating plan assignment") from exc
 
-    return await _build_tenant_plan_response(db, tenant_id)
+    response_payload = await _build_tenant_plan_response(db, tenant_id)
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=200,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
-@router.patch("/plans/{tenant_id}/overrides")
+@router.patch(
+    "/plans/{tenant_id}/overrides",
+    response_model=SuccessEnvelope[TenantPlanResponse] | TenantPlanResponse,
+)
 async def patch_tenant_overrides(
     tenant_id: str,
+    request: Request,
     payload: FeatureOverrideRequest,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> TenantPlanResponse:
@@ -340,6 +449,18 @@ async def patch_tenant_overrides(
     _ensure_same_tenant(principal, tenant_id)
     if payload.feature_key not in FEATURE_KEYS:
         raise HTTPException(status_code=422, detail="Unknown feature_key")
+    request_hash = compute_request_hash(
+        {"tenant_id": tenant_id, "payload": payload.model_dump()}
+    )
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
 
     try:
         result = await db.execute(
@@ -367,4 +488,12 @@ async def patch_tenant_overrides(
         await db.rollback()
         raise HTTPException(status_code=500, detail="Database error while updating overrides") from exc
 
-    return await _build_tenant_plan_response(db, tenant_id)
+    response_payload = await _build_tenant_plan_response(db, tenant_id)
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=200,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body

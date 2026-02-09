@@ -9,11 +9,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.apps.api.response import SuccessEnvelope
 from nexusrag.persistence.repos import audit as audit_repo
 from nexusrag.services.entitlements import FEATURE_AUDIT, require_feature
 
 
-router = APIRouter(prefix="/audit", tags=["audit"])
+router = APIRouter(prefix="/audit", tags=["audit"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 class AuditEventResponse(BaseModel):
@@ -62,7 +64,8 @@ def _to_response(event) -> AuditEventResponse:
     )
 
 
-@router.get("/events")
+# Allow legacy unwrapped responses; v1 middleware wraps envelopes.
+@router.get("/events", response_model=SuccessEnvelope[AuditEventsPage] | AuditEventsPage)
 async def list_audit_events(
     tenant_id: str | None = None,
     event_type: str | None = None,
@@ -110,7 +113,10 @@ async def list_audit_events(
     return AuditEventsPage(items=[_to_response(event) for event in events], next_offset=next_offset)
 
 
-@router.get("/events/{event_id}")
+@router.get(
+    "/events/{event_id}",
+    response_model=SuccessEnvelope[AuditEventResponse] | AuditEventResponse,
+)
 async def get_audit_event(
     event_id: int,
     principal: Principal = Depends(require_role("admin")),

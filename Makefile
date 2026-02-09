@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test
+.PHONY: up migrate seed test sdk-generate
 
 up:
 	# Bring up docker compose services for local dev.
@@ -15,3 +15,7 @@ seed:
 test:
 	# Run the test suite inside the api container.
 	docker compose exec api pytest -q
+
+sdk-generate:
+	# Generate TypeScript and Python SDKs from the OpenAPI schema.
+	python scripts/generate_sdk.py

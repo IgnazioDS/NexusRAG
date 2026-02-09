@@ -212,6 +212,34 @@ class PlanUpgradeRequest(Base):
     )
 
 
+class IdempotencyRecord(Base):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "actor_id",
+            "method",
+            "path",
+            "idem_key",
+            name="uq_idempotency_records_scope",
+        ),
+        Index("ix_idempotency_records_expires_at", "expires_at"),
+    )
+
+    # Store request/response snapshots to enable safe idempotent retries.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    actor_id: Mapped[str] = mapped_column(String, index=True)
+    method: Mapped[str] = mapped_column(String)
+    path: Mapped[str] = mapped_column(String)
+    idem_key: Mapped[str] = mapped_column(String)
+    request_hash: Mapped[str] = mapped_column(String)
+    response_status: Mapped[int] = mapped_column(Integer)
+    response_body_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Message(Base):
     __tablename__ = "messages"
 

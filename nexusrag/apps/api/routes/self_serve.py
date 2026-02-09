@@ -5,12 +5,15 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.apps.api.deps import Principal, get_db, require_role
+from nexusrag.apps.api.deps import Principal, get_db, idempotency_key_header, require_role
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import (
     ApiKey,
@@ -36,9 +39,15 @@ from nexusrag.services.entitlements import (
 )
 from nexusrag.services.self_serve import enforce_key_limit
 from nexusrag.services.usage_dashboard import aggregate_request_counts, build_timeseries_points
+from nexusrag.services.idempotency import (
+    build_replay_response,
+    check_idempotency,
+    compute_request_hash,
+    store_idempotency_response,
+)
 
 
-router = APIRouter(prefix="/self-serve", tags=["self-serve"])
+router = APIRouter(prefix="/self-serve", tags=["self-serve"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -71,6 +80,38 @@ class UsageSummaryResponse(BaseModel):
     quota: dict[str, Any]
     rate_limit_hits: dict[str, Any]
     ingestion: dict[str, Any]
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "window_days": 30,
+                    "requests": {
+                        "total": 12345,
+                        "by_route_class": {
+                            "run": 2345,
+                            "read": 9000,
+                            "mutation": 800,
+                            "ops": 200,
+                        },
+                    },
+                    "quota": {
+                        "day": {"limit": 1000, "used": 420, "remaining": 580},
+                        "month": {"limit": 10000, "used": 6400, "remaining": 3600},
+                        "soft_cap_reached": False,
+                        "hard_cap_mode": "enforce",
+                    },
+                    "rate_limit_hits": {"count": 57, "last_at": "2026-02-09T18:59:10Z"},
+                    "ingestion": {
+                        "queued": 1,
+                        "processing": 0,
+                        "succeeded": 120,
+                        "failed": 3,
+                    },
+                }
+            ]
+        }
+    }
 
 
 class UsageTimeseriesResponse(BaseModel):
@@ -201,16 +242,31 @@ async def _audit(
     )
 
 
-@router.post("/api-keys")
+# Allow legacy unwrapped responses; v1 middleware wraps envelopes.
+@router.post(
+    "/api-keys",
+    response_model=SuccessEnvelope[ApiKeyCreateResponse] | ApiKeyCreateResponse,
+)
 async def create_api_key(
     request: Request,
     payload: ApiKeyCreateRequest,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyCreateResponse:
     # Allow tenant admins to create API keys for their tenant.
     settings = get_settings()
     max_active = settings.self_serve_max_active_keys
+    request_hash = compute_request_hash(payload.model_dump())
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
     try:
         active_count = await db.scalar(
             select(func.count(ApiKey.id))
@@ -278,7 +334,7 @@ async def create_api_key(
     )
 
     created_at = api_key.created_at.isoformat()
-    return ApiKeyCreateResponse(
+    response_payload = ApiKeyCreateResponse(
         key_id=api_key.id,
         key_prefix=api_key.key_prefix,
         name=api_key.name,
@@ -289,9 +345,17 @@ async def create_api_key(
         is_active=True,
         api_key=raw_key,
     )
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=200,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
-@router.get("/api-keys")
+@router.get("/api-keys", response_model=SuccessEnvelope[ApiKeyListResponse] | ApiKeyListResponse)
 async def list_api_keys(
     request: Request,
     principal: Principal = Depends(require_role("admin")),
@@ -336,14 +400,28 @@ async def list_api_keys(
     return ApiKeyListResponse(items=items)
 
 
-@router.post("/api-keys/{key_id}/revoke")
+@router.post(
+    "/api-keys/{key_id}/revoke",
+    response_model=SuccessEnvelope[ApiKeyResponse] | ApiKeyResponse,
+)
 async def revoke_api_key(
     key_id: str,
     request: Request,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyResponse:
     # Allow tenant admins to revoke API keys idempotently.
+    request_hash = compute_request_hash({"key_id": key_id})
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
     try:
         result = await db.execute(
             select(ApiKey, User)
@@ -375,7 +453,7 @@ async def revoke_api_key(
     )
 
     is_active = bool(user.is_active) and api_key.revoked_at is None
-    return ApiKeyResponse(
+    response_payload = ApiKeyResponse(
         key_id=api_key.id,
         key_prefix=api_key.key_prefix,
         name=api_key.name,
@@ -385,9 +463,20 @@ async def revoke_api_key(
         revoked_at=api_key.revoked_at.isoformat() if api_key.revoked_at else None,
         is_active=is_active,
     )
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=200,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
-@router.get("/usage/summary")
+@router.get(
+    "/usage/summary",
+    response_model=SuccessEnvelope[UsageSummaryResponse] | UsageSummaryResponse,
+)
 async def usage_summary(
     request: Request,
     window_days: int = Query(default=30, ge=1, le=90),
@@ -464,7 +553,10 @@ async def usage_summary(
     )
 
 
-@router.get("/usage/timeseries")
+@router.get(
+    "/usage/timeseries",
+    response_model=SuccessEnvelope[UsageTimeseriesResponse] | UsageTimeseriesResponse,
+)
 async def usage_timeseries(
     request: Request,
     metric: str = Query(default="requests", pattern="^requests$"),
@@ -508,7 +600,7 @@ async def usage_timeseries(
     return UsageTimeseriesResponse(metric=metric, granularity=granularity, points=points)
 
 
-@router.get("/plan")
+@router.get("/plan", response_model=SuccessEnvelope[PlanResponse] | PlanResponse)
 async def get_self_serve_plan(
     request: Request,
     principal: Principal = Depends(require_role("admin")),
@@ -552,16 +644,31 @@ async def get_self_serve_plan(
     )
 
 
-@router.post("/plan/upgrade-request", status_code=202)
+@router.post(
+    "/plan/upgrade-request",
+    status_code=202,
+    response_model=SuccessEnvelope[PlanUpgradeResponse] | PlanUpgradeResponse,
+)
 async def upgrade_plan_request(
     request: Request,
     payload: PlanUpgradeRequestPayload,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> PlanUpgradeResponse:
     # Record a tenant plan upgrade request for review workflows.
     assignment = await get_active_plan_assignment(db, principal.tenant_id)
     current_plan_id = assignment.plan_id if assignment else DEFAULT_PLAN_ID
+    request_hash = compute_request_hash(payload.model_dump())
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
     try:
         plan_row = await db.execute(select(Plan).where(Plan.id == payload.target_plan))
         target_plan = plan_row.scalar_one_or_none()
@@ -613,10 +720,24 @@ async def upgrade_plan_request(
     }
     await send_billing_webhook_event(event_type="billing.upgrade_requested", payload=webhook_payload)
 
-    return PlanUpgradeResponse(request_id=upgrade_request.id, status=upgrade_request.status)
+    response_payload = PlanUpgradeResponse(
+        request_id=upgrade_request.id,
+        status=upgrade_request.status,
+    )
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=202,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
-@router.post("/billing/webhook-test")
+@router.post(
+    "/billing/webhook-test",
+    response_model=SuccessEnvelope[BillingWebhookTestResponse] | BillingWebhookTestResponse,
+)
 async def billing_webhook_test(
     request: Request,
     principal: Principal = Depends(require_role("admin")),
