@@ -110,7 +110,7 @@ async def patch_corpus(
     _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
-) -> CorpusResponse:
+) -> SuccessEnvelope[CorpusResponse] | CorpusResponse:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     tenant_id = principal.tenant_id
     request_hash = compute_request_hash(payload.model_dump())
