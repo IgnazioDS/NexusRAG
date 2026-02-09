@@ -14,7 +14,7 @@ async def test_run_kill_switch_blocks() -> None:
     get_settings.cache_clear()
     app = create_app()
     transport = ASGITransport(app=app)
-    _raw_key, headers, _user_id, _key_id = await create_test_api_key(role="reader")
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id="t1", role="reader")
     try:
         get_settings.cache_clear()
         from os import environ
@@ -40,12 +40,12 @@ async def test_run_bulkhead_service_busy(monkeypatch) -> None:
     get_settings.cache_clear()
     reset_bulkheads()
     bulkhead = get_run_bulkhead()
-    acquired = await bulkhead.acquire()
-    assert acquired is True
+    lease = await bulkhead.acquire()
+    assert lease is not None
 
     app = create_app()
     transport = ASGITransport(app=app)
-    _raw_key, headers, _user_id, _key_id = await create_test_api_key(role="reader")
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id="t1", role="reader")
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
@@ -57,7 +57,7 @@ async def test_run_bulkhead_service_busy(monkeypatch) -> None:
             payload = response.json()["error"]
             assert payload["code"] == "SERVICE_BUSY"
     finally:
-        bulkhead.release()
+        lease.release()
         reset_bulkheads()
 
 
@@ -65,7 +65,7 @@ async def test_run_bulkhead_service_busy(monkeypatch) -> None:
 async def test_ops_slo_shape() -> None:
     app = create_app()
     transport = ASGITransport(app=app)
-    _raw_key, headers, _user_id, _key_id = await create_test_api_key(role="admin")
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id="t1", role="admin")
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await client.get("/v1/health")
         response = await client.get("/v1/ops/slo", headers=headers)
@@ -82,7 +82,7 @@ async def test_ops_slo_shape() -> None:
 async def test_admin_maintenance_task_validation() -> None:
     app = create_app()
     transport = ASGITransport(app=app)
-    _raw_key, headers, _user_id, _key_id = await create_test_api_key(role="admin")
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id="t1", role="admin")
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/v1/admin/maintenance/run?task=unknown", headers=headers)
         assert response.status_code == 422

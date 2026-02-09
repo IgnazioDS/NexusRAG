@@ -183,7 +183,7 @@ class CircuitBreaker:
         state = await self._load()
         now = self._time()
         if state.state == "open":
-            if state.opened_at and (now - state.opened_at) >= self._config.open_seconds:
+            if state.opened_at is not None and (now - state.opened_at) >= self._config.open_seconds:
                 state = await self._transition(state, "half_open")
                 await self._save(state)
             else:
@@ -218,6 +218,19 @@ class CircuitBreaker:
         await self._save(state)
 
 
+@dataclass
+class BulkheadLease:
+    # Track bulkhead ownership to avoid double-releasing.
+    semaphore: asyncio.Semaphore
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.semaphore.release()
+        self.released = True
+
+
 class Bulkhead:
     def __init__(self, name: str, limit: int) -> None:
         # Use asyncio semaphores to cap concurrency for expensive operations.
@@ -233,15 +246,15 @@ class Bulkhead:
     def limit(self) -> int:
         return self._limit
 
-    async def acquire(self) -> bool:
-        # Attempt to acquire immediately; return False if saturated.
-        try:
-            await asyncio.wait_for(self._sem.acquire(), timeout=0.0)
-            return True
-        except asyncio.TimeoutError:
-            return False
+    async def acquire(self) -> BulkheadLease | None:
+        # Attempt to acquire immediately; return None if saturated.
+        if self._sem.locked():
+            return None
+        await self._sem.acquire()
+        return BulkheadLease(self._sem)
 
     def release(self) -> None:
+        # Preserve legacy release hooks for callers that don't use leases.
         self._sem.release()
 
 

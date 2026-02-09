@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
@@ -210,8 +211,8 @@ async def run(
         }
         return StreamingResponse(resume_stream(), headers=headers, media_type="text/event-stream")
     bulkhead = get_run_bulkhead()
-    bulkhead_acquired = await bulkhead.acquire()
-    if not bulkhead_acquired:
+    lease = await bulkhead.acquire()
+    if lease is None:
         increment_counter("service_busy_total")
         raise HTTPException(
             status_code=503,
@@ -221,7 +222,7 @@ async def run(
 
     def _release_and_raise(exc: HTTPException) -> None:
         # Ensure bulkhead capacity is released on early request failures.
-        bulkhead.release()
+        lease.release()
         raise exc
     # Enforce plan entitlements for optional TTS usage before persistence.
     if payload.audio:
@@ -292,14 +293,19 @@ async def run(
                 done_payload["seq"] = next_seq()
                 yield _sse_message(done_payload, event_id=done_payload["seq"])
             finally:
-                bulkhead.release()
+                lease.release()
 
         headers = {
             "Cache-Control": "no-cache",
             "Content-Type": "text/event-stream",
             "Connection": "keep-alive",
         }
-        return StreamingResponse(early_error_stream(), headers=headers, media_type="text/event-stream")
+        return StreamingResponse(
+            early_error_stream(),
+            headers=headers,
+            media_type="text/event-stream",
+            background=BackgroundTask(lease.release),
+        )
 
     request_ctx = get_request_context(http_request)
     # Record the run invocation after persistence succeeds to avoid logging failed writes.
@@ -548,7 +554,6 @@ async def run(
         finally:
             if not task.done():
                 task.cancel()
-            bulkhead.release()
             increment_counter("sse_streams_completed")
             record_stream_duration((time.monotonic() - stream_start) * 1000.0)
 
@@ -557,4 +562,9 @@ async def run(
         "Content-Type": "text/event-stream",
         "Connection": "keep-alive",
     }
-    return StreamingResponse(event_stream(), headers=headers, media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        headers=headers,
+        media_type="text/event-stream",
+        background=BackgroundTask(lease.release),
+    )

@@ -126,13 +126,13 @@ async def enqueue_ingestion_job(payload: IngestionJobPayload) -> str:
     settings = get_settings()
     if settings.ingest_execution_mode.lower() == "inline":
         bulkhead = get_ingest_bulkhead()
-        acquired = await bulkhead.acquire()
-        if not acquired:
+        lease = await bulkhead.acquire()
+        if lease is None:
             raise ServiceBusyError("Ingestion capacity is saturated")
         try:
             await _run_inline_job(payload, job_id=job_id, max_retries=settings.ingest_max_retries)
         finally:
-            bulkhead.release()
+            lease.release()
         return job_id
 
     redis = await get_redis_pool()
@@ -156,8 +156,8 @@ async def process_ingestion_job(
     # Centralize ingestion execution so worker and inline mode share behavior.
     try:
         bulkhead = get_ingest_bulkhead()
-        acquired = await bulkhead.acquire()
-        if not acquired:
+        lease = await bulkhead.acquire()
+        if lease is None:
             raise ServiceBusyError("Ingestion capacity is saturated")
         storage_path = _resolve_storage_path(payload)
         try:
@@ -170,7 +170,7 @@ async def process_ingestion_job(
                 job_id=job_id,
             )
         finally:
-            bulkhead.release()
+            lease.release()
     except Exception as exc:  # noqa: BLE001 - surface a concise failure reason
         if _is_retryable(exc) and attempt < max_retries:
             # Let arq (or inline loop) retry transient failures.
