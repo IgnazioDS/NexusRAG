@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
-from nexusrag.apps.api.response import SuccessEnvelope
+from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.services.ingest import queue as ingest_queue
@@ -147,7 +147,7 @@ async def ops_health(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)
 
 
 @router.get("/ingestion", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
@@ -275,7 +275,7 @@ async def ops_ingestion(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)
 
 
 @router.get("/metrics", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
@@ -358,7 +358,7 @@ async def ops_metrics(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)
 
 
 @router.get("/slo", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
@@ -425,4 +425,4 @@ async def ops_slo(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)

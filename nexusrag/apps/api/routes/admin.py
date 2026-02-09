@@ -612,6 +612,7 @@ async def patch_rollout_canary(
     response_model=SuccessEnvelope[MaintenanceRunResponse] | MaintenanceRunResponse,
 )
 async def run_maintenance_task(
+    request: Request,
     task: str = Query(
         ...,
         pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage)$",
@@ -632,4 +633,5 @@ async def run_maintenance_task(
         raise HTTPException(status_code=422, detail="Unknown maintenance task")
     deleted = await runner(db)
     await db.commit()
-    return MaintenanceRunResponse(task=task, status="completed", deleted_rows=deleted)
+    payload = MaintenanceRunResponse(task=task, status="completed", deleted_rows=deleted)
+    return success_response(request=request, data=payload)
