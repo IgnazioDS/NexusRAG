@@ -129,10 +129,9 @@ _redis_loop: asyncio.AbstractEventLoop | None = None
 _redis_lock = asyncio.Lock()
 
 
-def route_class_for_request(request: Request) -> tuple[str, int]:
-    # Map request paths/methods into rate limit route classes with weights.
-    path = request.url.path
-    method = request.method.upper()
+def route_class_for_path(path: str, method: str) -> tuple[str, int]:
+    # Map raw path/method inputs into route classes for rate limiting and analytics.
+    normalized_method = method.upper()
 
     if path == "/run":
         return ROUTE_CLASS_RUN, _RUN_WEIGHT
@@ -143,16 +142,22 @@ def route_class_for_request(request: Request) -> tuple[str, int]:
     if path.startswith("/audit/events"):
         return ROUTE_CLASS_OPS, 1
 
-    if method in {"POST", "PATCH", "DELETE"}:
+    if normalized_method in {"POST", "PATCH", "DELETE"}:
         if (
             path.startswith("/documents")
             or path.startswith("/corpora")
             or path.startswith("/audit")
             or path.startswith("/admin")
+            or path.startswith("/self-serve")
         ):
             return ROUTE_CLASS_MUTATION, 1
 
     return ROUTE_CLASS_READ, 1
+
+
+def route_class_for_request(request: Request) -> tuple[str, int]:
+    # Map request paths/methods into rate limit route classes with weights.
+    return route_class_for_path(request.url.path, request.method)
 
 
 def _calculate_tokens(

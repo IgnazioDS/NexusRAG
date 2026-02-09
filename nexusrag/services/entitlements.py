@@ -32,6 +32,7 @@ FEATURE_OPS_ADMIN = "feature.ops_admin_access"
 FEATURE_AUDIT = "feature.audit_access"
 FEATURE_HIGH_QUOTA = "feature.high_quota_tier"
 FEATURE_CORPORA_PATCH_PROVIDER = "feature.corpora_patch_provider_config"
+FEATURE_BILLING_WEBHOOK_TEST = "feature.billing_webhook_test"
 
 FEATURE_KEYS = {
     FEATURE_RETRIEVAL_LOCAL,
@@ -42,6 +43,7 @@ FEATURE_KEYS = {
     FEATURE_AUDIT,
     FEATURE_HIGH_QUOTA,
     FEATURE_CORPORA_PATCH_PROVIDER,
+    FEATURE_BILLING_WEBHOOK_TEST,
 }
 
 RETRIEVAL_PROVIDER_FEATURES = {

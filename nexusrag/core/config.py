@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     billing_webhook_secret: str | None = None
     # Keep webhook timeouts short to avoid blocking API responses.
     billing_webhook_timeout_ms: int = 2000
+    # Limit the number of active self-serve API keys per tenant.
+    self_serve_max_active_keys: int = 20
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None
