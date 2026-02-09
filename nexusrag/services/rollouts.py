@@ -32,12 +32,12 @@ class RolloutState:
 
 def _kill_key(name: str) -> str:
     settings = get_settings()
-    return f\"{settings.rollout_redis_prefix}:kill:{name}\"
+    return f"{settings.rollout_redis_prefix}:kill:{name}"
 
 
 def _canary_key(name: str) -> str:
     settings = get_settings()
-    return f\"{settings.rollout_redis_prefix}:canary:{name}\"
+    return f"{settings.rollout_redis_prefix}:canary:{name}"
 
 
 async def _get_bool(key: str, default: bool) -> bool:
@@ -47,11 +47,11 @@ async def _get_bool(key: str, default: bool) -> bool:
     try:
         raw = await redis.get(key)
     except Exception as exc:  # noqa: BLE001 - fail open to env defaults
-        logger.warning(\"rollout_redis_read_failed key=%s\", key, exc_info=exc)
+        logger.warning("rollout_redis_read_failed key=%s", key, exc_info=exc)
         return default
     if raw is None:
         return default
-    return str(raw).lower() in {\"1\", \"true\", \"yes\", \"on\"}
+    return str(raw).lower() in {"1", "true", "yes", "on"}
 
 
 async def _get_int(key: str, default: int) -> int:
@@ -61,7 +61,7 @@ async def _get_int(key: str, default: int) -> int:
     try:
         raw = await redis.get(key)
     except Exception as exc:  # noqa: BLE001 - fall back to env defaults
-        logger.warning(\"rollout_redis_read_failed key=%s\", key, exc_info=exc)
+        logger.warning("rollout_redis_read_failed key=%s", key, exc_info=exc)
         return default
     if raw is None:
         return default
