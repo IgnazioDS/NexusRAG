@@ -1,45 +1,58 @@
 # NexusRAG (vertical slice)
 
 NexusRAG is a multi-cloud, stateful, streaming RAG agent platform. This repo bootstraps a working vertical slice with:
+
 - FastAPI + SSE `/run`
 - Postgres + pgvector retrieval
 - LangGraph state machine
 - Gemini via Vertex AI (streaming)
 
 ## Prerequisites
+
 - Docker + Docker Compose
 - Python 3.11+ (optional for local dev)
 
 ## Quickstart
+
 1) Copy env file:
+
 ```
 cp .env.example .env
 ```
-2) Start services:
+
+1) Start services:
+
 ```
 docker compose up --build
 ```
-3) Run migrations:
+
+1) Run migrations:
+
 ```
 docker compose exec api alembic upgrade head
 ```
 
 ## Seed a corpus + chunks (local pgvector)
+
 Run the demo seed script inside the container:
+
 ```
 docker compose exec api python scripts/seed_demo.py
 ```
 
 ## What it seeds
+
 - corpus_id: `c1`
 - tenant_id: `t1`
 - chunks: 10 demo chunks across 3 documents
 - idempotency: if chunks for `c1` already exist, the script no-ops and prints “already seeded”
 
 ## Retrieval routing (per corpus)
+
 Each corpus specifies its retrieval provider in `corpora.provider_config_json`:
 
 Local pgvector:
+
 ```
 {
   "retrieval": {
@@ -50,6 +63,7 @@ Local pgvector:
 ```
 
 AWS Bedrock Knowledge Bases:
+
 ```
 {
   "retrieval": {
@@ -62,6 +76,7 @@ AWS Bedrock Knowledge Bases:
 ```
 
 Vertex AI Search (Discovery Engine):
+
 ```
 {
   "retrieval": {
@@ -75,31 +90,40 @@ Vertex AI Search (Discovery Engine):
 ```
 
 Switching a corpus:
+
 1) Update `corpora.provider_config_json` for the target corpus.
 2) `{}` is accepted and normalized to `local_pgvector` with a default `top_k_default` of 5.
 3) Ensure cloud credentials exist at runtime (AWS/Vertex), but tests do not require live creds.
 
 ## Authentication & RBAC
+
 All protected endpoints require API keys via:
+
 ```
 Authorization: Bearer <api_key>
 ```
 
 Create a key (example):
+
 ```
 docker compose exec api python scripts/create_api_key.py --tenant t1 --role admin --name local-admin
 ```
+
 Export the key for curl examples:
+
 ```
 export API_KEY=<api_key_from_script>
 export ADMIN_API_KEY=$API_KEY
 ```
+
 Revoke a key:
+
 ```
 docker compose exec api python scripts/revoke_api_key.py <key_id>
 ```
 
 Role matrix:
+
 | Endpoint | reader | editor | admin |
 | --- | --- | --- | --- |
 | `/v1/run` | ✅ | ✅ | ✅ |
@@ -110,26 +134,32 @@ Role matrix:
 | `/v1/ops/*` | ❌ | ❌ | ✅ |
 
 Dev-only bypass:
+
 - Set `AUTH_DEV_BYPASS=true` to allow `X-Tenant-Id` + optional `X-Role` (defaults to `admin`).
 - This is intended for local development only; keep it disabled in production.
 
 ## API Versioning & Compatibility
+
 Stable API routes are versioned under `/v1` (recommended for all new clients).
 
 Legacy unversioned routes remain as deprecated aliases and will sunset on:
+
 - **Sun, 10 May 2026 00:00:00 +0000**
 
 Legacy responses include:
+
 - `Deprecation: true`
 - `Sunset: <RFC 1123 date>`
 - `Link: </v1/docs>; rel="successor-version"`
 
 Migration guidance:
+
 - Prefix all routes with `/v1`.
 - Update clients to parse `data`/`meta` and `error`/`meta` envelopes.
 - Use `Idempotency-Key` for write endpoints.
 
 ### Success envelope (JSON endpoints)
+
 ```
 {
   "data": ...,
@@ -141,6 +171,7 @@ Migration guidance:
 ```
 
 ### Error envelope (all errors)
+
 ```
 {
   "error": {
@@ -156,19 +187,24 @@ Migration guidance:
 ```
 
 Notes:
+
 - SSE streams (`/v1/run` streaming) keep the existing event payloads and are not wrapped.
 - Legacy routes keep pre-v1 response shapes (no envelope).
 
 ### Idempotency
+
 Write endpoints accept `Idempotency-Key` (max 128 chars). Behavior:
+
 - First request stores the response for 24h.
 - Same key + same payload returns the stored response.
 - Same key + different payload returns `409 IDEMPOTENCY_KEY_CONFLICT`.
 
 ## Audit Logs
+
 Audit events are stored in the `audit_events` table and exposed via admin-only endpoints for investigations.
 
 Event taxonomy:
+
 | Category | event_type | Description |
 | --- | --- | --- |
 | Auth/security | `auth.api_key.created` | API key created via script |
@@ -200,24 +236,29 @@ Event taxonomy:
 | System | `system.error` | Optional: handled internal error |
 
 Redaction policy:
+
 - Never store plaintext API keys, Authorization headers, full user message content, or raw document text.
 - Keys matching `api_key`, `authorization`, `token`, `secret`, `password`, `text`, or `content` are stored as `[REDACTED]`.
 - Store only identifiers, counts, and high-level metadata.
 
 List events:
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/audit/events?limit=50"
 ```
 
 Filter events:
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/audit/events?event_type=rbac.forbidden&outcome=failure&limit=20"
 ```
 
 ## Frontend Integration (BFF)
+
 UI-focused endpoints live under `/v1/ui/*` and return normalized shapes for web apps:
+
 - `GET /v1/ui/bootstrap`
 - `GET /v1/ui/dashboard/summary`
 - `GET /v1/ui/documents`
@@ -225,6 +266,7 @@ UI-focused endpoints live under `/v1/ui/*` and return normalized shapes for web 
 - `POST /v1/ui/actions/reindex-document`
 
 Query conventions:
+
 - `q` full-text filter
 - `sort` comma list (e.g., `-created_at,name`)
 - `limit` 1..100 (default 25)
@@ -232,6 +274,7 @@ Query conventions:
 - filters: `status`, `corpus_id`, `created_from`, `created_to`, `actor_type`, `event_type`
 
 Pagination response shape:
+
 ```
 {
   "data": {
@@ -246,6 +289,7 @@ Pagination response shape:
 Invalid cursors return `400` with `INVALID_CURSOR`.
 
 Optimistic action response shape:
+
 ```
 {
   "data": {
@@ -260,20 +304,25 @@ Optimistic action response shape:
 ```
 
 SSE protocol for `/v1/run`:
+
 - Order: `request.accepted` → `token.delta*` → `message.final` → `audio.ready|audio.error` → `done`
 - Every event payload includes `seq`
 - Heartbeat:
+
 ```
 event: heartbeat
 data: {"ts":"...","request_id":"...","seq":7}
 ```
+
 - Reconnects send `Last-Event-ID`; server responds with `resume.unsupported` (restart required).
 
 ## Rate Limiting
+
 Rate limits use a Redis-backed token bucket with sustained rate + burst capacity. Limits are enforced per API key and per tenant; requests are allowed only when both buckets have capacity.
 Clients should respect `Retry-After` and `X-RateLimit-Retry-After-Ms` headers and apply exponential backoff on `429`/`503` responses (SDKs include retry helpers).
 
 Route classes:
+
 | Class | Scope | Paths |
 | --- | --- | --- |
 | run | strict | `POST /run` |
@@ -282,6 +331,7 @@ Route classes:
 | ops | ops | `/ops/*` and `/audit/events*` |
 
 Default thresholds:
+
 | Route class | Key RPS | Key burst | Tenant RPS | Tenant burst |
 | --- | --- | --- | --- | --- |
 | run | 1 | 5 | 3 | 15 |
@@ -290,10 +340,12 @@ Default thresholds:
 | ops | 2 | 10 | 4 | 20 |
 
 Fail behavior:
+
 - `RL_FAIL_MODE=open` (default): allow traffic if Redis is unavailable and set `X-RateLimit-Status: degraded`.
 - `RL_FAIL_MODE=closed`: return `503 RATE_LIMIT_UNAVAILABLE`.
 
 Example 429 response:
+
 ```
 HTTP/1.1 429 Too Many Requests
 Retry-After: 2
@@ -313,17 +365,21 @@ X-RateLimit-Retry-After-Ms: 1200
 ```
 
 ## Corpora API
+
 List corpora:
+
 ```
 curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/corpora
 ```
 
 Get a corpus:
+
 ```
 curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/corpora/c1
 ```
 
 Patch provider_config_json:
+
 ```
 curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   http://localhost:8000/v1/corpora/c1 \
@@ -340,7 +396,9 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $
 ```
 
 ## Optional TTS audio output
+
 Enable TTS with environment variables:
+
 - `TTS_PROVIDER` = `openai` | `fake` | `none` (default `none`)
 - `OPENAI_API_KEY` (required for OpenAI)
 - `OPENAI_TTS_MODEL` (default `gpt-4o-mini-tts`)
@@ -351,6 +409,7 @@ Enable TTS with environment variables:
 Audio files are stored locally under `var/audio/` (dev-only).
 
 Example `/run` with audio enabled:
+
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/v1/run \
@@ -364,16 +423,19 @@ curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" 
 ```
 
 SSE events:
+
 - `audio.ready` → `{"type":"audio.ready","request_id":"...","data":{"audio_url":"http://localhost:8000/v1/audio/<id>.mp3","audio_id":"<id>","mime":"audio/mpeg"}}`
 - `audio.error` → `{"type":"audio.error","request_id":"...","data":{"code":"TTS_ERROR","message":"..."}}`
 
 ## Ingestion (documents → chunks)
+
 Supported types: `text/plain`, `text/markdown` (JSON with `{"text": "..."}` is accepted as a file upload).
 Ingestion is async: the API enqueues a Redis-backed job and returns `202 Accepted`.
 Lifecycle: `queued` → `processing` → `succeeded|failed` (see `failure_reason` on failures).
 Raw text ingestion is deterministic and idempotent when a `document_id` is supplied.
 
 Upload a document (returns `202` with `job_id` + `status_url`):
+
 ```
 curl -s -X POST -H "Authorization: Bearer $API_KEY" \
   -F "corpus_id=c1" \
@@ -382,6 +444,7 @@ curl -s -X POST -H "Authorization: Bearer $API_KEY" \
 ```
 
 Ingest raw text (returns `202` with `job_id` + `status_url`):
+
 ```
 Set `overwrite: true` to requeue a failed or succeeded document with the same `document_id`.
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
@@ -396,16 +459,19 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
 ```
 
 Check status / poll:
+
 ```
 curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/documents/<document_id>
 ```
 
 List documents:
+
 ```
 curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/documents
 ```
 
 Reindex a document (returns `202` with `job_id` + `status_url`):
+
 ```
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   http://localhost:8000/v1/documents/<document_id>/reindex \
@@ -416,77 +482,95 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
 ```
 
 Delete a document:
+
 ```
 curl -s -X DELETE -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/documents/<document_id>
 ```
 
 Troubleshooting:
+
 - If status stays `queued`, ensure the ingestion worker is running and Redis is reachable.
 - If status stays `processing`, check for queue backlog or long-running ingestions.
 - If status is `failed`, inspect `failure_reason` and worker logs, then reindex or re-upload.
 - Delete returns `409` for in-flight documents (`queued`/`processing`).
 
 ## Ops Endpoints
+
 Ops endpoints return `200` even when dependencies are degraded, surfacing the degraded field instead of failing.
 Ops endpoints require an admin API key.
 
 Health summary:
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/v1/ops/health
 ```
 
 Ingestion stats (last 24 hours by default):
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" "http://localhost:8000/v1/ops/ingestion?hours=24"
 ```
 
 Metrics snapshot (JSON):
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/v1/ops/metrics
 ```
 
 Heartbeat interpretation:
+
 - `worker_heartbeat_age_s` shows seconds since the last worker heartbeat.
 - If the heartbeat is missing or stale, `/ops/health` reports `status: degraded`.
 
 Queue depth:
+
 - `queue_depth` reports pending jobs in the Redis ingestion queue.
 - If Redis is unavailable, `queue_depth` is `null` and `/ops/health` reports `redis: degraded`.
 
 ## Cloud retrieval real-run (credentials required)
+
 Use the smoke script to validate retrieval routing without calling the LLM:
+
 ```
 docker compose exec api python scripts/provider_smoke.py \
   --tenant t1 --corpus c1 --query "test query" --top-k 5
 ```
 
 ### AWS Bedrock Knowledge Bases
+
 Required environment (examples):
+
 - `AWS_REGION` (or `AWS_DEFAULT_REGION`)
 - `AWS_PROFILE` (or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + optional `AWS_SESSION_TOKEN`)
 
 Permissions (high level):
+
 - `bedrock:Retrieve` on the target knowledge base
 
 Smoke validation:
+
 ```
 docker compose exec api python scripts/provider_smoke.py \
   --tenant t1 --corpus c1 --query "bedrock test" --top-k 5
 ```
 
 ### Vertex AI Search (Discovery Engine)
+
 Required environment (examples):
+
 - `GOOGLE_CLOUD_PROJECT`
 - `GOOGLE_CLOUD_LOCATION` (or `VERTEX_LOCATION`)
 - Application Default Credentials (ADC), e.g. `gcloud auth application-default login`
 
 Smoke validation:
+
 ```
 docker compose exec api python scripts/provider_smoke.py \
   --tenant t1 --corpus c1 --query "vertex test" --top-k 5
 ```
 
 ### Troubleshooting error codes
+
 - `AWS_CONFIG_MISSING`: required AWS env vars or KB config missing
 - `AWS_AUTH_ERROR`: missing/invalid AWS credentials
 - `AWS_RETRIEVAL_ERROR`: Bedrock retrieval failed (check permissions or KB id)
@@ -495,6 +579,7 @@ docker compose exec api python scripts/provider_smoke.py \
 - `VERTEX_RETRIEVAL_ERROR`: Vertex retrieval failed (check resource id)
 
 ## Call `/run` (SSE)
+
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/v1/run \
@@ -506,23 +591,28 @@ curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" 
     "audio":false
   }'
 ```
+
 If you receive `429 RATE_LIMITED`, back off using the `Retry-After` header and retry.
 
 ## Usage Quotas
+
 Usage quotas enforce daily and monthly request caps per tenant. Soft caps emit warnings; hard caps can block or observe overages.
 
 Quota behavior:
+
 - Soft cap (default 80% of limit): request allowed + warning header + event emitted once per period.
 - Hard cap: block with `402 QUOTA_EXCEEDED` (when `hard_cap_enabled=true`), or allow with overage event (when `hard_cap_enabled=false`).
 - `/run` counts as 3 request units to reflect higher cost.
 
 Quota headers (always included on successful requests):
+
 - `X-Quota-Day-Limit`, `X-Quota-Day-Used`, `X-Quota-Day-Remaining`
 - `X-Quota-Month-Limit`, `X-Quota-Month-Used`, `X-Quota-Month-Remaining`
 - `X-Quota-SoftCap-Reached`: `true|false`
 - `X-Quota-HardCap-Mode`: `enforce|observe`
 
 Example 402 response:
+
 ```
 HTTP/1.1 402 Payment Required
 {
@@ -538,6 +628,7 @@ HTTP/1.1 402 Payment Required
 ```
 
 Admin quota endpoints (admin role only, tenant-scoped):
+
 ```
 # Get limits
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
@@ -559,16 +650,19 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
 ```
 
 Billing webhook configuration:
+
 - `BILLING_WEBHOOK_ENABLED=true`
 - `BILLING_WEBHOOK_URL=https://billing.example.com/hooks`
 - `BILLING_WEBHOOK_SECRET=...`
 - `BILLING_WEBHOOK_TIMEOUT_MS=2000`
 
 Webhook signature:
+
 - Header `X-Billing-Signature` is `hex(HMAC_SHA256(secret, raw_body))`.
 - Header `X-Billing-Event` includes the event type (e.g., `quota.soft_cap_reached`).
 
 ## Plans & Entitlements
+
 Plans assign feature entitlements per tenant. Entitlements are enforced server-side for retrieval providers, TTS, ops/audit access, and provider configuration changes.
 
 Plan matrix:
@@ -586,12 +680,14 @@ Plan matrix:
 | High quota tier | no | no | yes |
 
 Entitlement enforcement:
+
 - Retrieval provider selection is validated against `feature.retrieval.*` flags.
 - `/run` with `audio=true` requires `feature.tts`.
 - `/ops/*` and `/audit/events*` require `feature.ops_admin_access` and `feature.audit_access`.
 - `PATCH /corpora/{id}` with provider changes requires `feature.corpora_patch_provider_config`.
 
 Feature disabled error:
+
 ```
 HTTP/1.1 403 Forbidden
 {
@@ -610,6 +706,7 @@ HTTP/1.1 403 Forbidden
 ```
 
 Admin plan endpoints (admin role only, tenant-scoped):
+
 ```
 # List plans
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
@@ -631,9 +728,11 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $
 ```
 
 ## Tenant Self-Serve API
+
 Tenant self-serve endpoints let admins manage API keys, view usage, and request plan upgrades without platform intervention.
 
 Self-serve API key lifecycle:
+
 ```
 # Create key (plaintext returned once)
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
@@ -650,6 +749,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
 ```
 
 Usage dashboard:
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/self-serve/usage/summary?window_days=30"
@@ -659,6 +759,7 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
 ```
 
 Plan visibility and upgrades:
+
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   http://localhost:8000/v1/self-serve/plan
@@ -669,6 +770,7 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
 ```
 
 Billing webhook test (feature-gated):
+
 ```
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
   http://localhost:8000/v1/self-serve/billing/webhook-test
@@ -677,17 +779,21 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
 Note: plaintext API keys are returned once on creation and must be stored securely by the client.
 
 ## SDKs
+
 Generated SDKs live under:
+
 - `sdk/typescript/`
 - `sdk/python/`
 - `sdk/frontend/` (frontend BFF + SSE helpers)
 
 Regenerate from OpenAPI:
+
 ```
 make sdk-generate
 ```
 
 TypeScript (fetch) example:
+
 ```
 import { createClient } from "./sdk/typescript/client";
 
@@ -700,6 +806,7 @@ const health = await api.healthHealthGet();
 ```
 
 Python example:
+
 ```
 import sys
 from pathlib import Path
@@ -714,6 +821,7 @@ health = api.health_health_get()
 ```
 
 Frontend SDK example:
+
 ```
 import { UiClient, buildQuery, connectRunStream } from "./sdk/frontend/src";
 
@@ -733,6 +841,7 @@ connectRunStream({
 ```
 
 ## Notes
+
 - `/run` emits `request.accepted`, `token.delta`, `message.final`, optional `audio.*`, and `done` events with a monotonic `seq`.
 - Heartbeat events are emitted for long streams (`event: heartbeat`).
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
@@ -740,35 +849,51 @@ connectRunStream({
 - Set `DEBUG_EVENTS=true` to emit `debug.retrieval` SSE events after retrieval for validation.
 
 ## Validation Checklist
+
 1) Copy env file:
+
 ```
 cp .env.example .env
 ```
-2) Start services:
+
+1) Start services:
+
 ```
 docker compose up --build -d
 ```
-3) Run migrations:
+
+1) Run migrations:
+
 ```
 docker compose exec api alembic upgrade head
 ```
-4) Create an API key:
+
+1) Create an API key:
+
 ```
 docker compose exec api python scripts/create_api_key.py --tenant t1 --role admin --name local-admin
 ```
-5) Export the key:
+
+1) Export the key:
+
 ```
 export API_KEY=<api_key_from_script>
 ```
-6) Health check:
+
+1) Health check:
+
 ```
 curl -s http://localhost:8000/v1/health
 ```
-7) Seed demo data:
+
+1) Seed demo data:
+
 ```
 docker compose exec api python scripts/seed_demo.py
 ```
-8) SSE run (expect `request.accepted`, `token.delta`, `message.final`, optional `audio.*`, and `done`):
+
+1) SSE run (expect `request.accepted`, `token.delta`, `message.final`, optional `audio.*`, and `done`):
+
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
   -X POST http://localhost:8000/v1/run \
@@ -780,13 +905,17 @@ curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" 
     "audio":false
   }'
 ```
-9) Run tests in container:
+
+1) Run tests in container:
+
 ```
 docker compose exec api pytest -q
 ```
 
 ## Retrieval sanity check
+
 This query should match seeded content about testing strategy and release gates:
+
 ```
 curl -N -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
@@ -799,16 +928,20 @@ curl -N -H "Content-Type: application/json" \
     "audio":false
   }'
 ```
+
 Expected behavior:
+
 - If Vertex is configured, you will see `token.delta` events followed by `message.final`.
 - If Vertex is missing, you will see an `error` event, but retrieval and persistence still run before the LLM call.
 
 ## Tests
+
 ```
 pytest
 ```
 
 ## Makefile shortcuts
+
 ```
 make up
 make migrate
@@ -818,6 +951,7 @@ make sdk-generate
 ```
 
 ## Release process
+
 - Branch naming: `feat/<short-scope>` or `fix/<short-scope>`
 - Bump version: update `pyproject.toml` and add a new entry in `CHANGELOG.md`
 - Tag release: `git tag vX.Y.Z`
