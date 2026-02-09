@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     idempotency_enabled: bool = True
     # Control TTL for stored idempotency responses.
     idempotency_ttl_hours: int = 24
+    # Sign UI cursor tokens to prevent tampering across pagination requests.
+    ui_cursor_secret: str = "dev-ui-cursor-secret"
+    # Emit SSE heartbeat events every N seconds for long-running /run streams.
+    run_sse_heartbeat_s: int = 10
 
     google_cloud_project: str | None = None
     google_cloud_location: str | None = None
