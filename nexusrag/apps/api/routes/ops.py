@@ -12,12 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
-from nexusrag.apps.api.response import SuccessEnvelope
+from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.services.ingest import queue as ingest_queue
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
+from nexusrag.services.resilience import get_circuit_breaker_state
+from nexusrag.services.telemetry import (
+    availability,
+    counters_snapshot,
+    external_latency_by_integration,
+    p95_latency,
+    request_latency_by_class,
+    stream_duration_stats,
+)
 
 
 router = APIRouter(prefix="/ops", tags=["ops"], responses=DEFAULT_ERROR_RESPONSES)
@@ -138,7 +147,7 @@ async def ops_health(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)
 
 
 @router.get("/ingestion", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
@@ -266,7 +275,7 @@ async def ops_ingestion(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)
 
 
 @router.get("/metrics", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
@@ -313,6 +322,23 @@ async def ops_metrics(
             "nexusrag_ingest_queue_depth": queue_depth,
         },
     }
+    metrics_counters = counters_snapshot()
+    payload["counters"].update(
+        {
+            "nexusrag_service_busy_total": metrics_counters.get("service_busy_total", 0),
+            "nexusrag_quota_exceeded_total": metrics_counters.get("quota_exceeded_total", 0),
+            "nexusrag_rate_limited_total": metrics_counters.get("rate_limited_total", 0),
+        }
+    )
+    payload["latency_ms"] = request_latency_by_class(3600)
+    payload["external_call_latency_ms"] = external_latency_by_integration(3600)
+    payload["sse_stream_duration_ms"] = stream_duration_stats()
+    payload["circuit_breaker_state"] = {
+        "retrieval.aws_bedrock": await get_circuit_breaker_state("retrieval.aws_bedrock"),
+        "retrieval.gcp_vertex": await get_circuit_breaker_state("retrieval.gcp_vertex"),
+        "tts.openai": await get_circuit_breaker_state("tts.openai"),
+        "billing.webhook": await get_circuit_breaker_state("billing.webhook"),
+    }
     request_ctx = get_request_context(request)
     # Record ops views for administrative investigations.
     await record_event(
@@ -332,4 +358,71 @@ async def ops_metrics(
         commit=True,
         best_effort=True,
     )
-    return payload
+    return success_response(request=request, data=payload)
+
+
+@router.get("/slo", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def ops_slo(
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Expose SLO status with availability and latency indicators.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    settings = get_settings()
+    availability_5m = availability(300)
+    availability_1h = availability(3600)
+    if availability_1h is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "SLO_DATA_UNAVAILABLE", "message": "Insufficient SLO data"},
+        )
+    target = settings.slo_availability_target
+    budget = max(0.1, 100.0 - target)
+    error_rate_1h = 100.0 - availability_1h
+    remaining_pct = max(0.0, (budget - error_rate_1h) / budget * 100.0)
+    burn_rate_5m = None
+    if availability_5m is not None:
+        burn_rate_5m = (100.0 - availability_5m) / budget
+    status = "healthy"
+    if availability_1h < target:
+        status = "breached"
+    elif burn_rate_5m is not None and burn_rate_5m > 1.0:
+        status = "at_risk"
+
+    payload = {
+        "window": "1h",
+        "availability": availability_1h,
+        "availability_5m": availability_5m,
+        "p95": {
+            "run": p95_latency(300, path_prefix="/v1/run"),
+            "api": p95_latency(300, path_prefix="/v1/ui/bootstrap"),
+            "documents_text": p95_latency(300, path_prefix="/v1/documents/text"),
+        },
+        "error_budget": {"remaining_pct": remaining_pct, "burn_rate_5m": burn_rate_5m},
+        "status": status,
+    }
+
+    request_ctx = get_request_context(request)
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="ops.viewed",
+        outcome="success",
+        resource_type="ops",
+        resource_id="slo",
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={"path": request.url.path},
+        commit=True,
+        best_effort=True,
+    )
+    return success_response(request=request, data=payload)

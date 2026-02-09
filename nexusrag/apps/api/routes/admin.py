@@ -38,6 +38,20 @@ from nexusrag.services.idempotency import (
     compute_request_hash,
     store_idempotency_response,
 )
+from nexusrag.services.rollouts import (
+    CANARY_KEYS,
+    KILL_SWITCH_KEYS,
+    get_canary_percentages,
+    get_kill_switches,
+    set_canary_percentages,
+    set_kill_switches,
+)
+from nexusrag.services.maintenance import (
+    cleanup_ui_actions,
+    prune_audit_events,
+    prune_idempotency,
+    prune_usage_counters,
+)
 
 
 router = APIRouter(prefix="/admin", tags=["admin"], responses=DEFAULT_ERROR_RESPONSES)
@@ -128,6 +142,33 @@ class FeatureOverrideRequest(BaseModel):
     feature_key: str
     enabled: bool | None = None
     config_json: dict[str, Any] | None = None
+
+
+class KillSwitchesResponse(BaseModel):
+    # Report active kill switches for operational visibility.
+    kill_switches: dict[str, bool]
+
+
+class KillSwitchesPatchRequest(BaseModel):
+    # Allow partial updates to kill switches.
+    kill_switches: dict[str, bool]
+
+
+class CanaryResponse(BaseModel):
+    # Report rollout percentages for canary-controlled features.
+    canary_percentages: dict[str, int]
+
+
+class CanaryPatchRequest(BaseModel):
+    # Allow partial updates to canary percentages.
+    canary_percentages: dict[str, int]
+
+
+class MaintenanceRunResponse(BaseModel):
+    # Report maintenance task execution status and affected rows.
+    task: str
+    status: str
+    deleted_rows: int
 
 
 def _ensure_same_tenant(principal: Principal, tenant_id: str) -> None:
@@ -497,3 +538,100 @@ async def patch_tenant_overrides(
         response_body=jsonable_encoder(payload_body),
     )
     return payload_body
+
+
+@router.get(
+    "/rollouts/killswitches",
+    response_model=SuccessEnvelope[KillSwitchesResponse] | KillSwitchesResponse,
+)
+async def get_rollout_killswitches(
+    principal: Principal = Depends(require_role("admin")),
+) -> KillSwitchesResponse:
+    # Allow admins to inspect active kill switches.
+    _ = principal
+    switches = await get_kill_switches()
+    return KillSwitchesResponse(kill_switches=switches)
+
+
+@router.patch(
+    "/rollouts/killswitches",
+    response_model=SuccessEnvelope[KillSwitchesResponse] | KillSwitchesResponse,
+)
+async def patch_rollout_killswitches(
+    payload: KillSwitchesPatchRequest,
+    principal: Principal = Depends(require_role("admin")),
+) -> KillSwitchesResponse:
+    # Allow admins to toggle kill switches for incident response.
+    _ = principal
+    allowed = set(KILL_SWITCH_KEYS.keys())
+    updates = {key: bool(value) for key, value in payload.kill_switches.items() if key in allowed}
+    if not updates:
+        raise HTTPException(status_code=422, detail="No valid kill switches supplied")
+    await set_kill_switches(updates)
+    return KillSwitchesResponse(kill_switches=await get_kill_switches())
+
+
+@router.get(
+    "/rollouts/canary",
+    response_model=SuccessEnvelope[CanaryResponse] | CanaryResponse,
+)
+async def get_rollout_canary(
+    principal: Principal = Depends(require_role("admin")),
+) -> CanaryResponse:
+    # Allow admins to inspect canary rollout percentages.
+    _ = principal
+    percentages = await get_canary_percentages()
+    return CanaryResponse(canary_percentages=percentages)
+
+
+@router.patch(
+    "/rollouts/canary",
+    response_model=SuccessEnvelope[CanaryResponse] | CanaryResponse,
+)
+async def patch_rollout_canary(
+    payload: CanaryPatchRequest,
+    principal: Principal = Depends(require_role("admin")),
+) -> CanaryResponse:
+    # Allow admins to update canary rollout percentages.
+    _ = principal
+    allowed = set(CANARY_KEYS.keys())
+    updates: dict[str, int] = {}
+    for key, value in payload.canary_percentages.items():
+        if key not in allowed:
+            continue
+        pct = max(0, min(int(value), 100))
+        updates[key] = pct
+    if not updates:
+        raise HTTPException(status_code=422, detail="No valid canary percentages supplied")
+    await set_canary_percentages(updates)
+    return CanaryResponse(canary_percentages=await get_canary_percentages())
+
+
+@router.post(
+    "/maintenance/run",
+    response_model=SuccessEnvelope[MaintenanceRunResponse] | MaintenanceRunResponse,
+)
+async def run_maintenance_task(
+    request: Request,
+    task: str = Query(
+        ...,
+        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage)$",
+    ),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> MaintenanceRunResponse:
+    # Allow admins to run bounded maintenance tasks on demand.
+    _ = principal
+    task_map = {
+        "prune_idempotency": prune_idempotency,
+        "prune_audit": prune_audit_events,
+        "cleanup_actions": cleanup_ui_actions,
+        "prune_usage": prune_usage_counters,
+    }
+    runner = task_map.get(task)
+    if runner is None:
+        raise HTTPException(status_code=422, detail="Unknown maintenance task")
+    deleted = await runner(db)
+    await db.commit()
+    payload = MaintenanceRunResponse(task=task, status="completed", deleted_rows=deleted)
+    return success_response(request=request, data=payload)

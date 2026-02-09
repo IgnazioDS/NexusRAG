@@ -16,6 +16,8 @@ from nexusrag.services.ingest.ingestion import (
     ingest_document_from_storage,
     write_text_to_storage,
 )
+from nexusrag.core.errors import ServiceBusyError
+from nexusrag.services.resilience import get_ingest_bulkhead
 
 
 logger = logging.getLogger(__name__)
@@ -123,7 +125,14 @@ async def enqueue_ingestion_job(payload: IngestionJobPayload) -> str:
     job_id = payload.request_id
     settings = get_settings()
     if settings.ingest_execution_mode.lower() == "inline":
-        await _run_inline_job(payload, job_id=job_id, max_retries=settings.ingest_max_retries)
+        bulkhead = get_ingest_bulkhead()
+        lease = await bulkhead.acquire()
+        if lease is None:
+            raise ServiceBusyError("Ingestion capacity is saturated")
+        try:
+            await _run_inline_job(payload, job_id=job_id, max_retries=settings.ingest_max_retries)
+        finally:
+            lease.release()
         return job_id
 
     redis = await get_redis_pool()
@@ -146,15 +155,22 @@ async def process_ingestion_job(
 ) -> int:
     # Centralize ingestion execution so worker and inline mode share behavior.
     try:
+        bulkhead = get_ingest_bulkhead()
+        lease = await bulkhead.acquire()
+        if lease is None:
+            raise ServiceBusyError("Ingestion capacity is saturated")
         storage_path = _resolve_storage_path(payload)
-        return await ingest_document_from_storage(
-            payload.document_id,
-            storage_path,
-            chunk_size=payload.chunk_size_chars,
-            chunk_overlap=payload.chunk_overlap_chars,
-            is_reindex=payload.is_reindex,
-            job_id=job_id,
-        )
+        try:
+            return await ingest_document_from_storage(
+                payload.document_id,
+                storage_path,
+                chunk_size=payload.chunk_size_chars,
+                chunk_overlap=payload.chunk_overlap_chars,
+                is_reindex=payload.is_reindex,
+                job_id=job_id,
+            )
+        finally:
+            lease.release()
     except Exception as exc:  # noqa: BLE001 - surface a concise failure reason
         if _is_retryable(exc) and attempt < max_retries:
             # Let arq (or inline loop) retry transient failures.
@@ -205,6 +221,8 @@ def _failure_reason(exc: Exception) -> str:
         return "Stored document text is missing"
     if isinstance(exc, ValueError):
         return str(exc)
+    if isinstance(exc, ServiceBusyError):
+        return "Ingestion service busy; retry later"
     return "Ingestion failed; retry or check worker logs"
 
 

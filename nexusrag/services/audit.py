@@ -120,3 +120,20 @@ async def record_event(
             request_id,
             exc_info=exc,
         )
+
+
+async def record_system_event(*, event_type: str, metadata: dict[str, Any] | None = None) -> None:
+    # Provide a minimal helper for system-level audit events without request context.
+    await record_event(
+        tenant_id=None,
+        actor_type="system",
+        actor_id=None,
+        actor_role=None,
+        event_type=event_type,
+        outcome="success",
+        resource_type="system",
+        resource_id=event_type,
+        metadata=metadata,
+        commit=True,
+        best_effort=True,
+    )

@@ -37,6 +37,7 @@ from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.services.ingest.ingestion import write_text_to_storage
 from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestion_job
+from nexusrag.core.errors import ServiceBusyError
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.apps.api.response import SuccessEnvelope, is_versioned_request, success_response
 from nexusrag.services.idempotency import (
@@ -45,6 +46,8 @@ from nexusrag.services.idempotency import (
     compute_request_hash,
     store_idempotency_response,
 )
+from nexusrag.services.rollouts import resolve_kill_switch
+from nexusrag.services.telemetry import increment_counter
 
 
 logger = logging.getLogger(__name__)
@@ -146,6 +149,15 @@ def _error_detail(code: str, message: str) -> dict[str, str]:
     return {"code": code, "message": message}
 
 
+async def _ensure_ingest_enabled() -> None:
+    # Block ingestion when the kill switch is active.
+    if await resolve_kill_switch("kill.ingest"):
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail("FEATURE_TEMPORARILY_DISABLED", "Ingestion is temporarily disabled"),
+        )
+
+
 def _parse_text(upload: UploadFile, body: bytes) -> str:
     # Accept text/plain, text/markdown, or JSON bodies with a text field.
     content_type = (upload.content_type or "").lower()
@@ -217,6 +229,23 @@ async def _enqueue_or_fail(
     # Update the document to failed if Redis is unavailable.
     try:
         await enqueue_ingestion_job(payload)
+    except ServiceBusyError as exc:
+        await documents_repo.update_status(
+            db,
+            document_id,
+            status="failed",
+            error_message="Ingestion service busy",
+            failure_reason="Ingestion service busy",
+            completed_at=_utc_now(),
+            last_job_id=payload.request_id,
+        )
+        await db.commit()
+        increment_counter("service_busy_total")
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail("SERVICE_BUSY", "Ingestion service busy; retry later"),
+            headers={"Retry-After": "1"},
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - map queue failures to a 503 response
         await documents_repo.update_status(
             db,
@@ -249,6 +278,7 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
+    await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
     # Enforce tenant scoping to avoid cross-tenant corpus access.
     corpus = await corpora_repo.get_by_tenant_and_id(db, tenant_id, corpus_id)
@@ -428,6 +458,7 @@ async def ingest_text_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
+    await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
     _validate_text_payload(payload.text)
     metadata_json = payload.metadata_json or {}
@@ -657,6 +688,7 @@ async def reindex_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
+    await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
     try:
         doc = await documents_repo.get_document(db, tenant_id, document_id)

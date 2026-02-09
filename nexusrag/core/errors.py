@@ -61,6 +61,14 @@ class TTSError(NexusError):
     """TTS provider request failure."""
 
 
+class IntegrationUnavailableError(NexusError):
+    """External integration is unavailable (circuit breaker open)."""
+
+
+class ServiceBusyError(NexusError):
+    """Service is at capacity; callers should retry later."""
+
+
 class DatabaseError(NexusError):
     """Database layer failure."""
 
