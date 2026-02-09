@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     kill_tts: bool = False
     kill_external_retrieval: bool = False
     # Percentage rollouts for gated features (0-100).
-    rollout_tts_pct: int = 0
-    rollout_external_retrieval_pct: int = 0
+    rollout_tts_pct: int = 100
+    rollout_external_retrieval_pct: int = 100
     # Prefix rollout keys stored in Redis.
     rollout_redis_prefix: str = "nexusrag:rollout"
     # SLO targets and latency thresholds for ops visibility.

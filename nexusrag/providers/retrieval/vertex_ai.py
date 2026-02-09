@@ -72,6 +72,7 @@ class VertexAIRetriever:
         client = self._get_client()
         breaker = await self._get_breaker()
         await breaker.before_call()
+        start = time.monotonic()
         serving_config = (
             f"projects/{self._project}/locations/{self._location}/dataStores/"
             f"{self._resource_id}/servingConfigs/default_search"
