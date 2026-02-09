@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test sdk-generate
+.PHONY: up migrate seed test sdk-generate frontend-sdk-build frontend-sdk-test
 
 up:
 	# Bring up docker compose services for local dev.
@@ -19,3 +19,12 @@ test:
 sdk-generate:
 	# Generate TypeScript and Python SDKs from the OpenAPI schema.
 	python scripts/generate_sdk.py
+
+frontend-sdk-build:
+	# Build the frontend integration SDK for web apps.
+	npm --prefix sdk/frontend install
+	npm --prefix sdk/frontend run build
+
+frontend-sdk-test:
+	# Typecheck the frontend integration SDK.
+	npm --prefix sdk/frontend run test
