@@ -7,7 +7,7 @@ Create Date: 2026-02-09
 
 from __future__ import annotations
 
-import alembic.op as op
+from alembic import op
 import sqlalchemy as sa
 
 

@@ -56,12 +56,12 @@ def is_versioned_request(request: Request) -> bool:
     return request.url.path.startswith(f"/{API_VERSION}")
 
 
-def success_response(*, request: Request, data: Any) -> dict[str, Any]:
-    # Return the standard success envelope for versioned routes only.
+def success_response(*, request: Request, data: T) -> SuccessEnvelope[T] | T:
+    # Return the standard success envelope (typed) for versioned routes only.
     if not is_versioned_request(request):
         return data
     meta = ResponseMeta(request_id=get_request_id(request))
-    return {"data": data, "meta": meta.model_dump()}
+    return SuccessEnvelope(data=data, meta=meta)
 
 
 def error_response(
