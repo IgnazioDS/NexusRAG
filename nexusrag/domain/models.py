@@ -240,6 +240,25 @@ class IdempotencyRecord(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class UiAction(Base):
+    __tablename__ = "ui_actions"
+
+    # Persist optimistic UI actions to support frontend polling and reconciliation.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    actor_id: Mapped[str] = mapped_column(String, index=True)
+    action_type: Mapped[str] = mapped_column(String, index=True)
+    request_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String, index=True)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Message(Base):
     __tablename__ = "messages"
 
@@ -356,3 +375,5 @@ Index("ix_tenant_plan_assignments_tenant", TenantPlanAssignment.tenant_id)
 Index("ix_tenant_plan_assignments_active", TenantPlanAssignment.tenant_id, TenantPlanAssignment.is_active)
 Index("ix_tenant_feature_overrides_tenant", TenantFeatureOverride.tenant_id)
 Index("ix_plan_upgrade_requests_tenant", PlanUpgradeRequest.tenant_id)
+Index("ix_ui_actions_tenant_created_at", UiAction.tenant_id, UiAction.created_at.desc())
+Index("ix_ui_actions_status", UiAction.status)
