@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,9 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import (
     Principal,
     get_db,
+    idempotency_key_header,
     reject_tenant_id_in_body,
     require_role,
 )
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.domain.models import Chunk, Document
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import corpora as corpora_repo
@@ -34,10 +38,17 @@ from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.services.ingest.ingestion import write_text_to_storage
 from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestion_job
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.apps.api.response import SuccessEnvelope, is_versioned_request, success_response
+from nexusrag.services.idempotency import (
+    build_replay_response,
+    check_idempotency,
+    compute_request_hash,
+    store_idempotency_response,
+)
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(prefix="/documents", tags=["documents"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 class DocumentResponse(BaseModel):
@@ -78,7 +89,22 @@ class TextIngestRequest(BaseModel):
     overwrite: bool = False
 
     # Reject unknown fields so tenant_id cannot be supplied in the payload.
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "corpus_id": "corpus_abc",
+                    "text": "Quarterly planning notes and action items...",
+                    "filename": "q1_notes.txt",
+                    "metadata_json": {"source": "internal", "department": "product"},
+                    "chunk_size_chars": 1000,
+                    "chunk_overlap_chars": 100,
+                    "overwrite": False,
+                }
+            ]
+        },
+    }
 
 
 class ReindexRequest(BaseModel):
@@ -162,18 +188,24 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _status_url(document_id: str) -> str:
+def _status_url(document_id: str, request: Request | None = None) -> str:
     # Provide a stable polling URL for queued ingestion requests.
-    return f"/documents/{document_id}"
+    prefix = "/v1" if request is not None and is_versioned_request(request) else ""
+    return f"{prefix}/documents/{document_id}"
 
 
-def _accepted_response(document_id: str, status: str, job_id: str | None) -> DocumentAccepted:
+def _accepted_response(
+    document_id: str,
+    status: str,
+    job_id: str | None,
+    request: Request | None = None,
+) -> DocumentAccepted:
     # Keep accepted responses consistent across enqueue and idempotent paths.
     return DocumentAccepted(
         document_id=document_id,
         status=status,
         job_id=job_id,
-        status_url=_status_url(document_id),
+        status_url=_status_url(document_id, request),
     )
 
 
@@ -203,7 +235,8 @@ async def _enqueue_or_fail(
         ) from exc
 
 
-@router.post("", status_code=202)
+# Accept legacy unwrapped responses; v1 routes are wrapped by middleware.
+@router.post("", status_code=202, response_model=SuccessEnvelope[DocumentAccepted] | DocumentAccepted)
 async def upload_document(
     request: Request,
     response: Response,
@@ -211,6 +244,7 @@ async def upload_document(
     file: UploadFile = File(...),
     document_id: str | None = Form(default=None),
     overwrite: bool = Form(default=False),
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
@@ -220,6 +254,27 @@ async def upload_document(
     corpus = await corpora_repo.get_by_tenant_and_id(db, tenant_id, corpus_id)
     if corpus is None:
         raise HTTPException(status_code=404, detail="Corpus not found")
+
+    body = await file.read()
+    request_hash = compute_request_hash(
+        {
+            "corpus_id": corpus_id,
+            "document_id": document_id,
+            "filename": file.filename or "upload",
+            "content_type": file.content_type or "application/octet-stream",
+            "overwrite": overwrite,
+            "file_sha256": hashlib.sha256(body).hexdigest(),
+        }
+    )
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
 
     existing = None
     if document_id:
@@ -234,12 +289,37 @@ async def upload_document(
                 raise HTTPException(status_code=409, detail="Document belongs to a different corpus")
             if existing.status in {"queued", "processing"}:
                 response.status_code = 200
-                return _accepted_response(existing.id, existing.status, existing.last_job_id)
+                accepted = _accepted_response(
+                    existing.id,
+                    existing.status,
+                    existing.last_job_id,
+                    request,
+                )
+                payload = success_response(request=request, data=accepted)
+                await store_idempotency_response(
+                    db=db,
+                    context=idempotency_ctx,
+                    response_status=response.status_code,
+                    response_body=jsonable_encoder(payload),
+                )
+                return payload
             if existing.status in {"succeeded", "failed"} and not overwrite:
                 response.status_code = 200
-                return _accepted_response(existing.id, existing.status, existing.last_job_id)
+                accepted = _accepted_response(
+                    existing.id,
+                    existing.status,
+                    existing.last_job_id,
+                    request,
+                )
+                payload = success_response(request=request, data=accepted)
+                await store_idempotency_response(
+                    db=db,
+                    context=idempotency_ctx,
+                    response_status=response.status_code,
+                    response_body=jsonable_encoder(payload),
+                )
+                return payload
 
-    body = await file.read()
     text = _parse_text(file, body)
     _validate_text_payload(text)
     document_id = document_id or str(uuid4())
@@ -326,15 +406,24 @@ async def upload_document(
         commit=True,
         best_effort=True,
     )
-    return _accepted_response(document_id, "queued", request_id)
+    accepted = _accepted_response(document_id, "queued", request_id, request)
+    payload = success_response(request=request, data=accepted)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=response.status_code,
+        response_body=jsonable_encoder(payload),
+    )
+    return payload
 
 
-@router.post("/text", status_code=202)
+@router.post("/text", status_code=202, response_model=SuccessEnvelope[DocumentAccepted] | DocumentAccepted)
 async def ingest_text_document(
     request: Request,
     payload: TextIngestRequest,
     response: Response,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
@@ -350,6 +439,16 @@ async def ingest_text_document(
                 "metadata_json must be an object when provided",
             ),
         )
+    request_hash = compute_request_hash(payload.model_dump())
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
 
     corpus = await corpora_repo.get_by_tenant_and_id(db, tenant_id, payload.corpus_id)
     if corpus is None:
@@ -368,10 +467,36 @@ async def ingest_text_document(
                 raise HTTPException(status_code=409, detail="Document belongs to a different corpus")
             if existing.status in {"queued", "processing"}:
                 response.status_code = 200
-                return _accepted_response(existing.id, existing.status, existing.last_job_id)
+                accepted = _accepted_response(
+                    existing.id,
+                    existing.status,
+                    existing.last_job_id,
+                    request,
+                )
+                payload_body = success_response(request=request, data=accepted)
+                await store_idempotency_response(
+                    db=db,
+                    context=idempotency_ctx,
+                    response_status=response.status_code,
+                    response_body=jsonable_encoder(payload_body),
+                )
+                return payload_body
             if existing.status in {"succeeded", "failed"} and not payload.overwrite:
                 response.status_code = 200
-                return _accepted_response(existing.id, existing.status, existing.last_job_id)
+                accepted = _accepted_response(
+                    existing.id,
+                    existing.status,
+                    existing.last_job_id,
+                    request,
+                )
+                payload_body = success_response(request=request, data=accepted)
+                await store_idempotency_response(
+                    db=db,
+                    context=idempotency_ctx,
+                    response_status=response.status_code,
+                    response_body=jsonable_encoder(payload_body),
+                )
+                return payload_body
 
     document_id = payload.document_id or str(uuid4())
     storage_path = write_text_to_storage(document_id, payload.text)
@@ -458,10 +583,18 @@ async def ingest_text_document(
         commit=True,
         best_effort=True,
     )
-    return _accepted_response(document_id, "queued", request_id)
+    accepted = _accepted_response(document_id, "queued", request_id, request)
+    payload_body = success_response(request=request, data=accepted)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=response.status_code,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
-@router.get("")
+@router.get("", response_model=SuccessEnvelope[list[DocumentResponse]] | list[DocumentResponse])
 async def list_documents(
     principal: Principal = Depends(require_role("reader")),
     corpus_id: str | None = None,
@@ -479,7 +612,7 @@ async def list_documents(
     return [_to_response(doc) for doc in docs]
 
 
-@router.get("/{document_id}")
+@router.get("/{document_id}", response_model=SuccessEnvelope[DocumentResponse] | DocumentResponse)
 async def get_document(
     document_id: str,
     principal: Principal = Depends(require_role("reader")),
@@ -509,12 +642,17 @@ async def get_document(
     return _to_response(doc, num_chunks=num_chunks)
 
 
-@router.post("/{document_id}/reindex", status_code=202)
+@router.post(
+    "/{document_id}/reindex",
+    status_code=202,
+    response_model=SuccessEnvelope[DocumentAccepted] | DocumentAccepted,
+)
 async def reindex_document(
     document_id: str,
     request: Request,
     payload: ReindexRequest | None = None,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
@@ -545,6 +683,19 @@ async def reindex_document(
                 "Document source text is not available for reindexing",
             ),
         )
+
+    request_hash = compute_request_hash(
+        {"document_id": document_id, "params": payload.model_dump() if payload else {}}
+    )
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
 
     chunk_size, chunk_overlap = _resolve_chunk_params(payload)
     request_id = str(uuid4())
@@ -606,13 +757,22 @@ async def reindex_document(
         commit=True,
         best_effort=True,
     )
-    return _accepted_response(document_id, "queued", request_id)
+    accepted = _accepted_response(document_id, "queued", request_id, request)
+    payload_body = success_response(request=request, data=accepted)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=202,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body
 
 
 @router.delete("/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
     request: Request,
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -635,6 +795,17 @@ async def delete_document(
                 "INGEST_IN_PROGRESS", "Document ingestion is already in progress"
             ),
         )
+
+    request_hash = compute_request_hash({"document_id": document_id})
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
 
     storage_path = doc.storage_path
 
@@ -677,5 +848,11 @@ async def delete_document(
         },
         commit=True,
         best_effort=True,
+    )
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=204,
+        response_body=None,
     )
     return Response(status_code=204)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
@@ -10,6 +11,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.apps.api.response import SuccessEnvelope
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.services.ingest import queue as ingest_queue
@@ -17,7 +20,7 @@ from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 
 
-router = APIRouter(prefix="/ops", tags=["ops"])
+router = APIRouter(prefix="/ops", tags=["ops"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 def _utc_now() -> datetime:
@@ -79,7 +82,8 @@ async def _get_worker_heartbeat() -> datetime | None:
     return await ingest_queue.get_worker_heartbeat()
 
 
-@router.get("/health")
+# Allow legacy unwrapped responses; v1 middleware wraps envelopes.
+@router.get("/health", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
 async def ops_health(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -137,7 +141,7 @@ async def ops_health(
     return payload
 
 
-@router.get("/ingestion")
+@router.get("/ingestion", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
 async def ops_ingestion(
     request: Request,
     hours: int = Query(default=24, ge=1, le=168),
@@ -265,7 +269,7 @@ async def ops_ingestion(
     return payload
 
 
-@router.get("/metrics")
+@router.get("/metrics", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
 async def ops_metrics(
     request: Request,
     db: AsyncSession = Depends(get_db),

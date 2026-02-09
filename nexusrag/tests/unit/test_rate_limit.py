@@ -53,8 +53,14 @@ def test_route_class_mapping() -> None:
     run_request = _make_request("/run", "POST")
     assert rate_limit.route_class_for_request(run_request) == (rate_limit.ROUTE_CLASS_RUN, 3)
 
+    v1_run_request = _make_request("/v1/run", "POST")
+    assert rate_limit.route_class_for_request(v1_run_request) == (rate_limit.ROUTE_CLASS_RUN, 3)
+
     docs_get = _make_request("/documents", "GET")
     assert rate_limit.route_class_for_request(docs_get) == (rate_limit.ROUTE_CLASS_READ, 1)
+
+    v1_docs_post = _make_request("/v1/documents", "POST")
+    assert rate_limit.route_class_for_request(v1_docs_post) == (rate_limit.ROUTE_CLASS_MUTATION, 1)
 
     docs_post = _make_request("/documents", "POST")
     assert rate_limit.route_class_for_request(docs_post) == (rate_limit.ROUTE_CLASS_MUTATION, 1)

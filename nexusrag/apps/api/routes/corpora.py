@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,21 +12,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import (
     Principal,
     get_db,
+    idempotency_key_header,
     reject_tenant_id_in_body,
     require_role,
 )
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.core.errors import RetrievalConfigError
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.providers.retrieval.config import normalize_provider_config
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.services.entitlements import (
     FEATURE_CORPORA_PATCH_PROVIDER,
     require_feature,
     require_retrieval_provider,
 )
+from nexusrag.services.idempotency import (
+    build_replay_response,
+    check_idempotency,
+    compute_request_hash,
+    store_idempotency_response,
+)
 
 
-router = APIRouter(prefix="/corpora", tags=["corpora"])
+router = APIRouter(prefix="/corpora", tags=["corpora"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 class CorpusResponse(BaseModel):
@@ -56,7 +66,8 @@ def _to_response(corpus) -> CorpusResponse:
     )
 
 
-@router.get("")
+# Allow legacy unwrapped responses; v1 middleware wraps envelopes.
+@router.get("", response_model=SuccessEnvelope[list[CorpusResponse]] | list[CorpusResponse])
 async def list_corpora(
     principal: Principal = Depends(require_role("reader")),
     db: AsyncSession = Depends(get_db),
@@ -71,7 +82,7 @@ async def list_corpora(
     return [_to_response(corpus) for corpus in corpora]
 
 
-@router.get("/{corpus_id}")
+@router.get("/{corpus_id}", response_model=SuccessEnvelope[CorpusResponse] | CorpusResponse)
 async def get_corpus(
     corpus_id: str,
     principal: Principal = Depends(require_role("reader")),
@@ -90,17 +101,28 @@ async def get_corpus(
     return _to_response(corpus)
 
 
-@router.patch("/{corpus_id}")
+@router.patch("/{corpus_id}", response_model=SuccessEnvelope[CorpusResponse] | CorpusResponse)
 async def patch_corpus(
     corpus_id: str,
     request: Request,
     payload: CorpusPatchRequest,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
+    _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("editor")),
     db: AsyncSession = Depends(get_db),
 ) -> CorpusResponse:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     tenant_id = principal.tenant_id
+    request_hash = compute_request_hash(payload.model_dump())
+    idempotency_ctx, replay = await check_idempotency(
+        request=request,
+        db=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return build_replay_response(replay)
     provider_config_json = None
     if payload.provider_config_json is not None:
         try:
@@ -165,4 +187,12 @@ async def patch_corpus(
         commit=True,
         best_effort=True,
     )
-    return _to_response(corpus)
+    response_payload = _to_response(corpus)
+    payload_body = success_response(request=request, data=response_payload)
+    await store_idempotency_response(
+        db=db,
+        context=idempotency_ctx,
+        response_status=200,
+        response_body=jsonable_encoder(payload_body),
+    )
+    return payload_body

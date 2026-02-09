@@ -49,9 +49,10 @@ from nexusrag.apps.api.deps import (
     reject_tenant_id_in_body,
     require_role,
 )
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["run"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 class RunRequest(BaseModel):
@@ -62,7 +63,20 @@ class RunRequest(BaseModel):
     audio: bool = False
 
     # Reject unknown fields so tenant_id cannot be supplied in the payload.
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "session_id": "sess_123",
+                    "corpus_id": "corpus_abc",
+                    "message": "Summarize the latest roadmap notes.",
+                    "top_k": 5,
+                    "audio": False,
+                }
+            ]
+        },
+    }
 
 
 def _wrap_payload(payload_type: str, request_id: str, session_id: str, data: dict) -> dict:

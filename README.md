@@ -102,16 +102,68 @@ docker compose exec api python scripts/revoke_api_key.py <key_id>
 Role matrix:
 | Endpoint | reader | editor | admin |
 | --- | --- | --- | --- |
-| `/run` | ✅ | ✅ | ✅ |
-| `GET /documents` | ✅ | ✅ | ✅ |
-| `POST/DELETE /documents`, `/documents/*/reindex` | ❌ | ✅ | ✅ |
-| `GET /corpora` | ✅ | ✅ | ✅ |
-| `PATCH /corpora` | ❌ | ✅ | ✅ |
-| `/ops/*` | ❌ | ❌ | ✅ |
+| `/v1/run` | ✅ | ✅ | ✅ |
+| `GET /v1/documents` | ✅ | ✅ | ✅ |
+| `POST/DELETE /v1/documents`, `/v1/documents/*/reindex` | ❌ | ✅ | ✅ |
+| `GET /v1/corpora` | ✅ | ✅ | ✅ |
+| `PATCH /v1/corpora` | ❌ | ✅ | ✅ |
+| `/v1/ops/*` | ❌ | ❌ | ✅ |
 
 Dev-only bypass:
 - Set `AUTH_DEV_BYPASS=true` to allow `X-Tenant-Id` + optional `X-Role` (defaults to `admin`).
 - This is intended for local development only; keep it disabled in production.
+
+## API Versioning & Compatibility
+Stable API routes are versioned under `/v1` (recommended for all new clients).
+
+Legacy unversioned routes remain as deprecated aliases and will sunset on:
+- **Sun, 10 May 2026 00:00:00 +0000**
+
+Legacy responses include:
+- `Deprecation: true`
+- `Sunset: <RFC 1123 date>`
+- `Link: </v1/docs>; rel="successor-version"`
+
+Migration guidance:
+- Prefix all routes with `/v1`.
+- Update clients to parse `data`/`meta` and `error`/`meta` envelopes.
+- Use `Idempotency-Key` for write endpoints.
+
+### Success envelope (JSON endpoints)
+```
+{
+  "data": ...,
+  "meta": {
+    "request_id": "...",
+    "api_version": "v1"
+  }
+}
+```
+
+### Error envelope (all errors)
+```
+{
+  "error": {
+    "code": "STRING_CODE",
+    "message": "Human readable",
+    "details": { ... }
+  },
+  "meta": {
+    "request_id": "...",
+    "api_version": "v1"
+  }
+}
+```
+
+Notes:
+- SSE streams (`/v1/run` streaming) keep the existing event payloads and are not wrapped.
+- Legacy routes keep pre-v1 response shapes (no envelope).
+
+### Idempotency
+Write endpoints accept `Idempotency-Key` (max 128 chars). Behavior:
+- First request stores the response for 24h.
+- Same key + same payload returns the stored response.
+- Same key + different payload returns `409 IDEMPOTENCY_KEY_CONFLICT`.
 
 ## Audit Logs
 Audit events are stored in the `audit_events` table and exposed via admin-only endpoints for investigations.
@@ -155,17 +207,18 @@ Redaction policy:
 List events:
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  "http://localhost:8000/audit/events?limit=50"
+  "http://localhost:8000/v1/audit/events?limit=50"
 ```
 
 Filter events:
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  "http://localhost:8000/audit/events?event_type=rbac.forbidden&outcome=failure&limit=20"
+  "http://localhost:8000/v1/audit/events?event_type=rbac.forbidden&outcome=failure&limit=20"
 ```
 
 ## Rate Limiting
 Rate limits use a Redis-backed token bucket with sustained rate + burst capacity. Limits are enforced per API key and per tenant; requests are allowed only when both buckets have capacity.
+Clients should respect `Retry-After` and `X-RateLimit-Retry-After-Ms` headers and apply exponential backoff on `429`/`503` responses (SDKs include retry helpers).
 
 Route classes:
 | Class | Scope | Paths |
@@ -209,18 +262,18 @@ X-RateLimit-Retry-After-Ms: 1200
 ## Corpora API
 List corpora:
 ```
-curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/corpora
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/corpora
 ```
 
 Get a corpus:
 ```
-curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/corpora/c1
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/corpora/c1
 ```
 
 Patch provider_config_json:
 ```
 curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
-  http://localhost:8000/corpora/c1 \
+  http://localhost:8000/v1/corpora/c1 \
   -d '{
     "provider_config_json": {
       "retrieval": {
@@ -240,13 +293,14 @@ Enable TTS with environment variables:
 - `OPENAI_TTS_MODEL` (default `gpt-4o-mini-tts`)
 - `OPENAI_TTS_VOICE` (default `alloy`)
 - `AUDIO_BASE_URL` (default `http://localhost:8000`)
+  - Set to `http://localhost:8000/v1` to emit versioned audio URLs.
 
 Audio files are stored locally under `var/audio/` (dev-only).
 
 Example `/run` with audio enabled:
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
-  -X POST http://localhost:8000/run \
+  -X POST http://localhost:8000/v1/run \
   -d '{
     "session_id":"s-audio-1",
     "corpus_id":"c1",
@@ -257,7 +311,7 @@ curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" 
 ```
 
 SSE events:
-- `audio.ready` → `{"type":"audio.ready","request_id":"...","data":{"audio_url":"http://localhost:8000/audio/<id>.mp3","audio_id":"<id>","mime":"audio/mpeg"}}`
+- `audio.ready` → `{"type":"audio.ready","request_id":"...","data":{"audio_url":"http://localhost:8000/v1/audio/<id>.mp3","audio_id":"<id>","mime":"audio/mpeg"}}`
 - `audio.error` → `{"type":"audio.error","request_id":"...","data":{"code":"TTS_ERROR","message":"..."}}`
 
 ## Ingestion (documents → chunks)
@@ -271,14 +325,14 @@ Upload a document (returns `202` with `job_id` + `status_url`):
 curl -s -X POST -H "Authorization: Bearer $API_KEY" \
   -F "corpus_id=c1" \
   -F "file=@./example.txt;type=text/plain" \
-  http://localhost:8000/documents
+  http://localhost:8000/v1/documents
 ```
 
 Ingest raw text (returns `202` with `job_id` + `status_url`):
 ```
 Set `overwrite: true` to requeue a failed or succeeded document with the same `document_id`.
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
-  http://localhost:8000/documents/text \
+  http://localhost:8000/v1/documents/text \
   -d '{
     "corpus_id": "c1",
     "text": "Some raw text to ingest.",
@@ -290,18 +344,18 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
 
 Check status / poll:
 ```
-curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/documents/<document_id>
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/documents/<document_id>
 ```
 
 List documents:
 ```
-curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/documents
+curl -s -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/documents
 ```
 
 Reindex a document (returns `202` with `job_id` + `status_url`):
 ```
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
-  http://localhost:8000/documents/<document_id>/reindex \
+  http://localhost:8000/v1/documents/<document_id>/reindex \
   -d '{
     "chunk_size_chars": 1200,
     "chunk_overlap_chars": 150
@@ -310,7 +364,7 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
 
 Delete a document:
 ```
-curl -s -X DELETE -H "Authorization: Bearer $API_KEY" http://localhost:8000/documents/<document_id>
+curl -s -X DELETE -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/documents/<document_id>
 ```
 
 Troubleshooting:
@@ -325,17 +379,17 @@ Ops endpoints require an admin API key.
 
 Health summary:
 ```
-curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/ops/health
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/v1/ops/health
 ```
 
 Ingestion stats (last 24 hours by default):
 ```
-curl -s -H "Authorization: Bearer $ADMIN_API_KEY" "http://localhost:8000/ops/ingestion?hours=24"
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" "http://localhost:8000/v1/ops/ingestion?hours=24"
 ```
 
 Metrics snapshot (JSON):
 ```
-curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/ops/metrics
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/v1/ops/metrics
 ```
 
 Heartbeat interpretation:
@@ -390,7 +444,7 @@ docker compose exec api python scripts/provider_smoke.py \
 ## Call `/run` (SSE)
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
-  -X POST http://localhost:8000/run \
+  -X POST http://localhost:8000/v1/run \
   -d '{
     "session_id":"s1",
     "corpus_id":"c1",
@@ -434,11 +488,11 @@ Admin quota endpoints (admin role only, tenant-scoped):
 ```
 # Get limits
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/admin/quotas/t1
+  http://localhost:8000/v1/admin/quotas/t1
 
 # Update limits
 curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/admin/quotas/t1 \
+  http://localhost:8000/v1/admin/quotas/t1 \
   -d '{
     "daily_requests_limit": 500,
     "monthly_requests_limit": 10000,
@@ -448,7 +502,7 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $
 
 # Usage summary
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  "http://localhost:8000/admin/usage/t1?period=month&start=2026-02-01"
+  "http://localhost:8000/v1/admin/usage/t1?period=month&start=2026-02-01"
 ```
 
 Billing webhook configuration:
@@ -488,10 +542,16 @@ Feature disabled error:
 ```
 HTTP/1.1 403 Forbidden
 {
-  "detail": {
+  "error": {
     "code": "FEATURE_NOT_ENABLED",
     "message": "Feature not enabled for tenant plan",
-    "feature_key": "feature.tts"
+    "details": {
+      "feature_key": "feature.tts"
+    }
+  },
+  "meta": {
+    "request_id": "req_example",
+    "api_version": "v1"
   }
 }
 ```
@@ -500,20 +560,20 @@ Admin plan endpoints (admin role only, tenant-scoped):
 ```
 # List plans
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/admin/plans
+  http://localhost:8000/v1/admin/plans
 
 # Get tenant plan
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/admin/plans/t1
+  http://localhost:8000/v1/admin/plans/t1
 
 # Assign plan
 curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/admin/plans/t1 \
+  http://localhost:8000/v1/admin/plans/t1 \
   -d '{"plan_id":"pro"}'
 
 # Override a feature
 curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/admin/plans/t1/overrides \
+  http://localhost:8000/v1/admin/plans/t1/overrides \
   -d '{"feature_key":"feature.tts","enabled":true,"config_json":{"voices":["nova"]}}'
 ```
 
@@ -524,44 +584,80 @@ Self-serve API key lifecycle:
 ```
 # Create key (plaintext returned once)
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/self-serve/api-keys \
+  http://localhost:8000/v1/self-serve/api-keys \
   -d '{"name":"ci-bot","role":"editor"}'
 
 # List keys (no secrets)
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/self-serve/api-keys
+  http://localhost:8000/v1/self-serve/api-keys
 
 # Revoke key (idempotent)
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/self-serve/api-keys/$KEY_ID/revoke
+  http://localhost:8000/v1/self-serve/api-keys/$KEY_ID/revoke
 ```
 
 Usage dashboard:
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  "http://localhost:8000/self-serve/usage/summary?window_days=30"
+  "http://localhost:8000/v1/self-serve/usage/summary?window_days=30"
 
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  "http://localhost:8000/self-serve/usage/timeseries?metric=requests&granularity=day&days=30"
+  "http://localhost:8000/v1/self-serve/usage/timeseries?metric=requests&granularity=day&days=30"
 ```
 
 Plan visibility and upgrades:
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/self-serve/plan
+  http://localhost:8000/v1/self-serve/plan
 
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/self-serve/plan/upgrade-request \
+  http://localhost:8000/v1/self-serve/plan/upgrade-request \
   -d '{"target_plan":"pro","reason":"Need TTS and Bedrock"}'
 ```
 
 Billing webhook test (feature-gated):
 ```
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/self-serve/billing/webhook-test
+  http://localhost:8000/v1/self-serve/billing/webhook-test
 ```
 
 Note: plaintext API keys are returned once on creation and must be stored securely by the client.
+
+## SDKs
+Generated SDKs live under:
+- `sdk/typescript/`
+- `sdk/python/`
+
+Regenerate from OpenAPI:
+```
+make sdk-generate
+```
+
+TypeScript (fetch) example:
+```
+import { createClient } from "./sdk/typescript/client";
+
+const api = await createClient({
+  apiKey: process.env.NEXUSRAG_API_KEY!,
+  basePath: "http://localhost:8000",
+});
+
+const health = await api.healthHealthGet();
+```
+
+Python example:
+```
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path("sdk/python/generated")))
+sys.path.append(str(Path("sdk/python")))
+
+from client import create_client
+
+api = create_client(api_key="your_api_key", base_url="http://localhost:8000")
+health = api.health_health_get()
+```
 
 ## Notes
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
@@ -591,7 +687,7 @@ export API_KEY=<api_key_from_script>
 ```
 6) Health check:
 ```
-curl -s http://localhost:8000/health
+curl -s http://localhost:8000/v1/health
 ```
 7) Seed demo data:
 ```
@@ -600,7 +696,7 @@ docker compose exec api python scripts/seed_demo.py
 8) SSE run (expect `token.delta` then `message.final`, or `error` if Vertex config missing):
 ```
 curl -N -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" \
-  -X POST http://localhost:8000/run \
+  -X POST http://localhost:8000/v1/run \
   -d '{
     "session_id":"s1",
     "corpus_id":"c1",
@@ -619,7 +715,7 @@ This query should match seeded content about testing strategy and release gates:
 ```
 curl -N -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
-  -X POST http://localhost:8000/run \
+  -X POST http://localhost:8000/v1/run \
   -d '{
     "session_id":"s1",
     "corpus_id":"c1",
@@ -643,6 +739,7 @@ make up
 make migrate
 make seed
 make test
+make sdk-generate
 ```
 
 ## Release process

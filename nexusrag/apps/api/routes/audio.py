@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from fastapi.responses import FileResponse
 
 from nexusrag.services.audio.storage import AUDIO_DIR
 
 
-router = APIRouter()
+router = APIRouter(tags=["audio"], responses=DEFAULT_ERROR_RESPONSES)
 
 
 @router.get("/audio/{audio_id}.mp3")

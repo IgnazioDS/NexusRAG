@@ -132,23 +132,26 @@ _redis_lock = asyncio.Lock()
 def route_class_for_path(path: str, method: str) -> tuple[str, int]:
     # Map raw path/method inputs into route classes for rate limiting and analytics.
     normalized_method = method.upper()
+    normalized_path = path
+    if normalized_path.startswith("/v1/"):
+        normalized_path = normalized_path[len("/v1") :]
 
-    if path == "/run":
+    if normalized_path == "/run":
         return ROUTE_CLASS_RUN, _RUN_WEIGHT
 
-    if path.startswith("/ops/"):
+    if normalized_path.startswith("/ops/"):
         return ROUTE_CLASS_OPS, 1
 
-    if path.startswith("/audit/events"):
+    if normalized_path.startswith("/audit/events"):
         return ROUTE_CLASS_OPS, 1
 
     if normalized_method in {"POST", "PATCH", "DELETE"}:
         if (
-            path.startswith("/documents")
-            or path.startswith("/corpora")
-            or path.startswith("/audit")
-            or path.startswith("/admin")
-            or path.startswith("/self-serve")
+            normalized_path.startswith("/documents")
+            or normalized_path.startswith("/corpora")
+            or normalized_path.startswith("/audit")
+            or normalized_path.startswith("/admin")
+            or normalized_path.startswith("/self-serve")
         ):
             return ROUTE_CLASS_MUTATION, 1
 
