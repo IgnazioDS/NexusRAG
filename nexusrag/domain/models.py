@@ -151,6 +151,50 @@ class QuotaSoftCapEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Plan(Base):
+    __tablename__ = "plans"
+
+    # Store plan catalog entries for entitlement assignments and enforcement.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlanFeature(Base):
+    __tablename__ = "plan_features"
+
+    # Map plan-level entitlements with optional per-feature configuration.
+    plan_id: Mapped[str] = mapped_column(String, ForeignKey("plans.id"), primary_key=True)
+    feature_key: Mapped[str] = mapped_column(String, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    config_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantPlanAssignment(Base):
+    __tablename__ = "tenant_plan_assignments"
+
+    # Track tenant plan history while enforcing a single active assignment.
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String, ForeignKey("plans.id"), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TenantFeatureOverride(Base):
+    __tablename__ = "tenant_feature_overrides"
+
+    # Allow tenant-specific overrides to supersede plan entitlements.
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    feature_key: Mapped[str] = mapped_column(String, primary_key=True)
+    enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    config_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Message(Base):
     __tablename__ = "messages"
 
@@ -261,3 +305,8 @@ Index(
     UsageCounter.period_start,
 )
 Index("ix_quota_soft_cap_events_tenant", QuotaSoftCapEvent.tenant_id)
+Index("ix_plans_active", Plan.is_active)
+Index("ix_plan_features_plan_id", PlanFeature.plan_id)
+Index("ix_tenant_plan_assignments_tenant", TenantPlanAssignment.tenant_id)
+Index("ix_tenant_plan_assignments_active", TenantPlanAssignment.tenant_id, TenantPlanAssignment.is_active)
+Index("ix_tenant_feature_overrides_tenant", TenantFeatureOverride.tenant_id)

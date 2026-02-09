@@ -14,6 +14,7 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Document
 from nexusrag.services.ingest import queue as ingest_queue
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -85,6 +86,11 @@ async def ops_health(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict:
     # Require admin role for operational visibility endpoints.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
     settings = get_settings()
     now = _utc_now()
     db_ok = await _check_db_health(db)
@@ -139,6 +145,11 @@ async def ops_ingestion(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict:
     # Require admin role for operational visibility endpoints.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
     # Bound the window to keep ops queries predictable.
     now = _utc_now()
     window_start = now - timedelta(hours=hours)
@@ -261,6 +272,11 @@ async def ops_metrics(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict:
     # Require admin role for operational visibility endpoints.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
     # Provide JSON metrics for dashboards when Prometheus scraping is unavailable.
     queue_depth = await _get_queue_depth()
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -8,7 +10,24 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
-from nexusrag.domain.models import PlanLimit, UsageCounter
+from nexusrag.domain.models import (
+    Plan,
+    PlanFeature,
+    PlanLimit,
+    TenantFeatureOverride,
+    TenantPlanAssignment,
+    UsageCounter,
+)
+from nexusrag.services.entitlements import (
+    DEFAULT_PLAN_ID,
+    FEATURE_KEYS,
+    FeatureEntitlement,
+    get_active_plan_assignment,
+    get_effective_entitlements,
+    invalidate_entitlements_cache,
+    list_plan_catalog,
+    list_plan_features,
+)
 from nexusrag.services.quota import parse_period_start
 
 
@@ -40,6 +59,39 @@ class UsageSummaryResponse(BaseModel):
     period_start: str
     requests_count: int
     estimated_tokens_count: int | None
+
+
+class PlanFeatureResponse(BaseModel):
+    feature_key: str
+    enabled: bool
+    config_json: dict[str, Any] | None
+
+
+class PlanResponse(BaseModel):
+    id: str
+    name: str
+    is_active: bool
+    features: list[PlanFeatureResponse]
+
+
+class TenantPlanResponse(BaseModel):
+    tenant_id: str
+    plan_id: str
+    plan_name: str | None
+    effective_from: str | None
+    effective_to: str | None
+    is_active: bool
+    entitlements: list[PlanFeatureResponse]
+
+
+class PlanAssignmentRequest(BaseModel):
+    plan_id: str
+
+
+class FeatureOverrideRequest(BaseModel):
+    feature_key: str
+    enabled: bool | None = None
+    config_json: dict[str, Any] | None = None
 
 
 def _ensure_same_tenant(principal: Principal, tenant_id: str) -> None:
@@ -144,3 +196,175 @@ async def get_usage_summary(
         requests_count=int(counter.requests_count) if counter else 0,
         estimated_tokens_count=counter.estimated_tokens_count if counter else None,
     )
+
+
+def _feature_response(feature_key: str, entitlement: FeatureEntitlement) -> PlanFeatureResponse:
+    # Normalize entitlements for API responses.
+    return PlanFeatureResponse(
+        feature_key=feature_key,
+        enabled=entitlement.enabled,
+        config_json=entitlement.config,
+    )
+
+
+def _feature_from_plan(feature: PlanFeature) -> PlanFeatureResponse:
+    # Serialize plan features for catalog listing.
+    return PlanFeatureResponse(
+        feature_key=feature.feature_key,
+        enabled=bool(feature.enabled),
+        config_json=feature.config_json,
+    )
+
+
+async def _build_tenant_plan_response(
+    db: AsyncSession,
+    tenant_id: str,
+) -> TenantPlanResponse:
+    # Combine assignment + entitlements into a tenant-specific response.
+    assignment = await get_active_plan_assignment(db, tenant_id)
+    plan_id = assignment.plan_id if assignment else DEFAULT_PLAN_ID
+
+    plan = None
+    try:
+        result = await db.execute(select(Plan).where(Plan.id == plan_id))
+        plan = result.scalar_one_or_none()
+    except SQLAlchemyError:
+        plan = None
+
+    entitlements = await get_effective_entitlements(db, tenant_id)
+    features = [
+        _feature_response(feature_key, entitlements.get(feature_key, FeatureEntitlement(False, None)))
+        for feature_key in sorted(FEATURE_KEYS)
+    ]
+    return TenantPlanResponse(
+        tenant_id=tenant_id,
+        plan_id=plan_id,
+        plan_name=plan.name if plan else None,
+        effective_from=assignment.effective_from.isoformat() if assignment else None,
+        effective_to=assignment.effective_to.isoformat() if assignment and assignment.effective_to else None,
+        is_active=assignment.is_active if assignment else False,
+        entitlements=features,
+    )
+
+
+@router.get("/plans")
+async def list_plans(
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> list[PlanResponse]:
+    # Allow tenant admins to discover plan catalogs.
+    try:
+        plans = await list_plan_catalog(db)
+        plan_features = await list_plan_features(db, [plan.id for plan in plans])
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail="Database error while fetching plans") from exc
+
+    features_by_plan: dict[str, list[PlanFeatureResponse]] = {}
+    for feature in plan_features:
+        features_by_plan.setdefault(feature.plan_id, []).append(_feature_from_plan(feature))
+
+    return [
+        PlanResponse(
+            id=plan.id,
+            name=plan.name,
+            is_active=plan.is_active,
+            features=features_by_plan.get(plan.id, []),
+        )
+        for plan in plans
+    ]
+
+
+@router.get("/plans/{tenant_id}")
+async def get_tenant_plan(
+    tenant_id: str,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> TenantPlanResponse:
+    # Allow tenant admins to view their current plan assignment.
+    _ensure_same_tenant(principal, tenant_id)
+    return await _build_tenant_plan_response(db, tenant_id)
+
+
+@router.patch("/plans/{tenant_id}")
+async def assign_tenant_plan(
+    tenant_id: str,
+    payload: PlanAssignmentRequest,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> TenantPlanResponse:
+    # Allow tenant admins to update plan assignments.
+    _ensure_same_tenant(principal, tenant_id)
+    try:
+        result = await db.execute(select(Plan).where(Plan.id == payload.plan_id))
+        plan = result.scalar_one_or_none()
+        if plan is None or not plan.is_active:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        now = datetime.now(timezone.utc)
+        current = await get_active_plan_assignment(db, tenant_id)
+        if current and current.plan_id == payload.plan_id:
+            return await _build_tenant_plan_response(db, tenant_id)
+
+        if current:
+            current.is_active = False
+            current.effective_to = now
+
+        db.add(
+            TenantPlanAssignment(
+                tenant_id=tenant_id,
+                plan_id=payload.plan_id,
+                effective_from=now,
+                effective_to=None,
+                is_active=True,
+            )
+        )
+        await db.commit()
+        invalidate_entitlements_cache(tenant_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database error while updating plan assignment") from exc
+
+    return await _build_tenant_plan_response(db, tenant_id)
+
+
+@router.patch("/plans/{tenant_id}/overrides")
+async def patch_tenant_overrides(
+    tenant_id: str,
+    payload: FeatureOverrideRequest,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> TenantPlanResponse:
+    # Allow tenant admins to override feature entitlements for their tenant.
+    _ensure_same_tenant(principal, tenant_id)
+    if payload.feature_key not in FEATURE_KEYS:
+        raise HTTPException(status_code=422, detail="Unknown feature_key")
+
+    try:
+        result = await db.execute(
+            select(TenantFeatureOverride).where(
+                TenantFeatureOverride.tenant_id == tenant_id,
+                TenantFeatureOverride.feature_key == payload.feature_key,
+            )
+        )
+        override = result.scalar_one_or_none()
+        if override is None:
+            override = TenantFeatureOverride(
+                tenant_id=tenant_id,
+                feature_key=payload.feature_key,
+            )
+            db.add(override)
+
+        if payload.enabled is not None:
+            override.enabled = payload.enabled
+        if payload.config_json is not None:
+            override.config_json = payload.config_json
+
+        await db.commit()
+        invalidate_entitlements_cache(tenant_id)
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database error while updating overrides") from exc
+
+    return await _build_tenant_plan_response(db, tenant_id)

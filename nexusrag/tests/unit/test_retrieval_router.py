@@ -31,10 +31,15 @@ async def test_router_routes_local_provider() -> None:
     async def loader(_session, _corpus_id: str, _tenant_id: str):
         return DummyCorpus(provider_config_json=config)
 
+    async def allow_entitlements(**_kwargs):
+        # Bypass entitlements for unit-level routing tests.
+        return None
+
     router = RetrievalRouter(
         session=None,  # type: ignore[arg-type]
         corpus_loader=loader,
         provider_factories={"local_pgvector": lambda _cfg: stub},
+        entitlement_checker=allow_entitlements,
     )
 
     results = await router.retrieve("t1", "c1", "query", top_k=0)

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.persistence.repos import audit as audit_repo
+from nexusrag.services.entitlements import FEATURE_AUDIT, require_feature
 
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -76,6 +77,11 @@ async def list_audit_events(
     db: AsyncSession = Depends(get_db),
 ) -> AuditEventsPage:
     # Enforce tenant scoping even for admins to avoid cross-tenant data access.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_AUDIT,
+    )
     scoped_tenant_id = tenant_id or principal.tenant_id
     if tenant_id and tenant_id != principal.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant scope does not match admin key")
@@ -111,6 +117,11 @@ async def get_audit_event(
     db: AsyncSession = Depends(get_db),
 ) -> AuditEventResponse:
     # Look up a single audit event within the admin's tenant scope.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_AUDIT,
+    )
     try:
         event = await audit_repo.get_event_by_id(db, tenant_id=principal.tenant_id, event_id=event_id)
     except SQLAlchemyError as exc:
