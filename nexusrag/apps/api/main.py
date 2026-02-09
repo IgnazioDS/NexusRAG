@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 import json
+import time
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -31,6 +32,8 @@ from nexusrag.apps.api.errors import (
     unhandled_exception_handler,
 )
 from nexusrag.apps.api.response import API_VERSION, is_versioned_request
+from nexusrag.apps.api.rate_limit import route_class_for_request
+from nexusrag.services.telemetry import record_request
 
 
 _LEGACY_SUNSET_DAYS = 90
@@ -56,7 +59,16 @@ def create_app() -> FastAPI:
         # Preserve incoming request IDs or assign a new one for traceability.
         request_id = request.headers.get("X-Request-Id") or str(uuid4())
         request.state.request_id = request_id
+        start = time.monotonic()
         response = await call_next(request)
+        latency_ms = (time.monotonic() - start) * 1000.0
+        route_class, _cost = route_class_for_request(request)
+        record_request(
+            path=request.url.path,
+            route_class=route_class,
+            status_code=response.status_code,
+            latency_ms=latency_ms,
+        )
         # Wrap versioned JSON responses in the standardized success envelope.
         if (
             is_versioned_request(request)

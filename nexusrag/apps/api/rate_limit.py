@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.telemetry import increment_counter
 
 
 logger = logging.getLogger(__name__)
@@ -458,4 +459,5 @@ async def enforce_rate_limit(
         commit=True,
         best_effort=True,
     )
+    increment_counter("rate_limited_total")
     raise _throttle_exception(decision=decision)
