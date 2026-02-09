@@ -180,7 +180,7 @@ async def patch_quota_limits(
     _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> PlanLimitResponse:
+) -> SuccessEnvelope[PlanLimitResponse] | PlanLimitResponse:
     # Allow admins to update quota limits for their tenant.
     _ensure_same_tenant(principal, tenant_id)
     request_hash = compute_request_hash(
@@ -367,7 +367,7 @@ async def assign_tenant_plan(
     _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> TenantPlanResponse:
+) -> SuccessEnvelope[TenantPlanResponse] | TenantPlanResponse:
     # Allow tenant admins to update plan assignments.
     _ensure_same_tenant(principal, tenant_id)
     request_hash = compute_request_hash(
@@ -444,7 +444,7 @@ async def patch_tenant_overrides(
     _idempotency_key: str | None = Depends(idempotency_key_header),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> TenantPlanResponse:
+) -> SuccessEnvelope[TenantPlanResponse] | TenantPlanResponse:
     # Allow tenant admins to override feature entitlements for their tenant.
     _ensure_same_tenant(principal, tenant_id)
     if payload.feature_key not in FEATURE_KEYS:
