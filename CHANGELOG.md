@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.5.0 - 2026-02-09
+
+- Added reliability controls: retries, circuit breakers, bulkheads.
+- Added `/v1/ops/slo` with availability, latency, and error budget indicators.
+- Added rollout kill switches and canary controls.
+- Added maintenance tasks and runbooks for incident response and rollouts.
+
 ## 1.4.0 - 2026-02-09
 
 - Added `/v1/ui` BFF endpoints for bootstrap, dashboard, documents, activity, and actions.

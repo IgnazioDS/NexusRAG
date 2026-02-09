@@ -527,6 +527,71 @@ Queue depth:
 - `queue_depth` reports pending jobs in the Redis ingestion queue.
 - If Redis is unavailable, `queue_depth` is `null` and `/ops/health` reports `redis: degraded`.
 
+## Reliability Controls
+Reliability controls are centralized and configurable:
+- `EXT_CALL_TIMEOUT_MS` / `EXT_RETRY_*` for external integrations (retrieval, TTS, billing webhooks)
+- Circuit breakers per integration (shared via Redis)
+- Bulkheads: `RUN_MAX_CONCURRENCY`, `INGEST_MAX_CONCURRENCY`
+
+On saturation, `/v1/run` and ingestion endpoints return `503` with `SERVICE_BUSY`.
+
+## SLO & Error Budget
+Fetch current SLO status:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/slo"
+```
+
+Example response:
+```
+{
+  "data":{
+    "window":"1h",
+    "availability":99.95,
+    "p95":{"run":2500,"api":620,"documents_text":480},
+    "error_budget":{"remaining_pct":87.2,"burn_rate_5m":1.4},
+    "status":"healthy"
+  },
+  "meta":{...}
+}
+```
+
+## Rollout Controls
+Kill switches and canary percentages are managed under `/v1/admin/rollouts/*`.
+
+Kill switch patch:
+```
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"kill_switches":{"kill.run":true}}' \
+  "http://localhost:8000/v1/admin/rollouts/killswitches"
+```
+
+Canary patch:
+```
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"canary_percentages":{"rollout.tts":5}}' \
+  "http://localhost:8000/v1/admin/rollouts/canary"
+```
+
+## Maintenance Tasks
+Admin maintenance endpoint:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/maintenance/run?task=prune_idempotency"
+```
+
+Retention knobs:
+- `AUDIT_RETENTION_DAYS`
+- `UI_ACTION_RETENTION_DAYS`
+- `USAGE_COUNTER_RETENTION_DAYS`
+
+Runbooks live under `docs/runbooks/`:
+- `incident-response.md`
+- `breaker-playbook.md`
+- `rollout-playbook.md`
+
 ## Cloud retrieval real-run (credentials required)
 
 Use the smoke script to validate retrieval routing without calling the LLM:
