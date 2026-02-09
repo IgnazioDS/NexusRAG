@@ -42,6 +42,7 @@ from nexusrag.providers.retrieval.router import RetrievalRouter
 from nexusrag.providers.tts.factory import get_tts_provider
 from nexusrag.services.audio.storage import save_audio
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.entitlements import FEATURE_TTS, require_feature
 from nexusrag.apps.api.deps import (
     Principal,
     get_db,
@@ -132,6 +133,16 @@ async def run(
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
+    # Enforce plan entitlements for optional TTS usage before persistence.
+    if payload.audio:
+        await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_TTS)
+    # Resolve retrieval provider entitlements early to return stable 403s.
+    retriever = RetrievalRouter(db)
+    try:
+        await retriever.resolve_provider(principal.tenant_id, payload.corpus_id)
+    except RetrievalConfigError:
+        # Preserve existing run error behavior when corpus config is invalid.
+        pass
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     # TX #1: persist session + user message so history is durable before streaming.
     try:
@@ -194,8 +205,7 @@ async def run(
     disconnect_event = asyncio.Event()
     # Thread-safe cancel signal so the blocking Vertex stream can exit promptly.
     cancel_event = threading.Event()
-    # Use the same request-scoped session for read-only retrieval to avoid extra connections.
-    retriever = RetrievalRouter(db)
+    # Reuse the request-scoped retriever/LLM to avoid extra connections.
     llm = get_llm_provider(request_id=request_id, cancel_event=cancel_event)
 
     loop = asyncio.get_running_loop()

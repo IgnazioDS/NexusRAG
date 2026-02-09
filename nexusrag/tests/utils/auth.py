@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from nexusrag.domain.models import ApiKey, User
+from sqlalchemy import select
+
+from nexusrag.domain.models import ApiKey, TenantPlanAssignment, User
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.auth.api_keys import generate_api_key, normalize_role
 
@@ -20,6 +22,7 @@ async def create_test_api_key(
     name: str = "test-key",
     user_active: bool = True,
     key_revoked: bool = False,
+    plan_id: str | None = "enterprise",
 ) -> tuple[str, dict[str, str], str, str]:
     # Provision a user + API key pair for integration tests.
     normalized_role = normalize_role(role)
@@ -47,6 +50,29 @@ async def create_test_api_key(
         # Flush the user insert before the API key to satisfy FK constraints.
         await session.flush()
         session.add(api_key)
+        if plan_id is not None:
+            # Ensure tests have an explicit plan assignment for entitlement checks.
+            now = _utc_now()
+            result = await session.execute(
+                select(TenantPlanAssignment).where(
+                    TenantPlanAssignment.tenant_id == tenant_id,
+                    TenantPlanAssignment.is_active.is_(True),
+                )
+            )
+            assignment = result.scalar_one_or_none()
+            if assignment is None or assignment.plan_id != plan_id:
+                if assignment is not None:
+                    assignment.is_active = False
+                    assignment.effective_to = now
+                session.add(
+                    TenantPlanAssignment(
+                        tenant_id=tenant_id,
+                        plan_id=plan_id,
+                        effective_from=now,
+                        effective_to=None,
+                        is_active=True,
+                    )
+                )
         await session.commit()
 
     headers = {"Authorization": f"Bearer {raw_key}"}

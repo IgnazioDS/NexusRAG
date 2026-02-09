@@ -454,6 +454,61 @@ Webhook signature:
 - Header `X-Billing-Signature` is `hex(HMAC_SHA256(secret, raw_body))`.
 - Header `X-Billing-Event` includes the event type (e.g., `quota.soft_cap_reached`).
 
+## Plans & Entitlements
+Plans assign feature entitlements per tenant. Entitlements are enforced server-side for retrieval providers, TTS, ops/audit access, and provider configuration changes.
+
+Plan matrix:
+
+| Feature | Free | Pro | Enterprise |
+| --- | --- | --- | --- |
+| Local pgvector retrieval | yes | yes | yes |
+| AWS Bedrock KB retrieval | no | no | yes |
+| GCP Vertex retrieval | no | yes | yes |
+| Text-to-speech (TTS) | no | yes | yes |
+| Ops admin access | no | yes | yes |
+| Audit access | no | yes | yes |
+| Corpora provider config patch | no | yes | yes |
+| High quota tier | no | no | yes |
+
+Entitlement enforcement:
+- Retrieval provider selection is validated against `feature.retrieval.*` flags.
+- `/run` with `audio=true` requires `feature.tts`.
+- `/ops/*` and `/audit/events*` require `feature.ops_admin_access` and `feature.audit_access`.
+- `PATCH /corpora/{id}` with provider changes requires `feature.corpora_patch_provider_config`.
+
+Feature disabled error:
+```
+HTTP/1.1 403 Forbidden
+{
+  "detail": {
+    "code": "FEATURE_NOT_ENABLED",
+    "message": "Feature not enabled for tenant plan",
+    "feature_key": "feature.tts"
+  }
+}
+```
+
+Admin plan endpoints (admin role only, tenant-scoped):
+```
+# List plans
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/admin/plans
+
+# Get tenant plan
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/admin/plans/t1
+
+# Assign plan
+curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/admin/plans/t1 \
+  -d '{"plan_id":"pro"}'
+
+# Override a feature
+curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/admin/plans/t1/overrides \
+  -d '{"feature_key":"feature.tts","enabled":true,"config_json":{"voices":["nova"]}}'
+```
+
 ## Notes
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.
 - Retrieval uses a deterministic fake embedding (no external embedding APIs).

@@ -18,6 +18,11 @@ from nexusrag.core.errors import RetrievalConfigError
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.providers.retrieval.config import normalize_provider_config
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.entitlements import (
+    FEATURE_CORPORA_PATCH_PROVIDER,
+    require_feature,
+    require_retrieval_provider,
+)
 
 
 router = APIRouter(prefix="/corpora", tags=["corpora"])
@@ -103,6 +108,19 @@ async def patch_corpus(
             provider_config_json = normalize_provider_config(payload.provider_config_json)
         except RetrievalConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Enforce plan entitlements before allowing provider config mutations.
+        await require_feature(
+            session=db,
+            tenant_id=principal.tenant_id,
+            feature_key=FEATURE_CORPORA_PATCH_PROVIDER,
+        )
+        provider_name = provider_config_json.get("retrieval", {}).get("provider")
+        if provider_name:
+            await require_retrieval_provider(
+                session=db,
+                tenant_id=principal.tenant_id,
+                provider_name=provider_name,
+            )
 
     updated_fields: list[str] = []
     if payload.name is not None:

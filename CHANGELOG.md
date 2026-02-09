@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.1.0 - 2026-02-09
+
+- Added tenant plan assignments and feature entitlements.
+- Added server-side feature gating for retrieval providers, TTS, ops/audit, and corpora patching.
+- Added admin APIs for plan assignment and overrides.
+- Added entitlement tests and documentation.
+
 ## 1.0.0 - 2026-02-07
 
 - Added tenant quotas with daily/monthly limits and soft/hard cap modes.
