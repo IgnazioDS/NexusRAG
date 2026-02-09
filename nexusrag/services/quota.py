@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PlanLimit, QuotaSoftCapEvent, UsageCounter
 from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.services.billing_webhook import send_billing_webhook_event
+from nexusrag.services.billing_webhook import build_billing_signature, send_billing_webhook_event
 from nexusrag.services.telemetry import increment_counter
 
 
@@ -26,6 +26,11 @@ _PERIOD_MONTH = "month"
 _METRIC_REQUESTS = "requests"
 
 _USAGE_SAMPLE_RATE = 0.02
+
+
+def _billing_signature(secret: str, payload: bytes) -> str:
+    # Backward-compatible helper for tests that verify webhook signatures.
+    return build_billing_signature(secret, payload)
 
 
 @dataclass(frozen=True)
