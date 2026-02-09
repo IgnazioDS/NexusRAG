@@ -70,3 +70,6 @@ def test_route_class_mapping() -> None:
 
     admin_patch = _make_request("/admin/quotas/t1", "PATCH")
     assert rate_limit.route_class_for_request(admin_patch) == (rate_limit.ROUTE_CLASS_MUTATION, 1)
+
+    self_serve_create = _make_request("/self-serve/api-keys", "POST")
+    assert rate_limit.route_class_for_request(self_serve_create) == (rate_limit.ROUTE_CLASS_MUTATION, 1)

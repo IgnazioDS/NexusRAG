@@ -137,6 +137,13 @@ Event taxonomy:
 | Quota | `quota.overage_observed` | Overage observed when hard cap is disabled |
 | Billing | `billing.usage_recorded` | Sampled usage snapshot for metering |
 | Billing | `billing.webhook.failure` | Billing webhook delivery failed |
+| Self-serve | `selfserve.api_key.created` | Tenant admin created an API key |
+| Self-serve | `selfserve.api_key.revoked` | Tenant admin revoked an API key |
+| Self-serve | `selfserve.api_key.listed` | Tenant admin listed API keys |
+| Self-serve | `selfserve.usage.viewed` | Tenant admin viewed usage dashboards |
+| Self-serve | `selfserve.plan.viewed` | Tenant admin viewed plan details |
+| Self-serve | `selfserve.billing_webhook_tested` | Tenant admin tested billing webhook delivery |
+| Plans | `plan.upgrade_requested` | Tenant requested a plan upgrade |
 | System | `system.worker.heartbeat.missed` | Optional: worker heartbeat missing |
 | System | `system.error` | Optional: handled internal error |
 
@@ -468,6 +475,7 @@ Plan matrix:
 | Ops admin access | no | yes | yes |
 | Audit access | no | yes | yes |
 | Corpora provider config patch | no | yes | yes |
+| Billing webhook test | no | yes | yes |
 | High quota tier | no | no | yes |
 
 Entitlement enforcement:
@@ -508,6 +516,52 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $
   http://localhost:8000/admin/plans/t1/overrides \
   -d '{"feature_key":"feature.tts","enabled":true,"config_json":{"voices":["nova"]}}'
 ```
+
+## Tenant Self-Serve API
+Tenant self-serve endpoints let admins manage API keys, view usage, and request plan upgrades without platform intervention.
+
+Self-serve API key lifecycle:
+```
+# Create key (plaintext returned once)
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/self-serve/api-keys \
+  -d '{"name":"ci-bot","role":"editor"}'
+
+# List keys (no secrets)
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/self-serve/api-keys
+
+# Revoke key (idempotent)
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/self-serve/api-keys/$KEY_ID/revoke
+```
+
+Usage dashboard:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/self-serve/usage/summary?window_days=30"
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/self-serve/usage/timeseries?metric=requests&granularity=day&days=30"
+```
+
+Plan visibility and upgrades:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/self-serve/plan
+
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/self-serve/plan/upgrade-request \
+  -d '{"target_plan":"pro","reason":"Need TTS and Bedrock"}'
+```
+
+Billing webhook test (feature-gated):
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/self-serve/billing/webhook-test
+```
+
+Note: plaintext API keys are returned once on creation and must be stored securely by the client.
 
 ## Notes
 - If Vertex credentials/config are missing, `/run` emits an SSE `error` event with a clear message.

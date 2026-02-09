@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.2.0 - 2026-02-09
+
+- Added tenant self-serve API key lifecycle endpoints.
+- Added usage summary and timeseries endpoints for tenant dashboards.
+- Added plan visibility and upgrade request workflow.
+- Added billing webhook test endpoint (feature-gated).
+- Added audit events for self-serve operations.
+
 ## 1.1.0 - 2026-02-09
 
 - Added tenant plan assignments and feature entitlements.

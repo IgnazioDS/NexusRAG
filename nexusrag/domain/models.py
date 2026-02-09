@@ -195,6 +195,23 @@ class TenantFeatureOverride(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PlanUpgradeRequest(Base):
+    __tablename__ = "plan_upgrade_requests"
+
+    # Track tenant-initiated plan upgrade requests for review workflows.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    current_plan_id: Mapped[str] = mapped_column(String)
+    target_plan_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String)
+    requested_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Message(Base):
     __tablename__ = "messages"
 
@@ -310,3 +327,4 @@ Index("ix_plan_features_plan_id", PlanFeature.plan_id)
 Index("ix_tenant_plan_assignments_tenant", TenantPlanAssignment.tenant_id)
 Index("ix_tenant_plan_assignments_active", TenantPlanAssignment.tenant_id, TenantPlanAssignment.is_active)
 Index("ix_tenant_feature_overrides_tenant", TenantFeatureOverride.tenant_id)
+Index("ix_plan_upgrade_requests_tenant", PlanUpgradeRequest.tenant_id)
