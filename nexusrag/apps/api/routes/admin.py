@@ -48,9 +48,12 @@ from nexusrag.services.rollouts import (
 )
 from nexusrag.services.maintenance import (
     cleanup_ui_actions,
+    backup_create_scheduled,
+    backup_prune_retention,
     prune_audit_events,
     prune_idempotency,
     prune_usage_counters,
+    restore_drill_scheduled,
 )
 
 
@@ -615,7 +618,7 @@ async def run_maintenance_task(
     request: Request,
     task: str = Query(
         ...,
-        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage)$",
+        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage|backup_create_scheduled|backup_prune_retention|restore_drill_scheduled)$",
     ),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
@@ -627,6 +630,9 @@ async def run_maintenance_task(
         "prune_audit": prune_audit_events,
         "cleanup_actions": cleanup_ui_actions,
         "prune_usage": prune_usage_counters,
+        "backup_create_scheduled": backup_create_scheduled,
+        "backup_prune_retention": backup_prune_retention,
+        "restore_drill_scheduled": restore_drill_scheduled,
     }
     runner = task_map.get(task)
     if runner is None:

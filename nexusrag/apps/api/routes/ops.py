@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import math
+import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +17,16 @@ from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import Document
+from nexusrag.domain.models import BackupJob, Document, RestoreDrill
 from nexusrag.services.ingest import queue as ingest_queue
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.backup import (
+    create_backup_job,
+    create_restore_drill,
+    run_backup_job,
+    run_restore_drill,
+)
+from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 from nexusrag.services.resilience import get_circuit_breaker_state
 from nexusrag.services.telemetry import (
@@ -30,6 +40,43 @@ from nexusrag.services.telemetry import (
 
 
 router = APIRouter(prefix="/ops", tags=["ops"], responses=DEFAULT_ERROR_RESPONSES)
+
+
+class DRReadinessResponse(BaseModel):
+    # Return DR readiness signals for operator dashboards.
+    backup: dict[str, Any]
+    restore_drill: dict[str, Any]
+    integrity: dict[str, Any]
+    status: str
+
+
+class DRBackupJobResponse(BaseModel):
+    # Describe a backup job for DR listings.
+    id: int
+    backup_type: str
+    status: str
+    manifest_uri: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_code: str | None
+    error_message: str | None
+
+
+class DRBackupListResponse(BaseModel):
+    # Wrap recent backup jobs for ops responses.
+    items: list[DRBackupJobResponse]
+
+
+class DRBackupTriggerResponse(BaseModel):
+    # Report accepted backup triggers for async processing.
+    job_id: int
+    status: str
+
+
+class DRRestoreDrillResponse(BaseModel):
+    # Report restore drill execution status.
+    drill_id: int
+    status: str
 
 
 def _utc_now() -> datetime:
@@ -426,3 +473,264 @@ async def ops_slo(
         best_effort=True,
     )
     return success_response(request=request, data=payload)
+
+
+async def _run_backup_in_background(
+    job_id: int,
+    backup_type: str,
+    principal: Principal,
+    request_id: str | None,
+) -> None:
+    # Run backup jobs asynchronously to avoid blocking request threads.
+    async with SessionLocal() as session:
+        job = await session.get(BackupJob, job_id)
+        if job is None:
+            return
+        await run_backup_job(
+            session=session,
+            job=job,
+            backup_type=backup_type,
+            output_dir=Path(get_settings().backup_local_dir),
+            actor_type="api_key",
+            tenant_id=principal.tenant_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request_id,
+        )
+
+
+async def _run_restore_drill_in_background(
+    manifest_uri: str,
+    principal: Principal,
+    request_id: str | None,
+    drill_id: int,
+) -> None:
+    # Run restore drills asynchronously to keep ops endpoints responsive.
+    async with SessionLocal() as session:
+        await run_restore_drill(
+            session=session,
+            manifest_uri=manifest_uri,
+            actor_type="api_key",
+            tenant_id=principal.tenant_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request_id,
+            drill_id=drill_id,
+        )
+
+
+@router.get(
+    "/dr/readiness",
+    response_model=SuccessEnvelope[DRReadinessResponse] | DRReadinessResponse,
+)
+async def dr_readiness(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> DRReadinessResponse:
+    # Summarize DR readiness for operators and alerts.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    settings = get_settings()
+    status = "ready"
+
+    last_success = (
+        await db.execute(
+            select(BackupJob)
+            .where(
+                BackupJob.status == "succeeded",
+                BackupJob.tenant_scope == principal.tenant_id,
+            )
+            .order_by(BackupJob.completed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    last_drill = (
+        await db.execute(
+            select(RestoreDrill).order_by(RestoreDrill.completed_at.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    now = _utc_now()
+    retention_days = settings.backup_retention_days
+    last_success_at = last_success.completed_at if last_success else None
+    last_drill_at = last_drill.completed_at if last_drill else None
+    last_drill_result = last_drill.status if last_drill else "unknown"
+
+    if not settings.backup_enabled:
+        status = "not_ready"
+    elif last_success_at is None:
+        status = "not_ready"
+    elif now - last_success_at > timedelta(days=retention_days):
+        status = "at_risk"
+    elif last_drill is None or last_drill.status != "passed":
+        status = "at_risk"
+
+    readiness = DRReadinessResponse(
+        backup={
+            "enabled": settings.backup_enabled,
+            "last_success_at": last_success_at.isoformat() if last_success_at else None,
+            "last_status": last_success.status if last_success else "unknown",
+            "retention_days": retention_days,
+        },
+        restore_drill={
+            "last_drill_at": last_drill_at.isoformat() if last_drill_at else None,
+            "last_result": last_drill_result,
+            "rto_seconds": last_drill.rto_seconds if last_drill else None,
+            "rpo_seconds": int((now - last_success_at).total_seconds())
+            if last_success_at
+            else None,
+        },
+        integrity={
+            "signature_required": settings.restore_require_signature,
+            "last_manifest_verified_at": last_drill_at.isoformat() if last_drill_at else None,
+        },
+        status=status,
+    )
+    return success_response(request=request, data=readiness)
+
+
+@router.get(
+    "/dr/backups",
+    response_model=SuccessEnvelope[DRBackupListResponse] | DRBackupListResponse,
+)
+async def dr_list_backups(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> DRBackupListResponse:
+    # List recent backup jobs for ops visibility.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    result = await db.execute(
+        select(BackupJob)
+        .where(BackupJob.tenant_scope == principal.tenant_id)
+        .order_by(BackupJob.started_at.desc())
+        .limit(limit)
+    )
+    jobs = result.scalars().all()
+    items = [
+        DRBackupJobResponse(
+            id=job.id,
+            backup_type=job.backup_type,
+            status=job.status,
+            manifest_uri=job.manifest_uri,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+            error_code=job.error_code,
+            error_message=job.error_message,
+        )
+        for job in jobs
+    ]
+    return success_response(request=request, data=DRBackupListResponse(items=items))
+
+
+@router.post(
+    "/dr/backup",
+    response_model=SuccessEnvelope[DRBackupTriggerResponse] | DRBackupTriggerResponse,
+)
+async def dr_trigger_backup(
+    request: Request,
+    backup_type: str = Query(default="all", pattern="^(full|schema|metadata|all)$"),
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> DRBackupTriggerResponse:
+    # Allow on-demand backups for DR readiness.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    settings = get_settings()
+    if not settings.backup_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "DR_NOT_READY",
+                "message": "Backups are disabled",
+            },
+        )
+    job = await create_backup_job(
+        db,
+        backup_type=backup_type,
+        created_by_actor_id=principal.api_key_id,
+        tenant_scope=principal.tenant_id,
+        metadata={"source": "ops", "path": request.url.path},
+    )
+    request_ctx = get_request_context(request)
+    asyncio.create_task(
+        _run_backup_in_background(
+            job.id,
+            backup_type,
+            principal,
+            request_ctx["request_id"],
+        )
+    )
+    return success_response(
+        request=request,
+        data=DRBackupTriggerResponse(job_id=job.id, status="accepted"),
+    )
+
+
+@router.post(
+    "/dr/restore-drill",
+    response_model=SuccessEnvelope[DRRestoreDrillResponse] | DRRestoreDrillResponse,
+)
+async def dr_restore_drill(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> DRRestoreDrillResponse:
+    # Trigger a non-destructive restore drill from the latest backup.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    latest_backup = (
+        await db.execute(
+            select(BackupJob)
+            .where(
+                BackupJob.status == "succeeded",
+                BackupJob.tenant_scope == principal.tenant_id,
+            )
+            .order_by(BackupJob.completed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest_backup is None or not latest_backup.manifest_uri:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "DR_NOT_READY",
+                "message": "No successful backups available for restore drill",
+            },
+        )
+    request_ctx = get_request_context(request)
+    drill = await create_restore_drill(
+        db,
+        status="running",
+        report_json=None,
+        rto_seconds=None,
+        verified_manifest_uri=latest_backup.manifest_uri,
+    )
+    asyncio.create_task(
+        _run_restore_drill_in_background(
+            latest_backup.manifest_uri,
+            principal,
+            request_ctx["request_id"],
+            drill.id,
+        )
+    )
+    return success_response(
+        request=request,
+        data=DRRestoreDrillResponse(drill_id=drill.id, status="accepted"),
+    )

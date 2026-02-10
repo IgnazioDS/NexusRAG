@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.6.0 - 2026-02-10
+
+- Added DR backup/restore tooling with signed manifests.
+- Added DR readiness/backups/restore-drill ops endpoints.
+- Added backup retention pruning and drill reporting.
+- Added DR runbooks and tests.
+
 ## 1.5.0 - 2026-02-09
 
 - Added reliability controls: retries, circuit breakers, bulkheads.

@@ -212,6 +212,46 @@ class PlanUpgradeRequest(Base):
     )
 
 
+class BackupJob(Base):
+    __tablename__ = "backup_jobs"
+    __table_args__ = (
+        Index("ix_backup_jobs_status", "status"),
+        Index("ix_backup_jobs_started_at", "started_at"),
+    )
+
+    # Track DR backup lifecycle for readiness and audit reporting.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_scope: Mapped[str | None] = mapped_column(String, nullable=True)
+    backup_type: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    manifest_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class RestoreDrill(Base):
+    __tablename__ = "restore_drills"
+    __table_args__ = (
+        Index("ix_restore_drills_status", "status"),
+        Index("ix_restore_drills_started_at", "started_at"),
+    )
+
+    # Persist restore drill results for compliance evidence.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(String)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    rto_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_manifest_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (
