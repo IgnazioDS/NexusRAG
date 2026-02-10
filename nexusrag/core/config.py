@@ -109,6 +109,28 @@ class Settings(BaseSettings):
     idempotency_enabled: bool = True
     # Control TTL for stored idempotency responses.
     idempotency_ttl_hours: int = 24
+    # Toggle automated backups for DR readiness.
+    backup_enabled: bool = True
+    # Encrypt backup artifacts at rest when enabled.
+    backup_encryption_enabled: bool = True
+    # Provide a base64/hex encoded backup encryption key.
+    backup_encryption_key: str | None = None
+    # Sign backup manifests to detect tampering.
+    backup_signing_enabled: bool = True
+    # Provide an HMAC key for manifest signing.
+    backup_signing_key: str | None = None
+    # Retain backups for a bounded number of days.
+    backup_retention_days: int = 30
+    # Cron expression used by external schedulers for backups.
+    backup_schedule_cron: str = "0 2 * * *"
+    # Verify artifacts immediately after creation when enabled.
+    backup_verify_on_create: bool = True
+    # Bound parallel uploads to object storage targets.
+    backup_max_parallel_uploads: int = 2
+    # Local filesystem backup target for development.
+    backup_local_dir: str = "./backups"
+    # Require valid signatures for restore operations.
+    restore_require_signature: bool = True
     # Sign UI cursor tokens to prevent tampering across pagination requests.
     ui_cursor_secret: str = "dev-ui-cursor-secret"
     # Emit SSE heartbeat events every N seconds for long-running /run streams.

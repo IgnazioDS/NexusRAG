@@ -582,15 +582,65 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/admin/maintenance/run?task=prune_idempotency"
 ```
 
+Available maintenance tasks:
+- `prune_idempotency`
+- `prune_audit`
+- `cleanup_actions`
+- `prune_usage`
+- `backup_create_scheduled`
+- `backup_prune_retention`
+- `restore_drill_scheduled`
+
 Retention knobs:
 - `AUDIT_RETENTION_DAYS`
 - `UI_ACTION_RETENTION_DAYS`
 - `USAGE_COUNTER_RETENTION_DAYS`
+- `BACKUP_RETENTION_DAYS`
 
 Runbooks live under `docs/runbooks/`:
 - `incident-response.md`
 - `breaker-playbook.md`
 - `rollout-playbook.md`
+- `dr-backup-restore.md`
+- `restore-drill-checklist.md`
+- `key-rotation-for-backups.md`
+
+## Disaster Recovery
+Backups include a database logical dump, schema-only dump, and a metadata snapshot.
+
+Backup configuration:
+- `BACKUP_ENABLED`, `BACKUP_LOCAL_DIR`
+- `BACKUP_ENCRYPTION_ENABLED`, `BACKUP_ENCRYPTION_KEY`
+- `BACKUP_SIGNING_ENABLED`, `BACKUP_SIGNING_KEY`
+- `BACKUP_RETENTION_DAYS`, `BACKUP_SCHEDULE_CRON`
+- `RESTORE_REQUIRE_SIGNATURE`
+
+Create a backup:
+```
+docker compose exec api python scripts/backup_create.py --type all
+```
+
+Restore (dry-run):
+```
+docker compose exec api python scripts/backup_restore.py \
+  --manifest ./backups/<job>/manifest.json \
+  --components all \
+  --dry-run
+```
+
+Restore (destructive requires explicit confirmation):
+```
+docker compose exec api python scripts/backup_restore.py \
+  --manifest ./backups/<job>/manifest.json \
+  --components db,schema \
+  --allow-destructive
+```
+
+Check DR readiness:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/dr/readiness"
+```
 
 ## Cloud retrieval real-run (credentials required)
 

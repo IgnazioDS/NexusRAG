@@ -1,6 +1,6 @@
 [project]
 name = "nexusrag"
-version = "1.5.0"
+version = "1.6.0"
 description = "NexusRAG: a multi-cloud, stateful, streaming RAG agent platform"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -23,6 +23,7 @@ dependencies = [
   "python-dotenv>=1.0",
   "orjson>=3.9",
   "arq>=0.26.0",
+  "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
