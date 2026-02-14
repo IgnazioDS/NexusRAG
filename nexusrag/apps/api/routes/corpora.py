@@ -33,6 +33,7 @@ from nexusrag.services.idempotency import (
     compute_request_hash,
     store_idempotency_response,
 )
+from nexusrag.services.governance import enforce_policy
 
 
 router = APIRouter(prefix="/corpora", tags=["corpora"], responses=DEFAULT_ERROR_RESPONSES)
@@ -113,6 +114,22 @@ async def patch_corpus(
 ) -> SuccessEnvelope[CorpusResponse] | CorpusResponse:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     tenant_id = principal.tenant_id
+    request_ctx = get_request_context(request)
+    await enforce_policy(
+        session=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        rule_key="corpora.patch",
+        context={
+            "endpoint": request.url.path,
+            "method": request.method,
+            "resource_type": "corpus",
+            "corpus_id": corpus_id,
+            "actor_role": principal.role,
+        },
+        request_id=request_ctx["request_id"],
+    )
     request_hash = compute_request_hash(payload.model_dump())
     idempotency_ctx, replay = await check_idempotency(
         request=request,
@@ -168,7 +185,6 @@ async def patch_corpus(
         # Surface a generic error and keep the transaction clean for the caller.
         raise HTTPException(status_code=500, detail="Database error while updating corpus") from exc
 
-    request_ctx = get_request_context(request)
     # Record the corpus mutation after the update succeeds.
     await record_event(
         session=db,

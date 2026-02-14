@@ -326,6 +326,99 @@ class FailoverToken(Base):
     purpose: Mapped[str] = mapped_column(String, nullable=False)
 
 
+class RetentionPolicy(Base):
+    __tablename__ = "retention_policies"
+
+    # Keep tenant-scoped retention settings explicit for governance enforcement.
+    tenant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    messages_ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checkpoints_ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audit_ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    documents_ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backups_ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Hard delete remains opt-in so tenants can start with safer anonymization.
+    hard_delete_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Default to anonymization for privacy-by-default behavior.
+    anonymize_instead_of_delete: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LegalHold(Base):
+    __tablename__ = "legal_holds"
+
+    # Track hold scopes so deletion pipelines can defer destructive actions.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    scope_type: Mapped[str] = mapped_column(String, index=True)
+    scope_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DsarRequest(Base):
+    __tablename__ = "dsar_requests"
+
+    # Persist DSAR job lifecycles and evidence links for compliance audits.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    request_type: Mapped[str] = mapped_column(String)
+    subject_type: Mapped[str] = mapped_column(String)
+    subject_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, index=True)
+    requested_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    approved_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    artifact_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    report_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PolicyRule(Base):
+    __tablename__ = "policy_rules"
+
+    # Support tenant/global policy-as-code rules with deterministic precedence.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    rule_key: Mapped[str] = mapped_column(String, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False, index=True)
+    condition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    action_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class GovernanceRetentionRun(Base):
+    __tablename__ = "governance_retention_runs"
+
+    # Keep retention execution reports queryable for compliance evidence endpoints.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (
@@ -491,3 +584,9 @@ Index("ix_tenant_feature_overrides_tenant", TenantFeatureOverride.tenant_id)
 Index("ix_plan_upgrade_requests_tenant", PlanUpgradeRequest.tenant_id)
 Index("ix_ui_actions_tenant_created_at", UiAction.tenant_id, UiAction.created_at.desc())
 Index("ix_ui_actions_status", UiAction.status)
+Index("ix_legal_holds_tenant_active", LegalHold.tenant_id, LegalHold.is_active)
+Index("ix_legal_holds_scope", LegalHold.scope_type, LegalHold.scope_id)
+Index("ix_dsar_requests_tenant_status", DsarRequest.tenant_id, DsarRequest.status)
+Index("ix_dsar_requests_created_at", DsarRequest.created_at.desc())
+Index("ix_policy_rules_rule_priority", PolicyRule.rule_key, PolicyRule.priority.desc())
+Index("ix_governance_retention_runs_tenant_started", GovernanceRetentionRun.tenant_id, GovernanceRetentionRun.started_at.desc())

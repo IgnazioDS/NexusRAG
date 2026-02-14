@@ -11,11 +11,19 @@ from nexusrag.services.backup import (
     run_restore_drill,
 )
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import AuditEvent, BackupJob, IdempotencyRecord, UiAction, UsageCounter
+from nexusrag.domain.models import (
+    AuditEvent,
+    BackupJob,
+    IdempotencyRecord,
+    LegalHold,
+    UiAction,
+    UsageCounter,
+)
+from nexusrag.services.governance import LEGAL_HOLD_SCOPE_BACKUP_SET
 
 
 MaintenanceTask = Literal[
@@ -90,10 +98,24 @@ async def backup_create_scheduled(session: AsyncSession) -> int:
 async def backup_prune_retention(session: AsyncSession) -> int:
     # Prune backup artifacts beyond retention to control storage costs.
     settings = get_settings()
+    now = datetime.now(timezone.utc)
+    hold_scope_ids = set(
+        (
+            await session.execute(
+                select(LegalHold.scope_id).where(
+                    LegalHold.scope_type == LEGAL_HOLD_SCOPE_BACKUP_SET,
+                    LegalHold.is_active.is_(True),
+                    or_(LegalHold.expires_at.is_(None), LegalHold.expires_at > now),
+                    LegalHold.scope_id.is_not(None),
+                )
+            )
+        ).scalars().all()
+    )
     return await prune_backups(
         session=session,
         base_dir=Path(settings.backup_local_dir),
         retention_days=settings.backup_retention_days,
+        held_backup_scope_ids=hold_scope_ids,
     )
 
 

@@ -7,10 +7,15 @@ from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.domain.models import (
+    DsarRequest,
     FailoverClusterState,
     FailoverEvent,
     FailoverToken,
+    GovernanceRetentionRun,
+    LegalHold,
+    PolicyRule,
     RegionStatus,
+    RetentionPolicy,
 )
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.persistence.db import engine
@@ -33,9 +38,14 @@ async def dispose_engine_between_tests() -> None:
 
 @pytest.fixture(autouse=True)
 async def reset_failover_tables_between_tests() -> None:
-    # Keep failover control-plane state isolated so write-freeze does not leak across tests.
+    # Keep control-plane and governance state isolated across tests for determinism.
     try:
         async with SessionLocal() as session:
+            await session.execute(delete(DsarRequest))
+            await session.execute(delete(GovernanceRetentionRun))
+            await session.execute(delete(LegalHold))
+            await session.execute(delete(PolicyRule))
+            await session.execute(delete(RetentionPolicy))
             await session.execute(delete(FailoverEvent))
             await session.execute(delete(FailoverToken))
             await session.execute(delete(RegionStatus))

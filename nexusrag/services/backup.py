@@ -900,17 +900,24 @@ async def prune_backups(
     session: AsyncSession,
     base_dir: Path,
     retention_days: int,
+    held_backup_scope_ids: set[str] | None = None,
 ) -> int:
     # Remove backup artifacts beyond retention and mark jobs as pruned.
     cutoff = _utc_now() - timedelta(days=retention_days)
     pruned = 0
+    skipped_hold = 0
     updated = False
+    hold_scope_ids = held_backup_scope_ids or set()
     if not base_dir.exists():
         return 0
     for manifest_path in base_dir.rglob("manifest.json"):
         manifest = _load_manifest(manifest_path)
         created_at = datetime.fromisoformat(manifest.created_at)
         if created_at >= cutoff:
+            continue
+        manifest_uri = str(manifest_path)
+        if manifest.backup_id in hold_scope_ids or manifest_uri in hold_scope_ids:
+            skipped_hold += 1
             continue
         job_dir = manifest_path.parent
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -931,5 +938,10 @@ async def prune_backups(
         await record_system_event(
             event_type="dr.backup.pruned",
             metadata={"count": pruned},
+        )
+    if skipped_hold:
+        await record_system_event(
+            event_type="governance.retention.item.skipped_hold",
+            metadata={"category": "backups", "skipped_count": skipped_hold},
         )
     return pruned

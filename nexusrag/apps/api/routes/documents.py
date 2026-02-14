@@ -48,6 +48,11 @@ from nexusrag.services.idempotency import (
 )
 from nexusrag.services.rollouts import resolve_kill_switch
 from nexusrag.services.telemetry import increment_counter
+from nexusrag.services.governance import (
+    LEGAL_HOLD_SCOPE_DOCUMENT,
+    enforce_no_legal_hold,
+    enforce_policy,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -690,6 +695,29 @@ async def reindex_document(
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
+    request_ctx = get_request_context(request)
+    decision = await enforce_policy(
+        session=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        rule_key="documents.reindex",
+        context={
+            "endpoint": request.url.path,
+            "method": request.method,
+            "resource_type": "document",
+            "document_id": document_id,
+            "actor_role": principal.role,
+        },
+        request_id=request_ctx["request_id"],
+    )
+    if decision.force_legal_hold_check:
+        await enforce_no_legal_hold(
+            db,
+            tenant_id=tenant_id,
+            scope_type=LEGAL_HOLD_SCOPE_DOCUMENT,
+            scope_id=document_id,
+        )
     try:
         doc = await documents_repo.get_document(db, tenant_id, document_id)
     except SQLAlchemyError as exc:
@@ -765,7 +793,6 @@ async def reindex_document(
         is_reindex=True,
     )
     await _enqueue_or_fail(db, document_id, ingest_payload)
-    request_ctx = get_request_context(request)
     # Record queued reindex only after the enqueue succeeds.
     await record_event(
         session=db,
@@ -810,6 +837,28 @@ async def delete_document(
 ) -> Response:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     tenant_id = principal.tenant_id
+    request_ctx = get_request_context(request)
+    await enforce_policy(
+        session=db,
+        tenant_id=tenant_id,
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        rule_key="documents.delete",
+        context={
+            "endpoint": request.url.path,
+            "method": request.method,
+            "resource_type": "document",
+            "document_id": document_id,
+            "actor_role": principal.role,
+        },
+        request_id=request_ctx["request_id"],
+    )
+    await enforce_no_legal_hold(
+        db,
+        tenant_id=tenant_id,
+        scope_type=LEGAL_HOLD_SCOPE_DOCUMENT,
+        scope_id=document_id,
+    )
     try:
         doc = await documents_repo.get_document(db, tenant_id, document_id)
     except SQLAlchemyError as exc:
@@ -859,7 +908,6 @@ async def delete_document(
             # Deleting local artifacts should not block API responses.
             logger.warning("Failed to remove document storage %s", storage_path)
 
-    request_ctx = get_request_context(request)
     # Record deletions after the document and chunks are removed successfully.
     await record_event(
         session=db,

@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     backup_local_dir: str = "./backups"
     # Require valid signatures for restore operations.
     restore_require_signature: bool = True
+    # Enable policy-as-code checks for governance decisions.
+    governance_policy_engine_enabled: bool = True
+    # Local path for DSAR export artifacts and retention reports.
+    governance_artifact_dir: str = "./governance_artifacts"
+    # Cap evidence query windows to keep ops requests bounded.
+    governance_evidence_max_window_days: int = 90
     # Identify the local region for failover-aware routing and control-plane decisions.
     region_id: str = "ap-southeast-1"
     # Configure whether this region starts as primary or standby.
