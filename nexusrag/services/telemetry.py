@@ -28,6 +28,7 @@ _request_samples: Deque[RequestSample] = deque(maxlen=20000)
 _stream_samples: Deque[float] = deque(maxlen=5000)
 _external_samples: Deque[ExternalCallSample] = deque(maxlen=10000)
 _counters: dict[str, int] = defaultdict(int)
+_gauges: dict[str, float] = defaultdict(float)
 
 
 def record_request(*, path: str, route_class: str, status_code: int, latency_ms: float) -> None:
@@ -63,6 +64,11 @@ def record_external_call(*, integration: str, latency_ms: float, success: bool) 
 def increment_counter(name: str, value: int = 1) -> None:
     # Store counters for error budgets and ops dashboards.
     _counters[name] += value
+
+
+def set_gauge(name: str, value: float) -> None:
+    # Store gauges for current-state telemetry such as readiness and lag.
+    _gauges[name] = float(value)
 
 
 def _window_samples(window_s: int) -> list[RequestSample]:
@@ -143,3 +149,8 @@ def stream_duration_stats() -> dict[str, float | None]:
 def counters_snapshot() -> dict[str, int]:
     # Return a copy of all counters for metrics reporting.
     return dict(_counters)
+
+
+def gauges_snapshot() -> dict[str, float]:
+    # Return a copy of current gauge values for metrics reporting.
+    return dict(_gauges)

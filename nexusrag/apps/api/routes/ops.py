@@ -27,12 +27,22 @@ from nexusrag.services.backup import (
     run_restore_drill,
 )
 from nexusrag.persistence.db import SessionLocal
+from nexusrag.services.failover import (
+    FailoverTransitionResult,
+    evaluate_readiness,
+    get_failover_status,
+    issue_failover_token,
+    promote_region,
+    rollback_failover,
+    set_write_freeze,
+)
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 from nexusrag.services.resilience import get_circuit_breaker_state
 from nexusrag.services.telemetry import (
     availability,
     counters_snapshot,
     external_latency_by_integration,
+    gauges_snapshot,
     p95_latency,
     request_latency_by_class,
     stream_duration_stats,
@@ -77,6 +87,73 @@ class DRRestoreDrillResponse(BaseModel):
     # Report restore drill execution status.
     drill_id: int
     status: str
+
+
+class FailoverTokenRequest(BaseModel):
+    # Require explicit purpose/reason for auditability.
+    purpose: str
+    reason: str | None = None
+
+
+class FailoverTokenResponse(BaseModel):
+    # Return token plaintext once; only hash is persisted.
+    token_id: str
+    token: str
+    expires_at: datetime
+    purpose: str
+
+
+class FailoverPromoteRequest(BaseModel):
+    # Gate promotion with a short-lived token and optional force override.
+    target_region: str
+    token: str
+    reason: str | None = None
+    force: bool = False
+
+
+class FailoverRollbackRequest(BaseModel):
+    # Gate rollback with a dedicated rollback token.
+    token: str
+    reason: str | None = None
+    force: bool = False
+
+
+class FailoverFreezeRequest(BaseModel):
+    # Allow operators to toggle write freeze during incidents.
+    freeze: bool
+    reason: str | None = None
+
+
+class FailoverStatusResponse(BaseModel):
+    # Surface current failover state and region health to operators.
+    active_primary_region: str
+    epoch: int
+    last_transition_at: str | None
+    cooldown_until: str | None
+    freeze_writes: bool
+    local_region: dict[str, Any]
+    regions: list[dict[str, Any]]
+
+
+class FailoverReadinessResponse(BaseModel):
+    # Report arbitration score and blockers to support safe promotion decisions.
+    readiness_score: int
+    recommendation: str
+    blockers: list[str]
+    replication_lag_seconds: int | None
+    split_brain_risk: bool
+    peer_signals: list[dict[str, Any]]
+
+
+class FailoverActionResponse(BaseModel):
+    # Return summarized transition results for promote/rollback APIs.
+    event_id: int
+    status: str
+    from_region: str | None
+    to_region: str | None
+    epoch: int
+    freeze_writes: bool
+    blockers: list[str]
 
 
 def _utc_now() -> datetime:
@@ -375,8 +452,24 @@ async def ops_metrics(
             "nexusrag_service_busy_total": metrics_counters.get("service_busy_total", 0),
             "nexusrag_quota_exceeded_total": metrics_counters.get("quota_exceeded_total", 0),
             "nexusrag_rate_limited_total": metrics_counters.get("rate_limited_total", 0),
+            "nexusrag_failover_requests_total_completed": metrics_counters.get(
+                "failover_requests_total.completed", 0
+            ),
+            "nexusrag_failover_requests_total_failed": metrics_counters.get(
+                "failover_requests_total.failed", 0
+            ),
+            "nexusrag_failover_requests_total_rolled_back": metrics_counters.get(
+                "failover_requests_total.rolled_back", 0
+            ),
         }
     )
+    payload["gauges"].update(
+        {
+            "nexusrag_write_frozen_state": gauges_snapshot().get("write_frozen_state", 0.0),
+        }
+    )
+    # Include all telemetry gauges so region-specific failover gauges are visible.
+    payload["telemetry_gauges"] = gauges_snapshot()
     payload["latency_ms"] = request_latency_by_class(3600)
     payload["external_call_latency_ms"] = external_latency_by_integration(3600)
     payload["sse_stream_duration_ms"] = stream_duration_stats()
@@ -734,3 +827,187 @@ async def dr_restore_drill(
         request=request,
         data=DRRestoreDrillResponse(drill_id=drill.id, status="accepted"),
     )
+
+
+@router.get(
+    "/failover/status",
+    response_model=SuccessEnvelope[FailoverStatusResponse] | FailoverStatusResponse,
+)
+async def failover_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> FailoverStatusResponse:
+    # Expose current failover/region state for operational decision making.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    payload = await get_failover_status(db)
+    request_ctx = get_request_context(request)
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="ops.viewed",
+        outcome="success",
+        resource_type="ops",
+        resource_id="failover.status",
+        request_id=request_ctx["request_id"],
+        metadata={"path": request.url.path},
+        commit=True,
+        best_effort=True,
+    )
+    return success_response(request=request, data=FailoverStatusResponse(**payload))
+
+
+@router.get(
+    "/failover/readiness",
+    response_model=SuccessEnvelope[FailoverReadinessResponse] | FailoverReadinessResponse,
+)
+async def failover_readiness(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> FailoverReadinessResponse:
+    # Report readiness score/recommendation with explicit promotion blockers.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    readiness = await evaluate_readiness(db)
+    request_ctx = get_request_context(request)
+    if readiness.split_brain_risk:
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="failover.split_brain_detected",
+            outcome="failure",
+            resource_type="failover",
+            resource_id="readiness",
+            request_id=request_ctx["request_id"],
+            metadata={"path": request.url.path, "blockers": readiness.blockers},
+            error_code="SPLIT_BRAIN_RISK",
+            commit=True,
+            best_effort=True,
+        )
+    return success_response(
+        request=request,
+        data=FailoverReadinessResponse(
+            readiness_score=readiness.readiness_score,
+            recommendation=readiness.recommendation,
+            blockers=readiness.blockers,
+            replication_lag_seconds=readiness.replication_lag_seconds,
+            split_brain_risk=readiness.split_brain_risk,
+            peer_signals=readiness.peer_signals,
+        ),
+    )
+
+
+@router.post(
+    "/failover/request-token",
+    response_model=SuccessEnvelope[FailoverTokenResponse] | FailoverTokenResponse,
+)
+async def failover_request_token(
+    payload: FailoverTokenRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> FailoverTokenResponse:
+    # Require explicit one-time token issuance before promote/rollback operations.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    request_ctx = get_request_context(request)
+    issued = await issue_failover_token(
+        session=db,
+        requested_by_actor_id=principal.api_key_id,
+        purpose=payload.purpose,
+        reason=payload.reason,
+        tenant_id=principal.tenant_id,
+        actor_role=principal.role,
+        request_id=request_ctx["request_id"],
+    )
+    return success_response(
+        request=request,
+        data=FailoverTokenResponse(
+            token_id=issued.token_id,
+            token=issued.token,
+            expires_at=issued.expires_at,
+            purpose=payload.purpose,
+        ),
+    )
+
+
+@router.post(
+    "/failover/promote",
+    response_model=SuccessEnvelope[FailoverActionResponse] | FailoverActionResponse,
+)
+async def failover_promote(
+    payload: FailoverPromoteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> FailoverActionResponse:
+    # Execute guarded failover promotion with token + readiness prechecks.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    request_ctx = get_request_context(request)
+    result: FailoverTransitionResult = await promote_region(
+        session=db,
+        target_region=payload.target_region,
+        plaintext_token=payload.token,
+        reason=payload.reason,
+        force=payload.force,
+        requested_by_actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        tenant_id=principal.tenant_id,
+        request_id=request_ctx["request_id"],
+    )
+    return success_response(request=request, data=FailoverActionResponse(**result.__dict__))
+
+
+@router.post(
+    "/failover/rollback",
+    response_model=SuccessEnvelope[FailoverActionResponse] | FailoverActionResponse,
+)
+async def failover_rollback(
+    payload: FailoverRollbackRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> FailoverActionResponse:
+    # Execute guarded rollback with dedicated rollback token semantics.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    request_ctx = get_request_context(request)
+    result: FailoverTransitionResult = await rollback_failover(
+        session=db,
+        plaintext_token=payload.token,
+        reason=payload.reason,
+        requested_by_actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        tenant_id=principal.tenant_id,
+        request_id=request_ctx["request_id"],
+    )
+    return success_response(request=request, data=FailoverActionResponse(**result.__dict__))
+
+
+@router.patch(
+    "/failover/freeze-writes",
+    response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any],
+)
+async def failover_freeze_writes(
+    payload: FailoverFreezeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    # Allow operators to toggle write freeze without running a full promotion flow.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    request_ctx = get_request_context(request)
+    result = await set_write_freeze(
+        session=db,
+        freeze=payload.freeze,
+        reason=payload.reason,
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        tenant_id=principal.tenant_id,
+        request_id=request_ctx["request_id"],
+    )
+    return success_response(request=request, data=result)

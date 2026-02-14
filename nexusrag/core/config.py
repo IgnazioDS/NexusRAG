@@ -131,6 +131,30 @@ class Settings(BaseSettings):
     backup_local_dir: str = "./backups"
     # Require valid signatures for restore operations.
     restore_require_signature: bool = True
+    # Identify the local region for failover-aware routing and control-plane decisions.
+    region_id: str = "ap-southeast-1"
+    # Configure whether this region starts as primary or standby.
+    region_role: str = "primary"
+    # Toggle multi-region failover controls.
+    failover_enabled: bool = True
+    # Select manual (token-gated) or assisted failover mode.
+    failover_mode: str = "manual"
+    # Maximum acceptable replication lag before promotion is blocked.
+    replication_lag_max_seconds: int = 30
+    # Require healthy replication to allow promotions.
+    replication_health_required: bool = True
+    # Freeze writes automatically when replication becomes unhealthy.
+    write_freeze_on_unhealthy_replica: bool = True
+    # Enforce cooldown between failover transitions.
+    failover_cooldown_seconds: int = 600
+    # Keep approval tokens short-lived for operator safety.
+    failover_token_ttl_seconds: int = 300
+    # Tie-breaker priority for assisted arbitration decisions.
+    region_priority: int = 100
+    # JSON list of peer regions used for arbitration signals.
+    peer_regions_json: str = "[]"
+    # Prefix for failover keys stored in Redis.
+    failover_redis_prefix: str = "nexusrag:failover"
     # Sign UI cursor tokens to prevent tampering across pagination requests.
     ui_cursor_secret: str = "dev-ui-cursor-secret"
     # Emit SSE heartbeat events every N seconds for long-running /run streams.

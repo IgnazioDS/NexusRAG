@@ -604,6 +604,9 @@ Runbooks live under `docs/runbooks/`:
 - `dr-backup-restore.md`
 - `restore-drill-checklist.md`
 - `key-rotation-for-backups.md`
+- `failover-execution.md`
+- `failover-rollback.md`
+- `split-brain-mitigation.md`
 
 ## Disaster Recovery
 Backups include a database logical dump, schema-only dump, and a metadata snapshot.
@@ -640,6 +643,70 @@ Check DR readiness:
 ```
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/ops/dr/readiness"
+```
+
+## Multi-Region Failover
+Failover control plane is region-aware and token-gated to reduce accidental promotions.
+
+Key settings:
+- `REGION_ID`, `REGION_ROLE`
+- `FAILOVER_ENABLED`, `FAILOVER_MODE`
+- `REPLICATION_LAG_MAX_SECONDS`, `REPLICATION_HEALTH_REQUIRED`
+- `WRITE_FREEZE_ON_UNHEALTHY_REPLICA`
+- `FAILOVER_COOLDOWN_SECONDS`, `FAILOVER_TOKEN_TTL_SECONDS`
+- `PEER_REGIONS_JSON`
+
+Failover states:
+- `idle`
+- `freeze_writes`
+- `precheck`
+- `promoting`
+- `verification`
+- `completed`
+- `failed`
+- `rollback_pending`
+- `rolled_back`
+
+Safety invariants:
+- one failover at a time (Redis lock + DB row lock)
+- cooldown enforced between transitions
+- promotion/rollback requires one-time short-lived token
+- writes freeze when region is not active primary or freeze flag is enabled
+
+Get failover status:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/failover/status"
+```
+
+Check failover readiness:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/failover/readiness"
+```
+
+Request promotion token:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"purpose":"promote","reason":"primary unavailable"}' \
+  "http://localhost:8000/v1/ops/failover/request-token"
+```
+
+Promote with token:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"target_region":"ap-southeast-1","token":"<TOKEN>","reason":"incident failover","force":false}' \
+  "http://localhost:8000/v1/ops/failover/promote"
+```
+
+Toggle write freeze:
+```
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"freeze":true,"reason":"replication degraded"}' \
+  "http://localhost:8000/v1/ops/failover/freeze-writes"
 ```
 
 ## Cloud retrieval real-run (credentials required)

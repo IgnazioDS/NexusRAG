@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.7.0 - 2026-02-14
+
+- Added region status and failover control plane tables/endpoints.
+- Added readiness arbitration with blockers, split-brain detection, and recommendations.
+- Added token-gated promotion/rollback flows with cooldown and concurrency guards.
+- Added write-freeze enforcement for mutation and run paths during failover/degraded states.
+- Added failover telemetry, audit events, and operator runbooks.
+
 ## 1.6.0 - 2026-02-10
 
 - Added DR backup/restore tooling with signed manifests.
