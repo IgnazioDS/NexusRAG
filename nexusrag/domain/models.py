@@ -252,6 +252,80 @@ class RestoreDrill(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class FailoverClusterState(Base):
+    __tablename__ = "failover_cluster_state"
+
+    # Persist active primary and write-freeze state for Redis loss recovery.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    active_primary_region: Mapped[str] = mapped_column(String, index=True)
+    epoch: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_transition_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    freeze_writes: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RegionStatus(Base):
+    __tablename__ = "region_status"
+    __table_args__ = (
+        Index("ix_region_status_health_updated", "health_status", "updated_at"),
+    )
+
+    # Track per-region role/health for readiness arbitration.
+    region_id: Mapped[str] = mapped_column(String, primary_key=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    health_status: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    replication_lag_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    writable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FailoverEvent(Base):
+    __tablename__ = "failover_events"
+    __table_args__ = (
+        Index("ix_failover_events_status_started", "status", "started_at"),
+    )
+
+    # Persist failover attempts and outcomes for operator auditability.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    from_region: Mapped[str | None] = mapped_column(String, nullable=True)
+    to_region: Mapped[str | None] = mapped_column(String, nullable=True)
+    mode: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    approval_token_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    report_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class FailoverToken(Base):
+    __tablename__ = "failover_tokens"
+    __table_args__ = (
+        Index("ix_failover_tokens_expires_at", "expires_at"),
+    )
+
+    # Store one-time approval tokens as hashes to avoid plaintext persistence.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    requested_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    purpose: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (

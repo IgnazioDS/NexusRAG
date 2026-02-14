@@ -16,6 +16,7 @@ from nexusrag.persistence.db import SessionLocal, get_session
 from nexusrag.services.auth.api_keys import hash_api_key, normalize_role, role_allows
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.apps.api.rate_limit import enforce_rate_limit, route_class_for_request
+from nexusrag.services.failover import enforce_write_gate
 from nexusrag.services.quota import enforce_quota
 
 
@@ -476,10 +477,21 @@ def require_role(minimum_role: str):
                 best_effort=True,
             )
             raise _forbidden_error("Insufficient role for this operation")
+        # Block write-like operations when failover controls mark this region non-writable.
+        route_class, cost = route_class_for_request(request)
+        request_ctx = get_request_context(request)
+        await enforce_write_gate(
+            session=db,
+            route_class=route_class,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request_ctx["request_id"],
+            path=request.url.path,
+        )
         # Apply rate limits after auth + RBAC checks to protect capacity.
         await enforce_rate_limit(request=request, response=response, principal=principal, db=db)
         # Apply quota checks after rate limiting to avoid counting throttled requests.
-        _route_class, cost = route_class_for_request(request)
         await enforce_quota(
             request=request,
             response=response,
