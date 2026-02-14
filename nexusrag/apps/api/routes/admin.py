@@ -55,6 +55,7 @@ from nexusrag.services.maintenance import (
     prune_usage_counters,
     restore_drill_scheduled,
 )
+from nexusrag.services.governance import enforce_policy
 
 
 router = APIRouter(prefix="/admin", tags=["admin"], responses=DEFAULT_ERROR_RESPONSES)
@@ -637,6 +638,23 @@ async def run_maintenance_task(
     runner = task_map.get(task)
     if runner is None:
         raise HTTPException(status_code=422, detail="Unknown maintenance task")
+    if task in {"backup_prune_retention"}:
+        # Apply governance policy checks before destructive backup pruning.
+        await enforce_policy(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            rule_key="backup.prune",
+            context={
+                "endpoint": request.url.path,
+                "method": request.method,
+                "resource_type": "backup_set",
+                "task": task,
+                "actor_role": principal.role,
+            },
+            request_id=request.headers.get("X-Request-Id"),
+        )
     deleted = await runner(db)
     await db.commit()
     payload = MaintenanceRunResponse(task=task, status="completed", deleted_rows=deleted)

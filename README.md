@@ -607,6 +607,10 @@ Runbooks live under `docs/runbooks/`:
 - `failover-execution.md`
 - `failover-rollback.md`
 - `split-brain-mitigation.md`
+- `dsar-handling.md`
+- `legal-hold-procedure.md`
+- `retention-and-anonymization.md`
+- `audit-evidence-export.md`
 
 ## Disaster Recovery
 Backups include a database logical dump, schema-only dump, and a metadata snapshot.
@@ -708,6 +712,119 @@ curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
   -d '{"freeze":true,"reason":"replication degraded"}' \
   "http://localhost:8000/v1/ops/failover/freeze-writes"
 ```
+
+## Governance & Compliance
+Governance controls add tenant-scoped retention, legal hold, DSAR execution, and policy-as-code decisions.
+
+### Retention Policy Model
+- `messages_ttl_days`
+- `checkpoints_ttl_days`
+- `audit_ttl_days`
+- `documents_ttl_days`
+- `backups_ttl_days`
+- `hard_delete_enabled`
+- `anonymize_instead_of_delete`
+
+Read/update retention policy:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/governance/retention/policy"
+```
+
+```
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"documents_ttl_days":30,"hard_delete_enabled":false,"anonymize_instead_of_delete":true}' \
+  "http://localhost:8000/v1/admin/governance/retention/policy"
+```
+
+Run retention and fetch report:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/governance/retention/run?tenant_id=t1"
+```
+
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/governance/retention/report?tenant_id=t1&run_id=1"
+```
+
+### Legal Hold Behavior
+- Active legal holds supersede retention deletion and DSAR destructive requests.
+- Holds can be scoped to `tenant`, `document`, `session`, `user_key`, or `backup_set`.
+
+Create/release legal hold:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"scope_type":"document","scope_id":"doc_123","reason":"Litigation case #123"}' \
+  "http://localhost:8000/v1/admin/governance/legal-holds"
+```
+
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/governance/legal-holds/1/release"
+```
+
+### DSAR Workflow
+- Create request: `POST /v1/admin/governance/dsar`
+- Poll request: `GET /v1/admin/governance/dsar/{id}`
+- Download export artifact: `GET /v1/admin/governance/dsar/{id}/artifact`
+
+DSAR export example:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"request_type":"export","subject_type":"session","subject_id":"s1","reason":"Data subject request"}' \
+  "http://localhost:8000/v1/admin/governance/dsar"
+```
+
+### Policy-as-Code Overview
+Policies evaluate by `rule_key` with descending priority and deterministic tie-break by rule id.
+
+Policy rule example:
+```
+{
+  "rule_key": "documents.delete",
+  "enabled": true,
+  "priority": 1000,
+  "condition_json": {"method": "DELETE", "endpoint_prefix": "/v1/documents/"},
+  "action_json": {"type": "deny", "code": "POLICY_DENIED", "message": "Delete disabled by policy"}
+}
+```
+
+Create/list policies:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"rule_key":"documents.delete","priority":1000,"condition_json":{"method":"DELETE"},"action_json":{"type":"deny","code":"POLICY_DENIED"}}' \
+  "http://localhost:8000/v1/admin/governance/policies"
+```
+
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/governance/policies"
+```
+
+### Governance Ops Endpoints
+Status:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/governance/status"
+```
+
+Evidence bundle metadata:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/governance/evidence?window_days=30"
+```
+
+### Governance Error Codes
+- `POLICY_DENIED` (403)
+- `LEGAL_HOLD_ACTIVE` (409)
+- `DSAR_REQUIRES_APPROVAL` (409)
+- `DSAR_NOT_FOUND` (404)
+- `GOVERNANCE_REPORT_UNAVAILABLE` (503)
 
 ## Cloud retrieval real-run (credentials required)
 

@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.8.0 - 2026-02-14
+
+- Added governance data model for retention policies, legal holds, DSAR requests, and policy rules.
+- Added policy-as-code engine with deterministic rule evaluation and destructive action enforcement.
+- Added retention pipeline execution/reporting with legal hold supersession and anonymize/hard-delete modes.
+- Added DSAR APIs for export/delete/anonymize with artifact generation and auditable lifecycle states.
+- Added governance ops status/evidence endpoints plus governance runbooks and tests.
+
 ## 1.7.0 - 2026-02-14
 
 - Added region status and failover control plane tables/endpoints.
