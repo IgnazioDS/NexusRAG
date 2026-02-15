@@ -137,6 +137,22 @@ class Settings(BaseSettings):
     governance_artifact_dir: str = "./governance_artifacts"
     # Cap evidence query windows to keep ops requests bounded.
     governance_evidence_max_window_days: int = 90
+    # Enable SOC 2 compliance automation workflows.
+    compliance_enabled: bool = True
+    # Default evaluation window for compliance checks.
+    compliance_default_window_days: int = 30
+    # Cron expression for scheduled compliance evaluations.
+    compliance_eval_cron: str = "0 3 * * *"
+    # Cron expression for scheduled compliance bundle generation.
+    compliance_bundle_cron: str = "0 4 * * 1"
+    # Retain compliance evidence bundles for a bounded number of days.
+    compliance_evidence_retention_days: int = 365
+    # Fail the evaluation pipeline when critical controls fail if enabled.
+    compliance_fail_on_critical: bool = False
+    # Require signatures for evidence bundles by default.
+    compliance_signature_required: bool = True
+    # Local filesystem directory for evidence bundle artifacts.
+    compliance_evidence_dir: str = "./evidence"
     # Enable envelope encryption for sensitive artifacts at rest.
     crypto_enabled: bool = True
     # Select the KMS backend used for tenant key operations.
