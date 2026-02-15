@@ -52,7 +52,7 @@ export function connectRunStream(options: RunStreamOptions): RunStreamHandle {
           headers["Last-Event-ID"] = String(lastSeq);
         }
 
-        const response = await fetch(`${baseUrl.replace(/\\/$/, "")}/v1/run`, {
+        const response = await fetch(`${baseUrl.replace(/\/$/, "")}/v1/run`, {
           method: "POST",
           headers,
           body: JSON.stringify(body),

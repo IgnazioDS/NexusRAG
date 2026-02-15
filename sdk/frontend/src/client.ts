@@ -34,7 +34,7 @@ export class UiClient {
   private fetcher: typeof fetch;
 
   constructor(options: UiClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\\/$/, "");
+    this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.apiKey = options.apiKey;
     this.fetcher = options.fetcher ?? fetch;
   }
