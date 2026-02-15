@@ -488,6 +488,101 @@ class KeyRotationJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ControlCatalog(Base):
+    __tablename__ = "control_catalog"
+
+    # Define SOC 2 control metadata used by automated evaluations.
+    control_id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String)
+    trust_criteria: Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str] = mapped_column(Text)
+    owner_role: Mapped[str] = mapped_column(String)
+    check_type: Mapped[str] = mapped_column(String)
+    frequency: Mapped[str] = mapped_column(String)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    severity: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ControlMapping(Base):
+    __tablename__ = "control_mappings"
+
+    # Map SOC 2 controls to measurable platform signals and evidence templates.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    control_id: Mapped[str] = mapped_column(String, ForeignKey("control_catalog.control_id"), index=True)
+    signal_type: Mapped[str] = mapped_column(String)
+    signal_ref: Mapped[str] = mapped_column(String)
+    condition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    evidence_template_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ControlEvaluation(Base):
+    __tablename__ = "control_evaluations"
+    __table_args__ = (
+        Index("ix_control_evaluations_control_eval", "control_id", text("evaluated_at DESC")),
+        Index("ix_control_evaluations_status_eval", "status", text("evaluated_at DESC")),
+    )
+
+    # Store periodic control evaluations for SOC 2 reporting.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    control_id: Mapped[str] = mapped_column(String, ForeignKey("control_catalog.control_id"), index=True)
+    tenant_scope: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    findings_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    evidence_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class EvidenceBundle(Base):
+    __tablename__ = "evidence_bundles"
+    __table_args__ = (
+        Index("ix_evidence_bundles_status_generated", "status", text("generated_at DESC")),
+    )
+
+    # Track SOC 2 evidence bundle generation and verification.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    bundle_type: Mapped[str] = mapped_column(String)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String, index=True)
+    manifest_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    signature: Mapped[str | None] = mapped_column(String, nullable=True)
+    checksum_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    generated_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class ComplianceArtifact(Base):
+    __tablename__ = "compliance_artifacts"
+    __table_args__ = (
+        Index("ix_compliance_artifacts_type_created", "artifact_type", text("created_at DESC")),
+    )
+
+    # Store manual evidence artifacts such as dependency scan attestations.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    artifact_type: Mapped[str] = mapped_column(String, index=True)
+    control_id: Mapped[str | None] = mapped_column(String, ForeignKey("control_catalog.control_id"), nullable=True)
+    artifact_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    checksum_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (
