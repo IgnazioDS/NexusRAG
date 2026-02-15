@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 1.9.0 - 2026-02-15
+
+- Added tenant key registry and encrypted blob store for sensitive artifacts.
+- Added envelope encryption with pluggable KMS providers and crypto error contracts.
+- Added key rotation APIs with resumable re-encryption jobs and telemetry.
+- Added crypto posture to governance status plus crypto runbooks and tests.
+
 ## 1.8.0 - 2026-02-14
 
 - Added governance data model for retention policies, legal holds, DSAR requests, and policy rules.

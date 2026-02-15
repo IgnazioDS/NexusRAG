@@ -137,6 +137,28 @@ class Settings(BaseSettings):
     governance_artifact_dir: str = "./governance_artifacts"
     # Cap evidence query windows to keep ops requests bounded.
     governance_evidence_max_window_days: int = 90
+    # Enable envelope encryption for sensitive artifacts at rest.
+    crypto_enabled: bool = True
+    # Select the KMS backend used for tenant key operations.
+    crypto_provider: str = "local_kms"
+    # Select the payload encryption algorithm (fixed for now).
+    crypto_encryption_algo: str = "aes256gcm"
+    # Enforce encryption for sensitive writes when enabled.
+    crypto_require_encryption_for_sensitive: bool = True
+    # Default key alias for per-tenant KEK versions.
+    crypto_default_key_alias: str = "tenant-master"
+    # Rotation cadence for tenant keys.
+    crypto_rotation_interval_days: int = 90
+    # Batch size for re-encryption jobs.
+    crypto_reencrypt_batch_size: int = 200
+    # Limit concurrent re-encryption operations per tenant.
+    crypto_max_concurrent_reencrypt: int = 2
+    # Choose fail-closed or fail-open behavior when KMS is unavailable.
+    crypto_fail_mode: str = "closed"
+    # Toggle extra audit metadata for crypto operations.
+    crypto_audit_verbose: bool = False
+    # Local KMS master key (base64/hex) for deterministic dev/test wraps.
+    crypto_local_master_key: str | None = None
     # Identify the local region for failover-aware routing and control-plane decisions.
     region_id: str = "ap-southeast-1"
     # Configure whether this region starts as primary or standby.

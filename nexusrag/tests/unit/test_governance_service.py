@@ -243,3 +243,4 @@ async def test_dsar_state_transitions_and_hold_blocking() -> None:
     assert rejected.error_code == "LEGAL_HOLD_ACTIVE"
     assert exported.status == DSAR_STATUS_COMPLETED
     assert exported.artifact_uri is not None
+    assert exported.artifact_uri.startswith("encrypted_blob:")

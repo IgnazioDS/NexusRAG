@@ -8,14 +8,17 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.domain.models import (
     DsarRequest,
+    EncryptedBlob,
     FailoverClusterState,
     FailoverEvent,
     FailoverToken,
     GovernanceRetentionRun,
+    KeyRotationJob,
     LegalHold,
     PolicyRule,
     RegionStatus,
     RetentionPolicy,
+    TenantKey,
 )
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.persistence.db import engine
@@ -46,6 +49,9 @@ async def reset_failover_tables_between_tests() -> None:
             await session.execute(delete(LegalHold))
             await session.execute(delete(PolicyRule))
             await session.execute(delete(RetentionPolicy))
+            await session.execute(delete(EncryptedBlob))
+            await session.execute(delete(KeyRotationJob))
+            await session.execute(delete(TenantKey))
             await session.execute(delete(FailoverEvent))
             await session.execute(delete(FailoverToken))
             await session.execute(delete(RegionStatus))
