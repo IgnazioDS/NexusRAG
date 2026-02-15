@@ -10,7 +10,7 @@ from sqlalchemy import delete
 
 from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import Chunk, Corpus, Document
+from nexusrag.domain.models import Chunk, Corpus, Document, DocumentLabel, DocumentPermission
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.providers.retrieval.router import RetrievalRouter
@@ -36,6 +36,12 @@ async def _create_corpus(corpus_id: str, tenant_id: str) -> None:
 async def _cleanup_document(corpus_id: str, document_id: str) -> None:
     # Keep tests idempotent by removing documents and chunks explicitly.
     async with SessionLocal() as db_session:
+        await db_session.execute(
+            delete(DocumentPermission).where(DocumentPermission.document_id == document_id)
+        )
+        await db_session.execute(
+            delete(DocumentLabel).where(DocumentLabel.document_id == document_id)
+        )
         await db_session.execute(delete(Chunk).where(Chunk.corpus_id == corpus_id))
         await db_session.execute(delete(Document).where(Document.id == document_id))
         await db_session.execute(delete(Corpus).where(Corpus.id == corpus_id))

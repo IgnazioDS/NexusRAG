@@ -33,6 +33,10 @@ class Principal(BaseModel):
     tenant_id: str
     role: str
     api_key_id: str
+    # Track the auth method to enrich ABAC decisions and audit events.
+    auth_method: str = "api_key"
+    # Identify principal type for document-level permission resolution.
+    subject_type: str = "user"
 
 
 _auth_cache: dict[str, tuple[float, Principal]] = {}
@@ -128,6 +132,8 @@ def _principal_from_dev_headers(request: Request) -> Principal:
         tenant_id=tenant_id,
         role=role,
         api_key_id="dev-bypass",
+        auth_method="dev_bypass",
+        subject_type="user",
     )
 
 
@@ -307,6 +313,8 @@ async def get_current_principal(
             tenant_id=tenant_user.tenant_id,
             role=tenant_user.role,
             api_key_id=sso_session.id,
+            auth_method="sso_session",
+            subject_type="user",
         )
         await record_event(
             session=db,
@@ -474,6 +482,8 @@ async def get_current_principal(
         tenant_id=user.tenant_id,
         role=role,
         api_key_id=api_key.id,
+        auth_method="api_key",
+        subject_type="user",
     )
     await _set_cached_principal(key_hash, principal, settings.auth_cache_ttl_s)
     asyncio.create_task(_touch_last_used(api_key.id))

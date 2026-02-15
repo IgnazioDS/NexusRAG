@@ -36,6 +36,22 @@ class Settings(BaseSettings):
     auth_api_key_header: str = "Authorization"
     # Small cache window to reduce auth DB lookups without delaying revocations too long.
     auth_cache_ttl_s: int = 15
+    # Toggle ABAC evaluation on top of RBAC checks.
+    authz_abac_enabled: bool = True
+    # Default to deny when no ABAC policy matches.
+    authz_default_deny: bool = True
+    # Allow admin role to bypass document ACLs when explicitly enabled.
+    authz_admin_bypass_document_acl: bool = False
+    # Enforce maximum serialized policy size to bound evaluation cost.
+    authz_max_policy_bytes: int = 16384
+    # Enforce maximum policy nesting depth to keep evaluation deterministic.
+    authz_max_policy_depth: int = 8
+    # Enable ABAC policy simulation endpoint.
+    authz_simulation_enabled: bool = True
+    # Require tenant predicates on tenant-scoped repository queries.
+    authz_require_tenant_predicate: bool = True
+    # Allow wildcard policies on both resource_type and action only when enabled.
+    authz_allow_wildcards: bool = False
     # Toggle enterprise SSO endpoints and login flows.
     sso_enabled: bool = True
     # Comma-delimited allowed hosts for post-login redirects.

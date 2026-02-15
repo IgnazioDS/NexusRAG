@@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
 from nexusrag.apps.api.routes.audio import router as audio_router
 from nexusrag.apps.api.routes.admin import router as admin_router
 from nexusrag.apps.api.routes.audit import router as audit_router
+from nexusrag.apps.api.routes.authz_admin import router as authz_admin_router
 from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.documents import router as documents_router
 from nexusrag.apps.api.routes.compliance_admin import router as compliance_admin_router
@@ -38,10 +39,12 @@ from nexusrag.apps.api.errors import (
     starlette_http_exception_handler,
     validation_exception_handler,
     unhandled_exception_handler,
+    tenant_predicate_exception_handler,
 )
 from nexusrag.apps.api.response import API_VERSION, is_versioned_request
 from nexusrag.apps.api.rate_limit import route_class_for_request
 from nexusrag.services.telemetry import record_request
+from nexusrag.persistence.guards import TenantPredicateError
 
 
 _LEGACY_SUNSET_DAYS = 90
@@ -139,6 +142,10 @@ def create_app() -> FastAPI:
     async def _http_exception_handler(request: Request, exc: HTTPException):
         return await http_exception_handler(request, exc)
 
+    @app.exception_handler(TenantPredicateError)
+    async def _tenant_predicate_exception_handler(request: Request, exc: TenantPredicateError):
+        return await tenant_predicate_exception_handler(request, exc)
+
     # Mount versioned v1 API routes.
     app.include_router(audio_router, prefix=f"/{API_VERSION}")
     # Expose admin endpoints for tenant quota management.
@@ -148,6 +155,8 @@ def create_app() -> FastAPI:
     app.include_router(compliance_ops_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(identity_admin_router, prefix=f"/{API_VERSION}")
+    # Expose ABAC policy and document ACL management for admins.
+    app.include_router(authz_admin_router, prefix=f"/{API_VERSION}")
     # Expose admin-only audit endpoints for security investigations.
     app.include_router(audit_router, prefix=f"/{API_VERSION}")
     app.include_router(documents_router, prefix=f"/{API_VERSION}")
@@ -173,6 +182,8 @@ def create_app() -> FastAPI:
     app.include_router(compliance_ops_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
     app.include_router(identity_admin_router, include_in_schema=False)
+    # Retain authz admin routes for legacy compatibility aliases.
+    app.include_router(authz_admin_router, include_in_schema=False)
     app.include_router(audit_router, include_in_schema=False)
     app.include_router(documents_router, include_in_schema=False)
     app.include_router(health_router, include_in_schema=False)

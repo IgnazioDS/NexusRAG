@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from nexusrag.apps.api.response import error_response, is_versioned_request
+from nexusrag.persistence.guards import TenantPredicateError
 
 
 _DEFAULT_ERROR_CODES: dict[int, str] = {
@@ -85,5 +86,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         request=request,
         code="INTERNAL_ERROR",
         message="Internal server error",
+    )
+    return JSONResponse(content=payload, status_code=500)
+
+
+async def tenant_predicate_exception_handler(
+    request: Request, exc: TenantPredicateError
+) -> JSONResponse:
+    # Surface tenant guard failures explicitly for ops and authz diagnostics.
+    if not is_versioned_request(request):
+        return JSONResponse(content={"detail": exc.message}, status_code=500)
+    payload = error_response(
+        request=request,
+        code="AUTHZ_RLS_GUARD_FAILED",
+        message=exc.message,
     )
     return JSONResponse(content=payload, status_code=500)

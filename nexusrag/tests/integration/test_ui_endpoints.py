@@ -16,6 +16,8 @@ from nexusrag.domain.models import (
     Chunk,
     Corpus,
     Document,
+    DocumentLabel,
+    DocumentPermission,
     TenantPlanAssignment,
     UiAction,
     User,
@@ -23,6 +25,7 @@ from nexusrag.domain.models import (
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.ingest.ingestion import write_text_to_storage
 from nexusrag.tests.utils.auth import create_test_api_key
+from nexusrag.tests.utils.authz import grant_document_permission, grant_document_permissions
 
 
 def _utc_now() -> datetime:
@@ -38,6 +41,8 @@ async def _cleanup_tenant(tenant_id: str) -> None:
         await session.execute(delete(Chunk).where(Chunk.corpus_id.in_(corpus_ids)))
         await session.execute(delete(UiAction).where(UiAction.tenant_id == tenant_id))
         await session.execute(delete(AuditEvent).where(AuditEvent.tenant_id == tenant_id))
+        await session.execute(delete(DocumentPermission).where(DocumentPermission.tenant_id == tenant_id))
+        await session.execute(delete(DocumentLabel).where(DocumentLabel.tenant_id == tenant_id))
         await session.execute(delete(Document).where(Document.tenant_id == tenant_id))
         await session.execute(delete(Corpus).where(Corpus.tenant_id == tenant_id))
         await session.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
@@ -83,7 +88,7 @@ async def test_ui_bootstrap_admin_and_editor() -> None:
 @pytest.mark.asyncio
 async def test_ui_documents_pagination_and_invalid_cursor() -> None:
     tenant_id = f"t-ui-{uuid4().hex}"
-    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+    _raw_key, headers, user_id, key_id = await create_test_api_key(
         tenant_id=tenant_id,
         role="reader",
     )
@@ -117,6 +122,15 @@ async def test_ui_documents_pagination_and_invalid_cursor() -> None:
             )
         )
         session.add_all(docs)
+        await grant_document_permissions(
+            session=session,
+            tenant_id=tenant_id,
+            document_ids=[doc.id for doc in docs],
+            principal_type="user",
+            principal_id=user_id,
+            permission="read",
+            granted_by=key_id,
+        )
         await session.commit()
 
     app = create_app()
@@ -197,7 +211,7 @@ async def test_ui_activity_timeline_items() -> None:
 @pytest.mark.asyncio
 async def test_ui_reindex_action_returns_optimistic_payload(monkeypatch) -> None:
     tenant_id = f"t-ui-{uuid4().hex}"
-    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+    _raw_key, headers, user_id, key_id = await create_test_api_key(
         tenant_id=tenant_id,
         role="editor",
     )
@@ -231,6 +245,15 @@ async def test_ui_reindex_action_returns_optimistic_payload(monkeypatch) -> None
             )
         )
         session.add(doc)
+        await grant_document_permission(
+            session=session,
+            tenant_id=tenant_id,
+            document_id=document_id,
+            principal_type="user",
+            principal_id=user_id,
+            permission="reindex",
+            granted_by=key_id,
+        )
         await session.commit()
 
     app = create_app()

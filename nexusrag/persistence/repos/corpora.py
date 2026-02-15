@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.domain.models import Corpus
+from nexusrag.persistence.guards import require_tenant_id, tenant_predicate
 
 
 async def get_corpus(session: AsyncSession, corpus_id: str) -> Corpus | None:
@@ -13,17 +14,19 @@ async def get_corpus(session: AsyncSession, corpus_id: str) -> Corpus | None:
 
 async def get_corpus_for_tenant(session: AsyncSession, corpus_id: str, tenant_id: str) -> Corpus | None:
     # Ensure tenant scoping to prevent cross-tenant corpus access.
+    require_tenant_id(tenant_id)
     result = await session.execute(
-        select(Corpus).where(Corpus.id == corpus_id, Corpus.tenant_id == tenant_id)
+        select(Corpus).where(Corpus.id == corpus_id, tenant_predicate(Corpus, tenant_id))
     )
     return result.scalar_one_or_none()
 
 
 async def list_corpora_by_tenant(session: AsyncSession, tenant_id: str) -> list[Corpus]:
     # Stable ordering avoids non-deterministic API responses for the same tenant.
+    require_tenant_id(tenant_id)
     result = await session.execute(
         select(Corpus)
-        .where(Corpus.tenant_id == tenant_id)
+        .where(tenant_predicate(Corpus, tenant_id))
         .order_by(Corpus.created_at, Corpus.id)
     )
     return list(result.scalars().all())

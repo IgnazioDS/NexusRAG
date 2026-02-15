@@ -5,11 +5,11 @@ from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import Chunk, Corpus, Document
+from nexusrag.domain.models import Chunk, Corpus, Document, DocumentLabel, DocumentPermission
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.tests.utils.auth import create_test_api_key
 
@@ -59,9 +59,25 @@ async def _cleanup_auth_rows(*, corpus_id: str, document_id: str | None = None) 
     # Remove seeded rows to keep auth tests isolated.
     async with SessionLocal() as session:
         if document_id:
+            await session.execute(
+                delete(DocumentPermission).where(DocumentPermission.document_id == document_id)
+            )
+            await session.execute(
+                delete(DocumentLabel).where(DocumentLabel.document_id == document_id)
+            )
             await session.execute(delete(Chunk).where(Chunk.document_id == document_id))
             await session.execute(delete(Document).where(Document.id == document_id))
         else:
+            await session.execute(
+                delete(DocumentPermission).where(DocumentPermission.document_id.in_(
+                    select(Document.id).where(Document.corpus_id == corpus_id)
+                ))
+            )
+            await session.execute(
+                delete(DocumentLabel).where(DocumentLabel.document_id.in_(
+                    select(Document.id).where(Document.corpus_id == corpus_id)
+                ))
+            )
             await session.execute(delete(Chunk).where(Chunk.corpus_id == corpus_id))
             await session.execute(delete(Document).where(Document.corpus_id == corpus_id))
         await session.execute(delete(Corpus).where(Corpus.id == corpus_id))
