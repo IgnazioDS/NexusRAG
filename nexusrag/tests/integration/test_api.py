@@ -183,17 +183,25 @@ async def test_run_emits_audio_ready_with_fake_tts(monkeypatch) -> None:
             audio_id = audio_payload["audio_id"]
             audio_url = audio_payload["audio_url"]
 
-            path = Path("var") / "audio" / f"{audio_id}.mp3"
-            assert path.exists()
+            settings = get_settings()
+            if settings.crypto_enabled:
+                path = Path("var") / "audio" / f"{audio_id}.enc"
+                assert path.exists()
+            else:
+                path = Path("var") / "audio" / f"{audio_id}.mp3"
+                assert path.exists()
 
             # Validate the audio route serves the generated file.
             response = await client.get(audio_url)
             assert response.status_code == 200
     finally:
         if audio_id:
-            path = Path("var") / "audio" / f"{audio_id}.mp3"
-            if path.exists():
-                path.unlink()
+            mp3_path = Path("var") / "audio" / f"{audio_id}.mp3"
+            enc_path = Path("var") / "audio" / f"{audio_id}.enc"
+            if mp3_path.exists():
+                mp3_path.unlink()
+            if enc_path.exists():
+                enc_path.unlink()
         async with SessionLocal() as db_session:
             await db_session.execute(delete(Checkpoint).where(Checkpoint.session_id == session_id))
             await db_session.execute(delete(Message).where(Message.session_id == session_id))

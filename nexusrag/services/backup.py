@@ -30,10 +30,14 @@ from nexusrag.domain.models import (
     RestoreDrill,
     TenantFeatureOverride,
     TenantPlanAssignment,
+    TenantKey,
     UsageCounter,
     User,
 )
 from nexusrag.services.audit import record_event, record_system_event
+from nexusrag.services.crypto import CRYPTO_RESOURCE_BACKUP_MANIFEST, store_encrypted_blob
+from nexusrag.services.crypto.envelope import EnvelopeResult, decrypt_payload
+from nexusrag.services.crypto.service import get_active_key
 from nexusrag.services.rollouts import get_rollout_state
 
 
@@ -367,6 +371,24 @@ def _write_manifest(path: Path, manifest: BackupManifest) -> None:
 def _load_manifest(path: Path) -> BackupManifest:
     # Parse manifests into typed structures for validation.
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("encryption") == "envelope":
+        try:
+            envelope = EnvelopeResult(
+                wrapped_dek=str(payload["wrapped_dek"]),
+                key_ref=str(payload["key_ref"]),
+                key_version=int(payload["key_version"]),
+                provider=str(payload["provider"]),
+                nonce=str(payload["nonce"]),
+                tag=str(payload["tag"]),
+                cipher_text=str(payload["cipher_text"]),
+                aad_json=dict(payload.get("aad_json") or {}),
+                checksum_sha256=str(payload["checksum_sha256"]),
+            )
+            tenant_id = str(envelope.aad_json.get("tenant_id") or "system")
+            manifest_bytes = decrypt_payload(envelope, tenant_id=tenant_id)
+            payload = json.loads(manifest_bytes.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - surface manifest decryption issues explicitly.
+            raise ValueError(f"manifest decryption failed: {exc}") from exc
     components = [
         BackupArtifact(
             name=item["name"],
@@ -555,7 +577,42 @@ async def create_backup_artifacts(
         components=components,
     )
     manifest_path = job_dir / "manifest.json"
-    _write_manifest(manifest_path, manifest)
+    if settings.crypto_enabled:
+        # Encrypt manifests via envelope encryption when crypto is enabled.
+        payload_bytes = json.dumps(manifest.to_dict(), indent=2, sort_keys=True).encode("utf-8")
+        blob = await store_encrypted_blob(
+            session,
+            tenant_id="system",
+            resource_type=CRYPTO_RESOURCE_BACKUP_MANIFEST,
+            resource_id=manifest.backup_id,
+            plaintext=payload_bytes,
+            created_at=_utc_now(),
+        )
+        if blob is not None:
+            key = await session.get(TenantKey, blob.key_id)
+            if key is None:
+                _write_manifest(manifest_path, manifest)
+            else:
+                wrapper = {
+                    "encryption": "envelope",
+                    "encrypted_blob_id": blob.id,
+                    "wrapped_dek": blob.wrapped_dek,
+                    "key_ref": key.key_ref,
+                    "key_version": key.key_version,
+                    "provider": key.provider,
+                    "nonce": blob.nonce,
+                    "tag": blob.tag,
+                    "cipher_text": blob.cipher_text,
+                    "aad_json": blob.aad_json,
+                    "checksum_sha256": blob.checksum_sha256,
+                }
+                manifest_path.write_text(
+                    json.dumps(wrapper, indent=2, sort_keys=True), encoding="utf-8"
+                )
+        else:
+            _write_manifest(manifest_path, manifest)
+    else:
+        _write_manifest(manifest_path, manifest)
 
     if signing_enabled:
         signature = sign_manifest(manifest, _signing_key())
@@ -576,7 +633,11 @@ def validate_manifest(
 ) -> list[str]:
     # Validate manifest schema, signature, and artifact checksums.
     errors: list[str] = []
-    manifest = _load_manifest(manifest_path)
+    try:
+        manifest = _load_manifest(manifest_path)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(str(exc))
+        return errors
     job_dir = manifest_path.parent
     if manifest.manifest_version != MANIFEST_VERSION:
         errors.append("manifest version mismatch")

@@ -156,9 +156,9 @@ async def test_dsar_delete_on_hold_is_rejected_and_export_completes() -> None:
         exported_data = exported.json()["data"]
         assert exported_data["status"] == "completed"
         assert exported_data["artifact_uri"]
-        artifact = Path(exported_data["artifact_uri"])
-        assert artifact.exists()
-        assert artifact.with_name("manifest.json").exists()
+        assert exported_data["artifact_uri"].startswith("encrypted_blob:")
+        manifest_path = Path(get_settings().governance_artifact_dir) / f"tenant_{tenant_id}" / f"dsar_{exported_data['id']}" / "manifest.json"
+        assert manifest_path.exists()
 
 
 @pytest.mark.asyncio

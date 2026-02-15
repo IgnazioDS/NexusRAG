@@ -16,6 +16,7 @@ from sqlalchemy import (
     func,
     Index,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -417,6 +418,74 @@ class GovernanceRetentionRun(Base):
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class TenantKey(Base):
+    __tablename__ = "tenant_keys"
+    __table_args__ = (
+        Index("ix_tenant_keys_tenant_status_version", "tenant_id", "status", text("key_version DESC")),
+        UniqueConstraint("tenant_id", "key_alias", "key_version", name="uq_tenant_keys_version"),
+    )
+
+    # Track tenant-scoped KEK versions for envelope encryption.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    key_alias: Mapped[str] = mapped_column(String)
+    key_version: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String)
+    key_ref: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class EncryptedBlob(Base):
+    __tablename__ = "encrypted_blobs"
+    __table_args__ = (
+        Index("ix_encrypted_blobs_tenant_resource", "tenant_id", "resource_type", "resource_id"),
+    )
+
+    # Store encrypted payloads with envelope-encryption metadata.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String, index=True)
+    resource_id: Mapped[str] = mapped_column(String, index=True)
+    key_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("tenant_keys.id"))
+    wrapped_dek: Mapped[str] = mapped_column(Text)
+    nonce: Mapped[str] = mapped_column(Text)
+    tag: Mapped[str] = mapped_column(Text)
+    cipher_text: Mapped[str] = mapped_column(Text)
+    aad_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    checksum_sha256: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KeyRotationJob(Base):
+    __tablename__ = "key_rotation_jobs"
+    __table_args__ = (
+        Index("ix_key_rotation_jobs_tenant_status_created", "tenant_id", "status", text("created_at DESC")),
+    )
+
+    # Track key rotation and re-encryption progress for auditing.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    from_key_id: Mapped[int] = mapped_column(BigInteger)
+    to_key_id: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String, index=True)
+    total_items: Mapped[int] = mapped_column(Integer, default=0)
+    processed_items: Mapped[int] = mapped_column(Integer, default=0)
+    failed_items: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    report_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class IdempotencyRecord(Base):

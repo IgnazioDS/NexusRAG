@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
-from nexusrag.domain.models import DsarRequest, GovernanceRetentionRun, LegalHold, PolicyRule
+from nexusrag.domain.models import DsarRequest, EncryptedBlob, GovernanceRetentionRun, LegalHold, PolicyRule
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.crypto import decrypt_blob
 from nexusrag.services.governance import (
     LEGAL_HOLD_SCOPE_BACKUP_SET,
     LEGAL_HOLD_SCOPE_DOCUMENT,
@@ -427,12 +428,12 @@ async def get_dsar(
     return success_response(request=request, data=_dsar_response(row))
 
 
-@router.get("/dsar/{dsar_id}/artifact", response_class=FileResponse)
+@router.get("/dsar/{dsar_id}/artifact", response_class=Response, response_model=None)
 async def get_dsar_artifact(
     dsar_id: int,
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> FileResponse:
+) -> Response:
     # Return export artifacts only for completed export requests in the same tenant.
     row = await db.get(DsarRequest, dsar_id)
     if row is None or row.tenant_id != principal.tenant_id:
@@ -445,6 +446,30 @@ async def get_dsar_artifact(
             status_code=409,
             detail={"code": "CONFLICT", "message": "DSAR export artifact is not available"},
         )
+    if row.artifact_uri.startswith("encrypted_blob:"):
+        blob_id = int(row.artifact_uri.split(":", 1)[1])
+        blob = await db.get(EncryptedBlob, blob_id)
+        if blob is None or blob.tenant_id != principal.tenant_id:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "NOT_FOUND", "message": "DSAR artifact not found"},
+            )
+        payload = await decrypt_blob(db, blob=blob)
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="crypto.decrypt.accessed",
+            outcome="success",
+            resource_type="dsar_artifact",
+            resource_id=str(dsar_id),
+            metadata={"artifact_uri": row.artifact_uri},
+            commit=True,
+            best_effort=True,
+        )
+        return Response(content=payload, media_type="application/gzip")
     artifact = Path(row.artifact_uri)
     if not artifact.exists():
         raise HTTPException(

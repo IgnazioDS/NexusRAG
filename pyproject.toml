@@ -1,6 +1,6 @@
 [project]
 name = "nexusrag"
-version = "1.8.0"
+version = "1.9.0"
 description = "NexusRAG: a multi-cloud, stateful, streaming RAG agent platform"
 requires-python = ">=3.11"
 readme = "README.md"

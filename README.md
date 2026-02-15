@@ -611,6 +611,10 @@ Runbooks live under `docs/runbooks/`:
 - `legal-hold-procedure.md`
 - `retention-and-anonymization.md`
 - `audit-evidence-export.md`
+- `key-rotation-execution.md`
+- `key-compromise-response.md`
+- `kms-outage-procedure.md`
+- `encrypted-artifact-access.md`
 
 ## Disaster Recovery
 Backups include a database logical dump, schema-only dump, and a metadata snapshot.
@@ -825,6 +829,49 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
 - `DSAR_REQUIRES_APPROVAL` (409)
 - `DSAR_NOT_FOUND` (404)
 - `GOVERNANCE_REPORT_UNAVAILABLE` (503)
+
+## Encryption & Key Management
+Sensitive artifacts are protected with envelope encryption (AES-256-GCM) using per-tenant key versions.
+
+### Key Settings
+- `CRYPTO_ENABLED`, `CRYPTO_PROVIDER`
+- `CRYPTO_REQUIRE_ENCRYPTION_FOR_SENSITIVE`
+- `CRYPTO_DEFAULT_KEY_ALIAS`, `CRYPTO_ROTATION_INTERVAL_DAYS`
+- `CRYPTO_FAIL_MODE` (open|closed)
+
+Local provider:
+- `CRYPTO_PROVIDER=local_kms`
+- `CRYPTO_LOCAL_MASTER_KEY` (base64/hex)
+
+### Key Rotation
+List keys:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/crypto/keys/{tenant_id}"
+```
+
+Rotate and re-encrypt:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"scheduled rotation","reencrypt":true,"force":false}' \
+  "http://localhost:8000/v1/admin/crypto/keys/{tenant_id}/rotate"
+```
+
+Rotation job status:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/crypto/rotation-jobs/{job_id}"
+```
+
+### Crypto Error Codes
+- `ENCRYPTION_REQUIRED` (503)
+- `KMS_UNAVAILABLE` (503)
+- `KEY_ROTATION_IN_PROGRESS` (409)
+- `KEY_ROTATION_FAILED` (500)
+- `KEY_NOT_ACTIVE` (409)
+- `DECRYPTION_FAILED` (500)
+- `CRYPTO_POLICY_DENIED` (403)
 
 ## Cloud retrieval real-run (credentials required)
 

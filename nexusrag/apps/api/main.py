@@ -19,6 +19,7 @@ from nexusrag.apps.api.routes.admin import router as admin_router
 from nexusrag.apps.api.routes.audit import router as audit_router
 from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.documents import router as documents_router
+from nexusrag.apps.api.routes.crypto_admin import router as crypto_admin_router
 from nexusrag.apps.api.routes.governance_admin import router as governance_admin_router
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
 from nexusrag.apps.api.routes.health import router as health_router
@@ -137,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(audio_router, prefix=f"/{API_VERSION}")
     # Expose admin endpoints for tenant quota management.
     app.include_router(admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(crypto_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
     # Expose admin-only audit endpoints for security investigations.
     app.include_router(audit_router, prefix=f"/{API_VERSION}")
@@ -155,6 +157,7 @@ def create_app() -> FastAPI:
     # Retain unversioned legacy routes as deprecated compatibility aliases.
     app.include_router(audio_router, include_in_schema=False)
     app.include_router(admin_router, include_in_schema=False)
+    app.include_router(crypto_admin_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
     app.include_router(audit_router, include_in_schema=False)
     app.include_router(documents_router, include_in_schema=False)

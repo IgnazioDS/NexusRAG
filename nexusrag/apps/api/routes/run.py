@@ -531,7 +531,12 @@ async def run(
             try:
                 tts = get_tts_provider()
                 audio_bytes = await tts.synthesize(answer)
-                audio_id, _path, audio_url = save_audio(audio_bytes, settings.audio_base_url)
+                audio_id, _path, audio_url = await save_audio(
+                    session=db,
+                    tenant_id=principal.tenant_id,
+                    audio_bytes=audio_bytes,
+                    base_url=settings.audio_base_url,
+                )
                 yield emit(
                     _wrap_payload(
                         "audio.ready",

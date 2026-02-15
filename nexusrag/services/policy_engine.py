@@ -15,6 +15,7 @@ POLICY_ACTION_DENY = "deny"
 POLICY_ACTION_REDACT_FIELDS = "redact_fields"
 POLICY_ACTION_REQUIRE_APPROVAL = "require_approval"
 POLICY_ACTION_FORCE_LEGAL_HOLD_CHECK = "force_legal_hold_check"
+POLICY_ACTION_REQUIRE_ENCRYPTION = "require_encryption"
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class PolicyDecision:
     redact_fields: tuple[str, ...]
     require_approval: bool
     force_legal_hold_check: bool
+    require_encryption: bool
 
 
 def _normalize_actions(action_json: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -51,6 +53,7 @@ def _normalize_actions(action_json: dict[str, Any] | None) -> list[dict[str, Any
         POLICY_ACTION_REDACT_FIELDS,
         POLICY_ACTION_REQUIRE_APPROVAL,
         POLICY_ACTION_FORCE_LEGAL_HOLD_CHECK,
+        POLICY_ACTION_REQUIRE_ENCRYPTION,
     ):
         if action_json.get(key):
             return [{"type": key, **action_json}]
@@ -123,6 +126,7 @@ async def evaluate_policy(
             redact_fields=(),
             require_approval=False,
             force_legal_hold_check=False,
+            require_encryption=False,
         )
 
     query = (
@@ -150,6 +154,7 @@ async def evaluate_policy(
         redact_fields: list[str] = []
         require_approval = False
         force_legal_hold_check = False
+        require_encryption = False
         for action in actions:
             action_type = str(action.get("type") or POLICY_ACTION_ALLOW)
             if action_type == POLICY_ACTION_DENY:
@@ -169,6 +174,9 @@ async def evaluate_policy(
             elif action_type == POLICY_ACTION_FORCE_LEGAL_HOLD_CHECK:
                 decision_action = POLICY_ACTION_FORCE_LEGAL_HOLD_CHECK
                 force_legal_hold_check = True
+            elif action_type == POLICY_ACTION_REQUIRE_ENCRYPTION:
+                decision_action = POLICY_ACTION_REQUIRE_ENCRYPTION
+                require_encryption = True
             else:
                 decision_action = POLICY_ACTION_ALLOW
         return PolicyDecision(
@@ -180,6 +188,7 @@ async def evaluate_policy(
             redact_fields=tuple(dict.fromkeys(redact_fields)),
             require_approval=require_approval,
             force_legal_hold_check=force_legal_hold_check,
+            require_encryption=require_encryption,
         )
 
     return PolicyDecision(
@@ -191,4 +200,5 @@ async def evaluate_policy(
         redact_fields=(),
         require_approval=False,
         force_legal_hold_check=False,
+        require_encryption=False,
     )

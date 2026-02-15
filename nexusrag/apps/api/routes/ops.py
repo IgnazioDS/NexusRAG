@@ -452,6 +452,13 @@ async def ops_metrics(
             "nexusrag_service_busy_total": metrics_counters.get("service_busy_total", 0),
             "nexusrag_quota_exceeded_total": metrics_counters.get("quota_exceeded_total", 0),
             "nexusrag_rate_limited_total": metrics_counters.get("rate_limited_total", 0),
+            "nexusrag_crypto_encrypt_ops_total": metrics_counters.get("crypto_encrypt_ops_total", 0),
+            "nexusrag_crypto_decrypt_ops_total": metrics_counters.get("crypto_decrypt_ops_total", 0),
+            "nexusrag_crypto_failures_total": metrics_counters.get("crypto_failures_total", 0),
+            "nexusrag_key_rotation_jobs_total": metrics_counters.get("key_rotation_jobs_total", 0),
+            "nexusrag_unencrypted_sensitive_items_total": metrics_counters.get(
+                "unencrypted_sensitive_items_total", 0
+            ),
             "nexusrag_failover_requests_total_completed": metrics_counters.get(
                 "failover_requests_total.completed", 0
             ),

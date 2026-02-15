@@ -24,15 +24,20 @@ from nexusrag.domain.models import (
     Corpus,
     Document,
     DsarRequest,
+    EncryptedBlob,
     GovernanceRetentionRun,
+    KeyRotationJob,
     LegalHold,
     Message,
     PolicyRule,
     RetentionPolicy,
     Session,
+    TenantKey,
     User,
 )
 from nexusrag.services.audit import record_event
+from nexusrag.services import backup as backup_service
+from nexusrag.services.crypto import CRYPTO_RESOURCE_DSAR, ensure_encryption_available, store_encrypted_blob
 from nexusrag.services.policy_engine import PolicyDecision, evaluate_policy, redact_context_fields
 
 
@@ -193,6 +198,27 @@ async def enforce_policy(
             decision.message or "Approval required by governance policy",
             409,
         )
+    if decision.require_encryption:
+        try:
+            ensure_encryption_available()
+        except HTTPException as exc:
+            await record_event(
+                session=session,
+                tenant_id=tenant_id,
+                actor_type="api_key",
+                actor_id=actor_id,
+                actor_role=actor_role,
+                event_type="crypto.policy.denied",
+                outcome="failure",
+                resource_type="policy_rule",
+                resource_id=str(decision.rule_id) if decision.rule_id else None,
+                request_id=request_id,
+                metadata={**audit_context, "rule_key": rule_key, "action": decision.action},
+                error_code="ENCRYPTION_REQUIRED",
+                commit=True,
+                best_effort=True,
+            )
+            raise
     if decision.allowed:
         return decision
     await record_event(
@@ -482,9 +508,9 @@ async def run_retention_for_tenant(
                 return result
             for manifest_path in base_dir.rglob("manifest.json"):
                 try:
-                    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    backup_id = str(manifest_payload.get("backup_id") or "")
-                    created_at = datetime.fromisoformat(str(manifest_payload.get("created_at")))
+                    manifest = backup_service._load_manifest(manifest_path)
+                    backup_id = str(manifest.backup_id)
+                    created_at = datetime.fromisoformat(str(manifest.created_at))
                 except Exception:
                     continue
                 if created_at >= cutoff:
@@ -1044,29 +1070,43 @@ async def submit_dsar_request(
 
         if request_type == "export":
             export_payload = await _build_dsar_export_payload(session, dsar)
-            target_dir = _ensure_artifact_dir() / f"tenant_{tenant_id}" / f"dsar_{dsar.id}"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            artifact_path = target_dir / "export.json.gz"
-            with gzip.open(artifact_path, "wt", encoding="utf-8") as handle:
-                json.dump(export_payload, handle, ensure_ascii=False)
-            artifact_sha = _sha256_file(artifact_path)
-            manifest = {
+            # Encrypt DSAR export artifacts at rest when crypto is available.
+            payload_bytes = gzip.compress(json.dumps(export_payload, ensure_ascii=False).encode("utf-8"))
+            blob = await store_encrypted_blob(
+                session,
+                tenant_id=tenant_id,
+                resource_type=CRYPTO_RESOURCE_DSAR,
+                resource_id=str(dsar.id),
+                plaintext=payload_bytes,
+                created_at=_utc_now(),
+            )
+            artifact_sha = hashlib.sha256(payload_bytes).hexdigest()
+            manifest: dict[str, Any] = {
                 "dsar_id": dsar.id,
                 "tenant_id": tenant_id,
                 "request_type": request_type,
                 "subject_type": subject_type,
                 "subject_id": subject_id,
-                "artifact_path": str(artifact_path),
                 "artifact_sha256": artifact_sha,
-                "artifact_size_bytes": artifact_path.stat().st_size,
+                "artifact_size_bytes": len(payload_bytes),
                 "generated_at": _utc_now().isoformat(),
             }
+            if blob is not None:
+                manifest["encrypted_blob_id"] = blob.id
             signature = _sign_payload(json.dumps(manifest, sort_keys=True).encode("utf-8"))
             if signature:
                 manifest["signature"] = signature
+            target_dir = _ensure_artifact_dir() / f"tenant_{tenant_id}" / f"dsar_{dsar.id}"
+            target_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = target_dir / "manifest.json"
             manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-            dsar.artifact_uri = str(artifact_path)
+            if blob is not None:
+                dsar.artifact_uri = f"encrypted_blob:{blob.id}"
+            else:
+                # Fall back to legacy plaintext artifact storage when crypto is unavailable.
+                artifact_path = target_dir / "export.json.gz"
+                artifact_path.write_bytes(payload_bytes)
+                dsar.artifact_uri = str(artifact_path)
             dsar.report_json = {"manifest_path": str(manifest_path), "artifact_sha256": artifact_sha}
         else:
             policy = await get_or_create_retention_policy(session, tenant_id)
@@ -1121,6 +1161,8 @@ async def submit_dsar_request(
             commit=True,
             best_effort=True,
         )
+        if dsar.error_code in {"ENCRYPTION_REQUIRED", "KMS_UNAVAILABLE"}:
+            raise
         return dsar
     except Exception as exc:  # noqa: BLE001 - keep DSAR failures visible and auditable.
         dsar.status = DSAR_STATUS_FAILED
@@ -1172,6 +1214,32 @@ async def governance_status_snapshot(session: AsyncSession, tenant_id: str) -> d
             .limit(1)
         )
     ).scalar_one_or_none()
+    active_key = (
+        await session.execute(
+            select(TenantKey)
+            .where(TenantKey.tenant_id == tenant_id, TenantKey.status == "active")
+            .order_by(TenantKey.key_version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    last_rotation = (
+        await session.execute(
+            select(KeyRotationJob)
+            .where(KeyRotationJob.tenant_id == tenant_id)
+            .order_by(KeyRotationJob.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    encrypted_count = await session.scalar(
+        select(func.count()).where(EncryptedBlob.tenant_id == tenant_id)
+    )
+    now = _utc_now()
+    key_age_days = None
+    overdue_rotations = 0
+    if active_key and active_key.activated_at:
+        key_age_days = (now - active_key.activated_at).days
+        if key_age_days > settings.crypto_rotation_interval_days:
+            overdue_rotations = 1
     posture = "healthy"
     if last_retention is None or last_retention.status == "failed":
         posture = "at_risk"
@@ -1186,6 +1254,14 @@ async def governance_status_snapshot(session: AsyncSession, tenant_id: str) -> d
             "status": last_retention.status if last_retention else "unknown",
             "started_at": last_retention.started_at.isoformat() if last_retention else None,
             "completed_at": last_retention.completed_at.isoformat() if last_retention and last_retention.completed_at else None,
+        },
+        "crypto": {
+            "crypto_enabled": settings.crypto_enabled,
+            "active_key_age_days": key_age_days,
+            "overdue_rotations": overdue_rotations,
+            "unencrypted_sensitive_items": 0,
+            "encrypted_sensitive_items": int(encrypted_count or 0),
+            "last_rotation_status": last_rotation.status if last_rotation else "unknown",
         },
         "compliance_posture": posture,
     }
