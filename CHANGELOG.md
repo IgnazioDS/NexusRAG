@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.0.0 - 2026-02-15
+
+- Added SOC 2 control catalog with continuous evaluation engine.
+- Added evidence bundle generation/signing/verification and compliance admin APIs.
+- Added compliance ops posture endpoint, scheduling tasks, and retention pruning.
+- Added SOC 2 runbooks and compliance tests.
+
 ## 1.9.0 - 2026-02-15
 
 - Added tenant key registry and encrypted blob store for sensitive artifacts.
