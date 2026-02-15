@@ -590,6 +590,9 @@ Available maintenance tasks:
 - `backup_create_scheduled`
 - `backup_prune_retention`
 - `restore_drill_scheduled`
+- `compliance_evaluate_scheduled`
+- `compliance_bundle_periodic`
+- `compliance_prune_old_evidence`
 
 Retention knobs:
 - `AUDIT_RETENTION_DAYS`
@@ -615,6 +618,10 @@ Runbooks live under `docs/runbooks/`:
 - `key-compromise-response.md`
 - `kms-outage-procedure.md`
 - `encrypted-artifact-access.md`
+- `soc2-audit-prep.md`
+- `compliance-control-failure-response.md`
+- `evidence-bundle-verification.md`
+- `compliance-scheduling-and-retention.md`
 
 ## Disaster Recovery
 Backups include a database logical dump, schema-only dump, and a metadata snapshot.
@@ -872,6 +879,77 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
 - `KEY_NOT_ACTIVE` (409)
 - `DECRYPTION_FAILED` (500)
 - `CRYPTO_POLICY_DENIED` (403)
+
+## SOC 2 Compliance Automation
+SOC 2 controls are evaluated continuously and bundled as signed evidence for auditors.
+
+Baseline controls (automated/hybrid):
+- `CC6.1` Access control enforcement
+- `CC6.2` API key governance
+- `CC7.1` Change management evidence
+- `CC7.2` Monitoring and incident response readiness
+- `CC8.1` Vulnerability/patch cadence (manual artifact upload)
+- `A1.1` Backup + restore drill compliance
+- `C1.1` Encryption posture
+
+Evaluate controls:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"window_days":30}' \
+  "http://localhost:8000/v1/admin/compliance/evaluate"
+```
+
+Generate bundle:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"bundle_type":"soc2_on_demand","period_start":"2026-01-01T00:00:00Z","period_end":"2026-01-31T23:59:59Z"}' \
+  "http://localhost:8000/v1/admin/compliance/bundles"
+```
+
+CLI bundle generation:
+```
+docker compose exec api python scripts/compliance_generate_bundle.py \
+  --bundle-type soc2_on_demand \
+  --period-start 2026-01-01T00:00:00Z \
+  --period-end 2026-01-31T23:59:59Z
+```
+
+Verify bundle:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/compliance/bundles/{id}/verify"
+```
+
+Upload dependency scan artifact:
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"artifact_type":"dependency_scan","artifact_uri":"s3://compliance/scans/scan.json"}' \
+  "http://localhost:8000/v1/admin/compliance/artifacts"
+```
+
+Ops posture:
+```
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/ops/compliance/status"
+```
+
+Compliance settings:
+- `COMPLIANCE_ENABLED`
+- `COMPLIANCE_DEFAULT_WINDOW_DAYS`
+- `COMPLIANCE_EVAL_CRON`, `COMPLIANCE_BUNDLE_CRON`
+- `COMPLIANCE_EVIDENCE_RETENTION_DAYS`
+- `COMPLIANCE_SIGNATURE_REQUIRED`
+- `COMPLIANCE_EVIDENCE_DIR`
+
+### Compliance Error Codes
+- `COMPLIANCE_CONTROL_NOT_FOUND` (404)
+- `COMPLIANCE_EVALUATION_FAILED` (500)
+- `COMPLIANCE_BUNDLE_BUILD_FAILED` (500)
+- `COMPLIANCE_BUNDLE_VERIFY_FAILED` (400)
+- `COMPLIANCE_DISABLED` (503)
 
 ## Cloud retrieval real-run (credentials required)
 
