@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.domain.models import ApiKey, TenantPlanAssignment, User
+from nexusrag.domain.models import ApiKey, AuthorizationPolicy, TenantPlanAssignment, User
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.auth.api_keys import generate_api_key, normalize_role
 
@@ -23,6 +24,7 @@ async def create_test_api_key(
     user_active: bool = True,
     key_revoked: bool = False,
     plan_id: str | None = "enterprise",
+    seed_authz_policies: bool = True,
 ) -> tuple[str, dict[str, str], str, str]:
     # Provision a user + API key pair for integration tests.
     normalized_role = normalize_role(role)
@@ -73,7 +75,60 @@ async def create_test_api_key(
                         is_active=True,
                     )
                 )
+        if seed_authz_policies:
+            await _seed_allow_policies(session=session, tenant_id=tenant_id)
         await session.commit()
 
     headers = {"Authorization": f"Bearer {raw_key}"}
     return raw_key, headers, user_id, key_id
+
+
+async def _seed_allow_policies(*, session: AsyncSession, tenant_id: str) -> None:
+    # Seed baseline allow policies so tests exercise ACLs without global denies.
+    existing = (
+        await session.execute(
+            select(AuthorizationPolicy).where(
+                AuthorizationPolicy.tenant_id == tenant_id,
+                AuthorizationPolicy.name.in_(
+                    {"test-allow-documents", "test-allow-run"},
+                ),
+            )
+        )
+    ).scalars().all()
+    existing_names = {policy.name for policy in existing}
+    if "test-allow-documents" not in existing_names:
+        session.add(
+            AuthorizationPolicy(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                name="test-allow-documents",
+                version=1,
+                effect="allow",
+                resource_type="document",
+                action="*",
+                condition_json={},
+                priority=10,
+                enabled=True,
+                created_by="test-suite",
+                created_at=_utc_now(),
+                updated_at=_utc_now(),
+            )
+        )
+    if "test-allow-run" not in existing_names:
+        session.add(
+            AuthorizationPolicy(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                name="test-allow-run",
+                version=1,
+                effect="allow",
+                resource_type="corpus",
+                action="run",
+                condition_json={},
+                priority=10,
+                enabled=True,
+                created_by="test-suite",
+                created_at=_utc_now(),
+                updated_at=_utc_now(),
+            )
+        )

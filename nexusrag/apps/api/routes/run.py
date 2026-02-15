@@ -47,6 +47,7 @@ from nexusrag.providers.retrieval.router import RetrievalRouter
 from nexusrag.providers.tts.factory import get_tts_provider
 from nexusrag.services.audio.storage import save_audio
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.authz.abac import authorize_corpus_action
 from nexusrag.services.entitlements import FEATURE_TTS, require_feature
 from nexusrag.services.resilience import deterministic_canary, get_run_bulkhead
 from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_switch
@@ -235,6 +236,17 @@ async def run(
         tts_pct = await resolve_canary_percentage("rollout.tts")
         if not deterministic_canary(principal.tenant_id, tts_pct):
             _release_and_raise(_feature_disabled("TTS is not enabled for this tenant yet"))
+    # Enforce ABAC policies for corpus-scoped run access.
+    try:
+        await authorize_corpus_action(
+            session=db,
+            principal=principal,
+            corpus_id=payload.corpus_id,
+            action="run",
+            request=http_request,
+        )
+    except HTTPException as exc:
+        _release_and_raise(exc)
     # Resolve retrieval provider entitlements early to return stable 403s.
     retriever = RetrievalRouter(db)
     try:

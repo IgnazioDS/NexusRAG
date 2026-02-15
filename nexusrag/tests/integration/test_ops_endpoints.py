@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import Document
+from nexusrag.domain.models import Document, DocumentLabel, DocumentPermission
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.ingest import queue as ingest_queue
 from nexusrag.tests.utils.auth import create_test_api_key
@@ -53,6 +53,12 @@ async def _seed_document(
 async def _cleanup_documents() -> None:
     # Keep ops tests isolated from other integration runs.
     async with SessionLocal() as session:
+        await session.execute(
+            DocumentPermission.__table__.delete().where(DocumentPermission.tenant_id == "t-ops")
+        )
+        await session.execute(
+            DocumentLabel.__table__.delete().where(DocumentLabel.tenant_id == "t-ops")
+        )
         await session.execute(
             Document.__table__.delete().where(Document.tenant_id == "t-ops")
         )

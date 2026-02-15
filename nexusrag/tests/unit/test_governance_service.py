@@ -10,6 +10,8 @@ from nexusrag.domain.models import (
     Checkpoint,
     Chunk,
     Document,
+    DocumentLabel,
+    DocumentPermission,
     DsarRequest,
     LegalHold,
     Message,
@@ -41,6 +43,8 @@ async def _reset_governance_rows() -> None:
         # Delete checkpoint children before sessions to satisfy FK constraints.
         await session.execute(delete(Checkpoint))
         await session.execute(delete(Chunk))
+        await session.execute(delete(DocumentPermission))
+        await session.execute(delete(DocumentLabel))
         await session.execute(delete(Document))
         await session.execute(delete(Session))
         await session.execute(delete(RetentionPolicy))

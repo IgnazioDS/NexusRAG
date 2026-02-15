@@ -26,6 +26,7 @@ from nexusrag.domain.models import (
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.authz.abac import authorize_document_action, filter_documents_for_principal
 from nexusrag.services.entitlements import (
     FEATURE_AUDIT,
     FEATURE_BILLING_WEBHOOK_TEST,
@@ -528,14 +529,52 @@ async def ui_documents(
     id_direction = sort_fields[0].direction
     order_by.append(Document.id.desc() if id_direction == "desc" else Document.id.asc())
 
-    try:
-        result = await db.execute(stmt.order_by(*order_by).limit(limit + 1))
-    except SQLAlchemyError as exc:
-        raise HTTPException(status_code=500, detail="Database error while listing documents") from exc
+    # Fetch extra rows to preserve cursor pagination after authorization filtering.
+    authorized_rows: list[Document] = []
+    next_cursor_payload = cursor_payload
+    while len(authorized_rows) < limit + 1:
+        page_stmt = stmt
+        if next_cursor_payload is not None:
+            try:
+                page_stmt = page_stmt.where(
+                    build_cursor_filter(
+                        sort_fields=sort_fields,
+                        cursor_values=next_cursor_payload["values"],
+                        row_id=str(next_cursor_payload["id"]),
+                        id_column=Document.id,
+                    )
+                )
+            except CursorError as exc:
+                raise _invalid_cursor_error() from exc
+        try:
+            result = await db.execute(page_stmt.order_by(*order_by).limit(limit + 1))
+        except SQLAlchemyError as exc:
+            raise HTTPException(status_code=500, detail="Database error while listing documents") from exc
 
-    rows = list(result.scalars().all())
-    has_more = len(rows) > limit
-    rows = rows[:limit]
+        rows = list(result.scalars().all())
+        if not rows:
+            break
+        filtered = await filter_documents_for_principal(
+            session=db,
+            principal=principal,
+            documents=rows,
+            action="read",
+            request=request,
+        )
+        authorized_rows.extend(filtered)
+        if len(rows) <= limit:
+            break
+        last_doc = rows[-1]
+        next_cursor_payload = build_cursor_payload(
+            scope="ui.documents",
+            tenant_id=principal.tenant_id,
+            sort_fields=sort_fields,
+            row_values={field.name: getattr(last_doc, field.name) for field in sort_fields},
+            row_id=last_doc.id,
+        )
+
+    has_more = len(authorized_rows) > limit
+    rows = authorized_rows[:limit]
 
     items = [
         UiDocumentRow(
@@ -563,28 +602,14 @@ async def ui_documents(
         )
         next_cursor = encode_cursor(cursor_payload, settings.ui_cursor_secret)
 
-    facet_stmt = select(Document.status, func.count(Document.id)).where(
-        Document.tenant_id == principal.tenant_id
-    )
-    if corpus_id:
-        facet_stmt = facet_stmt.where(Document.corpus_id == corpus_id)
-    if created_from:
-        facet_stmt = facet_stmt.where(Document.created_at >= created_from)
-    if created_to:
-        facet_stmt = facet_stmt.where(Document.created_at <= created_to)
-    if q:
-        like = f"%{q}%"
-        facet_stmt = facet_stmt.where(or_(Document.filename.ilike(like), Document.id.ilike(like)))
-    facet_stmt = facet_stmt.group_by(Document.status)
-    try:
-        facet_rows = await db.execute(facet_stmt)
-    except SQLAlchemyError as exc:
-        raise HTTPException(status_code=500, detail="Database error while aggregating facets") from exc
-
+    # Build status facets from authorized results to avoid leaking counts.
+    status_counts: dict[str, int] = {}
+    for doc in rows:
+        status_counts[doc.status] = status_counts.get(doc.status, 0) + 1
     facets = {
         "status": [
-            UiFacetValue(value=status_value, count=int(count or 0))
-            for status_value, count in facet_rows.all()
+            UiFacetValue(value=status_value, count=count)
+            for status_value, count in status_counts.items()
         ]
     }
 
@@ -772,6 +797,14 @@ async def ui_reindex_document(
         raise HTTPException(status_code=500, detail="Database error while fetching document") from exc
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    # Enforce ABAC + ACL before reindexing document content.
+    await authorize_document_action(
+        session=db,
+        principal=principal,
+        document=doc,
+        action="reindex",
+        request=request,
+    )
     if doc.status in {"queued", "processing"}:
         raise HTTPException(
             status_code=409,

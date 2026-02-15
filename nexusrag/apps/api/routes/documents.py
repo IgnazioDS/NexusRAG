@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from fastapi import (
@@ -19,7 +20,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +32,7 @@ from nexusrag.apps.api.deps import (
     require_role,
 )
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
-from nexusrag.domain.models import Chunk, Document
+from nexusrag.domain.models import Chunk, Document, DocumentLabel, DocumentPermission
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.persistence.repos import documents as documents_repo
@@ -40,6 +41,11 @@ from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestio
 from nexusrag.core.errors import ServiceBusyError
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.apps.api.response import SuccessEnvelope, is_versioned_request, success_response
+from nexusrag.services.authz.abac import (
+    authorize_document_action,
+    authorize_document_create,
+    filter_documents_for_principal,
+)
 from nexusrag.services.idempotency import (
     build_replay_response,
     check_idempotency,
@@ -211,6 +217,73 @@ def _status_url(document_id: str, request: Request | None = None) -> str:
     return f"{prefix}/documents/{document_id}"
 
 
+async def _ensure_owner_permission(
+    *,
+    session: AsyncSession,
+    principal: Principal,
+    document_id: str,
+) -> None:
+    # Grant owner-level access to document creators for future ACL checks.
+    result = await session.execute(
+        select(DocumentPermission).where(
+            DocumentPermission.tenant_id == principal.tenant_id,
+            DocumentPermission.document_id == document_id,
+            DocumentPermission.principal_type == "user",
+            DocumentPermission.principal_id == principal.subject_id,
+            DocumentPermission.permission == "owner",
+        )
+    )
+    if result.scalar_one_or_none() is not None:
+        return
+    session.add(
+        DocumentPermission(
+            id=uuid4().hex,
+            tenant_id=principal.tenant_id,
+            document_id=document_id,
+            principal_type="user",
+            principal_id=principal.subject_id,
+            permission="owner",
+            granted_by=principal.api_key_id,
+            expires_at=None,
+        )
+    )
+
+
+async def _sync_document_labels(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    document_id: str,
+    labels: dict[str, Any] | None,
+) -> None:
+    # Align document labels with metadata for ABAC evaluation inputs.
+    if labels is None:
+        return
+    if not isinstance(labels, dict):
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail("INGEST_VALIDATION_ERROR", "labels must be an object"),
+        )
+    await session.execute(
+        delete(DocumentLabel).where(
+            DocumentLabel.tenant_id == tenant_id,
+            DocumentLabel.document_id == document_id,
+        )
+    )
+    for key, value in labels.items():
+        if key is None:
+            continue
+        session.add(
+            DocumentLabel(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                document_id=document_id,
+                key=str(key),
+                value=str(value),
+            )
+        )
+
+
 def _accepted_response(
     document_id: str,
     status: str,
@@ -320,6 +393,14 @@ async def upload_document(
             if other is not None:
                 raise HTTPException(status_code=404, detail="Document not found")
         else:
+            # Enforce ABAC + ACL before mutating existing documents.
+            await authorize_document_action(
+                session=db,
+                principal=principal,
+                document=existing,
+                action="write",
+                request=request,
+            )
             if existing.corpus_id != corpus_id:
                 raise HTTPException(status_code=409, detail="Document belongs to a different corpus")
             if existing.status in {"queued", "processing"}:
@@ -355,6 +436,15 @@ async def upload_document(
                 )
                 return payload
 
+    if existing is None:
+        # Enforce ABAC policy for new document creation within the corpus.
+        await authorize_document_create(
+            session=db,
+            principal=principal,
+            corpus_id=corpus_id,
+            labels=None,
+            request=request,
+        )
     text = _parse_text(file, body)
     _validate_text_payload(text)
     document_id = document_id or str(uuid4())
@@ -392,6 +482,11 @@ async def upload_document(
                 status="queued",
                 queued_at=queued_at,
                 last_job_id=request_id,
+            )
+            await _ensure_owner_permission(
+                session=db,
+                principal=principal,
+                document_id=document_id,
             )
         await db.commit()
     except SQLAlchemyError as exc:
@@ -475,6 +570,13 @@ async def ingest_text_document(
                 "metadata_json must be an object when provided",
             ),
         )
+    labels_present = "labels" in metadata_json
+    labels_payload = metadata_json.get("labels") if labels_present else None
+    if labels_present and labels_payload is None:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail("INGEST_VALIDATION_ERROR", "labels must be an object"),
+        )
     request_hash = compute_request_hash(payload.model_dump())
     idempotency_ctx, replay = await check_idempotency(
         request=request,
@@ -499,6 +601,14 @@ async def ingest_text_document(
             if other is not None:
                 raise HTTPException(status_code=404, detail="Document not found")
         else:
+            # Enforce ABAC + ACL before mutating existing documents.
+            await authorize_document_action(
+                session=db,
+                principal=principal,
+                document=existing,
+                action="write",
+                request=request,
+            )
             if existing.corpus_id != payload.corpus_id:
                 raise HTTPException(status_code=409, detail="Document belongs to a different corpus")
             if existing.status in {"queued", "processing"}:
@@ -534,6 +644,15 @@ async def ingest_text_document(
                 )
                 return payload_body
 
+    if existing is None:
+        # Enforce ABAC policy for new document creation within the corpus.
+        await authorize_document_create(
+            session=db,
+            principal=principal,
+            corpus_id=payload.corpus_id,
+            labels=(metadata_json.get("labels") if isinstance(metadata_json, dict) else None),
+            request=request,
+        )
     document_id = payload.document_id or str(uuid4())
     storage_path = write_text_to_storage(document_id, payload.text)
     request_id = str(uuid4())
@@ -556,6 +675,13 @@ async def ingest_text_document(
             existing.processing_started_at = None
             existing.completed_at = None
             existing.last_job_id = request_id
+            if labels_present:
+                await _sync_document_labels(
+                    session=db,
+                    tenant_id=tenant_id,
+                    document_id=existing.id,
+                    labels=labels_payload,
+                )
         else:
             await documents_repo.create_document(
                 db,
@@ -571,6 +697,18 @@ async def ingest_text_document(
                 queued_at=queued_at,
                 last_job_id=request_id,
             )
+            await _ensure_owner_permission(
+                session=db,
+                principal=principal,
+                document_id=document_id,
+            )
+            if labels_present:
+                await _sync_document_labels(
+                    session=db,
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    labels=labels_payload,
+                )
         await db.commit()
     except SQLAlchemyError as exc:
         await db.rollback()
@@ -632,6 +770,7 @@ async def ingest_text_document(
 
 @router.get("", response_model=SuccessEnvelope[list[DocumentResponse]] | list[DocumentResponse])
 async def list_documents(
+    request: Request,
     principal: Principal = Depends(require_role("reader")),
     corpus_id: str | None = None,
     db: AsyncSession = Depends(get_db),
@@ -645,12 +784,21 @@ async def list_documents(
             status_code=500,
             detail=_error_detail("DB_ERROR", "Database error while listing documents"),
         ) from exc
+    # Filter documents through ABAC + ACL to avoid leaking unauthorized resources.
+    docs = await filter_documents_for_principal(
+        session=db,
+        principal=principal,
+        documents=docs,
+        action="read",
+        request=request,
+    )
     return [_to_response(doc) for doc in docs]
 
 
 @router.get("/{document_id}", response_model=SuccessEnvelope[DocumentResponse] | DocumentResponse)
 async def get_document(
     document_id: str,
+    request: Request,
     principal: Principal = Depends(require_role("reader")),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentResponse:
@@ -666,6 +814,14 @@ async def get_document(
     if doc is None:
         # Use 404 to avoid leaking cross-tenant document existence.
         raise HTTPException(status_code=404, detail="Document not found")
+    # Enforce ABAC + ACL before returning document metadata.
+    await authorize_document_action(
+        session=db,
+        principal=principal,
+        document=doc,
+        action="read",
+        request=request,
+    )
     num_chunks = None
     if doc.status == "succeeded":
         try:
@@ -728,6 +884,14 @@ async def reindex_document(
     if doc is None:
         # Tenant mismatch returns 404 to avoid leaking document existence.
         raise HTTPException(status_code=404, detail="Document not found")
+    # Enforce ABAC + ACL before reindexing document content.
+    await authorize_document_action(
+        session=db,
+        principal=principal,
+        document=doc,
+        action="reindex",
+        request=request,
+    )
     if doc.status in {"queued", "processing"}:
         raise HTTPException(
             status_code=409,
@@ -869,6 +1033,14 @@ async def delete_document(
     if doc is None:
         # Tenant mismatch returns 404 to avoid leaking document existence.
         raise HTTPException(status_code=404, detail="Document not found")
+    # Enforce ABAC + ACL before deleting document content.
+    await authorize_document_action(
+        session=db,
+        principal=principal,
+        document=doc,
+        action="delete",
+        request=request,
+    )
     if doc.status in {"queued", "processing"}:
         raise HTTPException(
             status_code=409,
@@ -891,6 +1063,8 @@ async def delete_document(
     storage_path = doc.storage_path
 
     try:
+        await db.execute(delete(DocumentPermission).where(DocumentPermission.document_id == document_id))
+        await db.execute(delete(DocumentLabel).where(DocumentLabel.document_id == document_id))
         await db.execute(delete(Chunk).where(Chunk.document_id == document_id))
         await db.execute(delete(Document).where(Document.id == document_id))
         await db.commit()

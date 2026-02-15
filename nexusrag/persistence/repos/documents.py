@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.domain.models import Chunk, Document
+from nexusrag.persistence.guards import require_tenant_id, tenant_predicate
 
 
 async def create_document(
@@ -47,7 +48,9 @@ async def list_documents(
     session: AsyncSession, tenant_id: str, corpus_id: str | None = None
 ) -> list[Document]:
     # Tenant scoping prevents cross-tenant leakage.
-    stmt = select(Document).where(Document.tenant_id == tenant_id)
+    # Require explicit tenant predicates to enforce row-level isolation.
+    require_tenant_id(tenant_id)
+    stmt = select(Document).where(tenant_predicate(Document, tenant_id))
     if corpus_id:
         stmt = stmt.where(Document.corpus_id == corpus_id)
     result = await session.execute(stmt.order_by(Document.created_at, Document.id))
@@ -56,8 +59,10 @@ async def list_documents(
 
 async def get_document(session: AsyncSession, tenant_id: str, document_id: str) -> Document | None:
     # Return None for tenant mismatch to keep 404 semantics.
+    # Require explicit tenant predicates to enforce row-level isolation.
+    require_tenant_id(tenant_id)
     result = await session.execute(
-        select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
+        select(Document).where(Document.id == document_id, tenant_predicate(Document, tenant_id))
     )
     return result.scalar_one_or_none()
 

@@ -13,6 +13,8 @@ from nexusrag.domain.models import (
     ApiKey,
     AuditEvent,
     Document,
+    DocumentLabel,
+    DocumentPermission,
     PlanUpgradeRequest,
     TenantFeatureOverride,
     TenantPlanAssignment,
@@ -57,6 +59,8 @@ async def _cleanup_tenant(tenant_id: str) -> None:
         await session.execute(delete(TenantPlanAssignment).where(TenantPlanAssignment.tenant_id == tenant_id))
         await session.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
         await session.execute(delete(User).where(User.tenant_id == tenant_id))
+        await session.execute(delete(DocumentPermission).where(DocumentPermission.tenant_id == tenant_id))
+        await session.execute(delete(DocumentLabel).where(DocumentLabel.tenant_id == tenant_id))
         await session.execute(delete(Document).where(Document.tenant_id == tenant_id))
         await session.execute(delete(AuditEvent).where(AuditEvent.tenant_id == tenant_id))
         await session.commit()

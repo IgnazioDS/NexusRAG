@@ -138,6 +138,79 @@ Dev-only bypass:
 - Set `AUTH_DEV_BYPASS=true` to allow `X-Tenant-Id` + optional `X-Role` (defaults to `admin`).
 - This is intended for local development only; keep it disabled in production.
 
+## Authorization Model (RBAC + ABAC + Document ACL)
+
+The platform layers ABAC on top of existing RBAC and document ACLs. Decision order for document actions:
+
+1. Tenant boundary (non-bypassable).
+2. Kill switches / maintenance gates.
+3. RBAC role gate.
+4. Document ACL evaluation (explicit grants; expired grants ignored).
+5. ABAC policy evaluation (deny first, then allow; priority-aware).
+6. Default deny (configurable via `AUTHZ_DEFAULT_DENY`).
+
+Notes:
+
+- Document creators receive an `owner` ACL entry on create.
+- Admin role does not bypass document ACLs unless `AUTHZ_ADMIN_BYPASS_DOCUMENT_ACL=true`.
+- Wildcard policies on both `resource_type` and `action` require `AUTHZ_ALLOW_WILDCARDS=true`.
+
+Policy DSL example (deny high sensitivity docs):
+
+```json
+{
+  "name": "deny-high-sensitivity",
+  "effect": "deny",
+  "resource_type": "document",
+  "action": "read",
+  "priority": 200,
+  "condition_json": {
+    "eq": [{ "var": "resource.labels.sensitivity" }, "high"]
+  }
+}
+```
+
+Policy DSL example (allow editors during business hours):
+
+```json
+{
+  "name": "allow-editors-hours",
+  "effect": "allow",
+  "resource_type": "document",
+  "action": "write",
+  "priority": 100,
+  "condition_json": {
+    "all": [
+      { "eq": [{ "var": "principal.role" }, "editor"] },
+      { "time_between": [{ "var": "request.time" }, { "start": "09:00", "end": "18:00" }] }
+    ]
+  }
+}
+```
+
+Simulate a policy before enabling it:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  http://localhost:8000/v1/admin/authz/policies/<policy_id>/simulate \\
+  -d '{
+    "resource_type": "document",
+    "action": "read",
+    "principal": { "role": "reader" },
+    "resource": { "labels": { "sensitivity": "high" } }
+  }'
+```
+
+Grant a document permission:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  http://localhost:8000/v1/admin/authz/documents/<document_id>/permissions \\
+  -d '{"principal_type": "user", "principal_id": "<user_id>", "permission": "read"}'
+```
+
 ## API Versioning & Compatibility
 
 Stable API routes are versioned under `/v1` (recommended for all new clients).

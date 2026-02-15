@@ -156,6 +156,14 @@ class FailoverActionResponse(BaseModel):
     blockers: list[str]
 
 
+class AuthzPostureResponse(BaseModel):
+    # Report ABAC/RLS guard posture for operational safety checks.
+    tenant_predicate_required: bool
+    enforcement_mode: str
+    abac_enabled: bool
+    default_deny: bool
+
+
 def _utc_now() -> datetime:
     # Use UTC timestamps for consistent health/ops responses across hosts.
     return datetime.now(timezone.utc)
@@ -270,6 +278,27 @@ async def ops_health(
         metadata={"path": request.url.path},
         commit=True,
         best_effort=True,
+    )
+    return success_response(request=request, data=payload)
+
+
+@router.get(
+    "/authz/posture",
+    response_model=SuccessEnvelope[AuthzPostureResponse] | AuthzPostureResponse,
+)
+async def authz_posture(
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> AuthzPostureResponse:
+    # Surface ABAC guard posture for ops validation and rollout checks.
+    await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_OPS_ADMIN)
+    settings = get_settings()
+    payload = AuthzPostureResponse(
+        tenant_predicate_required=settings.authz_require_tenant_predicate,
+        enforcement_mode="guard",
+        abac_enabled=settings.authz_abac_enabled,
+        default_deny=settings.authz_default_deny,
     )
     return success_response(request=request, data=payload)
 

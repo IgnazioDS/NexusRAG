@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.2.0 - 2026-02-15
+
+- Added ABAC policy engine and document-level ACLs.
+- Added admin policy/permission APIs with simulation.
+- Added tenant guard/RLS posture checks and tests.
+
 ## 2.1.0 - 2026-02-15
 
 - Added enterprise identity models for IdPs, tenant users, SCIM provisioning, and SSO sessions.

@@ -541,6 +541,37 @@ class PolicyRule(Base):
     )
 
 
+class AuthorizationPolicy(Base):
+    __tablename__ = "authorization_policies"
+    __table_args__ = (
+        Index(
+            "ix_authz_policies_tenant_enabled_resource_action_priority",
+            "tenant_id",
+            "enabled",
+            "resource_type",
+            "action",
+            text("priority DESC"),
+        ),
+    )
+
+    # Store ABAC policies with tenant scoping and deterministic precedence.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    effect: Mapped[str] = mapped_column(String)
+    resource_type: Mapped[str] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String, index=True)
+    condition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class GovernanceRetentionRun(Base):
     __tablename__ = "governance_retention_runs"
 
@@ -834,6 +865,69 @@ class Document(Base):
     # Capture the last time content was reindexed for operational visibility.
     last_reindexed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class DocumentPermission(Base):
+    __tablename__ = "document_permissions"
+    __table_args__ = (
+        Index("ix_doc_permissions_tenant_document", "tenant_id", "document_id"),
+        Index("ix_doc_permissions_tenant_principal", "tenant_id", "principal_type", "principal_id"),
+        UniqueConstraint(
+            "tenant_id",
+            "document_id",
+            "principal_type",
+            "principal_id",
+            "permission",
+            name="uq_doc_permissions_principal_permission",
+        ),
+    )
+
+    # Record explicit document-level grants for principals.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    document_id: Mapped[str] = mapped_column(String, ForeignKey("documents.id"), index=True)
+    principal_type: Mapped[str] = mapped_column(String)
+    principal_id: Mapped[str] = mapped_column(String)
+    permission: Mapped[str] = mapped_column(String)
+    granted_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DocumentLabel(Base):
+    __tablename__ = "document_labels"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "document_id", "key", name="uq_document_labels_key"),
+    )
+
+    # Capture document labels for ABAC policy evaluation.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    document_id: Mapped[str] = mapped_column(String, ForeignKey("documents.id"), index=True)
+    key: Mapped[str] = mapped_column(String)
+    value: Mapped[str] = mapped_column(String)
+
+
+class PrincipalAttribute(Base):
+    __tablename__ = "principal_attributes"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "principal_type",
+            "principal_id",
+            name="uq_principal_attributes_identity",
+        ),
+    )
+
+    # Cache computed principal attributes for ABAC evaluation.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    principal_type: Mapped[str] = mapped_column(String)
+    principal_id: Mapped[str] = mapped_column(String)
+    attrs_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
