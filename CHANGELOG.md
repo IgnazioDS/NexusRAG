@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.1.0 - 2026-02-15
+
+- Added enterprise identity models for IdPs, tenant users, SCIM provisioning, and SSO sessions.
+- Added OIDC SSO flow with PKCE, state/nonce replay protection, and JIT provisioning support.
+- Added SCIM 2.0 provisioning endpoints with token-based auth and audit events.
+- Added identity admin APIs for provider, token, and tenant user management.
+- Added entitlements, configuration, tests, and runbooks for enterprise identity.
+
 ## 2.0.0 - 2026-02-15
 
 - Added SOC 2 control catalog with continuous evaluation engine.

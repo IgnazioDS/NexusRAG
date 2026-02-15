@@ -68,6 +68,142 @@ class ApiKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class IdentityProvider(Base):
+    __tablename__ = "identity_providers"
+    __table_args__ = (
+        Index("ix_identity_providers_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+    # Store tenant-scoped IdP configurations without persisting client secrets.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    # Support both OIDC and future SAML integrations via a stable type field.
+    type: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String)
+    issuer: Mapped[str] = mapped_column(String)
+    client_id: Mapped[str] = mapped_column(String)
+    # Store only a secret reference for external resolution (no plaintext).
+    client_secret_ref: Mapped[str] = mapped_column(String)
+    auth_url: Mapped[str] = mapped_column(String)
+    token_url: Mapped[str] = mapped_column(String)
+    jwks_url: Mapped[str] = mapped_column(String)
+    scopes_json: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    default_role: Mapped[str] = mapped_column(String)
+    role_mapping_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    jit_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TenantUser(Base):
+    __tablename__ = "tenant_users"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "external_subject", name="uq_tenant_users_subject"),
+        Index("ix_tenant_users_tenant_email", "tenant_id", "email"),
+        Index("ix_tenant_users_tenant_role", "tenant_id", "role"),
+    )
+
+    # Represent tenant-bound human identities for SSO and SCIM provisioning flows.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    external_subject: Mapped[str] = mapped_column(String)
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Track lifecycle state for SSO and SCIM to avoid hard deletes.
+    status: Mapped[str] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ScimIdentity(Base):
+    __tablename__ = "scim_identities"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "external_id", name="uq_scim_identities_external"),
+    )
+
+    # Map SCIM external identifiers to tenant user records for provisioning syncs.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    external_id: Mapped[str] = mapped_column(String)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("tenant_users.id"), index=True)
+    provider_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("identity_providers.id"), nullable=True
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class ScimGroup(Base):
+    __tablename__ = "scim_groups"
+
+    # Track SCIM groups for role binding and membership reconciliation.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    external_id: Mapped[str] = mapped_column(String)
+    display_name: Mapped[str] = mapped_column(String)
+    role_binding: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ScimGroupMembership(Base):
+    __tablename__ = "scim_group_memberships"
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_scim_group_memberships"),
+    )
+
+    # Normalize group membership updates from SCIM into a join table.
+    group_id: Mapped[str] = mapped_column(String, ForeignKey("scim_groups.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("tenant_users.id"), primary_key=True)
+
+
+class ScimToken(Base):
+    __tablename__ = "scim_tokens"
+    __table_args__ = (
+        Index("ix_scim_tokens_tenant", "tenant_id"),
+    )
+
+    # Store hashed SCIM bearer tokens separately from API keys.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    token_prefix: Mapped[str] = mapped_column(String)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SsoSession(Base):
+    __tablename__ = "sso_sessions"
+    __table_args__ = (
+        Index("ix_sso_sessions_tenant", "tenant_id"),
+    )
+
+    # Persist hashed SSO session tokens for revocation and auditing.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("tenant_users.id"), index=True)
+    provider_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("identity_providers.id"), nullable=True
+    )
+    token_prefix: Mapped[str] = mapped_column(String)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 

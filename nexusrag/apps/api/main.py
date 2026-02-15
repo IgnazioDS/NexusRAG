@@ -25,9 +25,12 @@ from nexusrag.apps.api.routes.crypto_admin import router as crypto_admin_router
 from nexusrag.apps.api.routes.governance_admin import router as governance_admin_router
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
 from nexusrag.apps.api.routes.health import router as health_router
+from nexusrag.apps.api.routes.identity_admin import router as identity_admin_router
 from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.run import router as run_router
+from nexusrag.apps.api.routes.scim import router as scim_router
 from nexusrag.apps.api.routes.self_serve import router as self_serve_router
+from nexusrag.apps.api.routes.sso import router as sso_router
 from nexusrag.apps.api.routes.ui import router as ui_router
 from nexusrag.core.logging import configure_logging
 from nexusrag.apps.api.errors import (
@@ -144,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(compliance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_ops_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(identity_admin_router, prefix=f"/{API_VERSION}")
     # Expose admin-only audit endpoints for security investigations.
     app.include_router(audit_router, prefix=f"/{API_VERSION}")
     app.include_router(documents_router, prefix=f"/{API_VERSION}")
@@ -153,6 +157,9 @@ def create_app() -> FastAPI:
     app.include_router(governance_ops_router, prefix=f"/{API_VERSION}")
     # Expose tenant self-serve endpoints for admin lifecycle operations.
     app.include_router(self_serve_router, prefix=f"/{API_VERSION}")
+    # Expose SSO discovery and callback routes for enterprise identity.
+    app.include_router(sso_router, prefix=f"/{API_VERSION}")
+    app.include_router(scim_router, prefix=f"/{API_VERSION}")
     # Expose UI-focused BFF endpoints for frontend integration.
     app.include_router(ui_router, prefix=f"/{API_VERSION}")
     app.include_router(corpora_router, prefix=f"/{API_VERSION}")
@@ -165,12 +172,15 @@ def create_app() -> FastAPI:
     app.include_router(compliance_admin_router, include_in_schema=False)
     app.include_router(compliance_ops_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
+    app.include_router(identity_admin_router, include_in_schema=False)
     app.include_router(audit_router, include_in_schema=False)
     app.include_router(documents_router, include_in_schema=False)
     app.include_router(health_router, include_in_schema=False)
     app.include_router(ops_router, include_in_schema=False)
     app.include_router(governance_ops_router, include_in_schema=False)
     app.include_router(self_serve_router, include_in_schema=False)
+    app.include_router(sso_router, include_in_schema=False)
+    app.include_router(scim_router, include_in_schema=False)
     app.include_router(corpora_router, include_in_schema=False)
     app.include_router(run_router, include_in_schema=False)
 

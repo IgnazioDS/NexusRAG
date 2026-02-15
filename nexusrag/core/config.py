@@ -36,6 +36,28 @@ class Settings(BaseSettings):
     auth_api_key_header: str = "Authorization"
     # Small cache window to reduce auth DB lookups without delaying revocations too long.
     auth_cache_ttl_s: int = 15
+    # Toggle enterprise SSO endpoints and login flows.
+    sso_enabled: bool = True
+    # Comma-delimited allowed hosts for post-login redirects.
+    sso_allowed_redirect_hosts: str = ""
+    # Bound state/nonce lifetimes to reduce replay risk.
+    sso_state_ttl_seconds: int = 600
+    sso_nonce_ttl_seconds: int = 600
+    # Allow bounded clock skew for OIDC token validation.
+    sso_clock_skew_seconds: int = 120
+    # Default session lifetime for SSO-issued tokens.
+    sso_session_ttl_hours: int = 8
+    # Allow public IdP discovery when explicitly enabled.
+    sso_public_discovery_enabled: bool = False
+    # Toggle SCIM provisioning endpoints.
+    scim_enabled: bool = True
+    # Default SCIM token lifetime in days.
+    scim_token_ttl_days: int = 365
+    # Pagination defaults for SCIM list endpoints.
+    scim_default_page_size: int = 50
+    scim_max_page_size: int = 200
+    # Require dual-control for role escalations when enabled.
+    identity_dual_control_required: bool = False
     # Toggle rate limiting for abuse protection and capacity control.
     rate_limit_enabled: bool = True
     # Choose fail-open or fail-closed behavior when Redis is unavailable.

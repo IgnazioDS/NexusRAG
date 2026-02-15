@@ -14,6 +14,7 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import ApiKey, User
 from nexusrag.persistence.db import SessionLocal, get_session
 from nexusrag.services.auth.api_keys import hash_api_key, normalize_role, role_allows
+from nexusrag.services.auth.sso_sessions import is_sso_session_token, resolve_sso_session
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.apps.api.rate_limit import enforce_rate_limit, route_class_for_request
 from nexusrag.services.failover import enforce_write_gate
@@ -277,6 +278,54 @@ async def get_current_principal(
         )
         raise exc
 
+    if is_sso_session_token(bearer_token):
+        # Validate SSO sessions before falling back to API key auth.
+        request_ctx = get_request_context(request)
+        try:
+            sso_session, tenant_user = await resolve_sso_session(session=db, raw_token=bearer_token)
+        except HTTPException as exc:
+            await record_event(
+                session=db,
+                tenant_id=None,
+                actor_type="sso_session",
+                actor_id=None,
+                actor_role=None,
+                event_type="auth.access.failure",
+                outcome="failure",
+                resource_type="auth",
+                request_id=request_ctx["request_id"],
+                ip_address=request_ctx["ip_address"],
+                user_agent=request_ctx["user_agent"],
+                metadata={**_request_metadata(request), "auth_mode": "sso_session"},
+                error_code=_extract_error_code(exc),
+                commit=True,
+                best_effort=True,
+            )
+            raise
+        principal = Principal(
+            subject_id=tenant_user.id,
+            tenant_id=tenant_user.tenant_id,
+            role=tenant_user.role,
+            api_key_id=sso_session.id,
+        )
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="sso_session",
+            actor_id=sso_session.id,
+            actor_role=principal.role,
+            event_type="auth.access.success",
+            outcome="success",
+            resource_type="auth",
+            request_id=request_ctx["request_id"],
+            ip_address=request_ctx["ip_address"],
+            user_agent=request_ctx["user_agent"],
+            metadata={**_request_metadata(request), "auth_mode": "sso_session"},
+            commit=True,
+            best_effort=True,
+        )
+        return principal
+
     key_hash = hash_api_key(bearer_token)
     cached = await _get_cached_principal(key_hash, settings.auth_cache_ttl_s)
     if cached:
@@ -446,6 +495,18 @@ async def get_current_principal(
         best_effort=True,
     )
     return principal
+
+
+async def get_optional_principal(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Principal | None:
+    # Allow optional auth for public endpoints without logging missing-token failures.
+    settings = get_settings()
+    header_value = request.headers.get(settings.auth_api_key_header)
+    if not header_value:
+        return None
+    return await get_current_principal(request=request, db=db)
 
 
 def require_role(minimum_role: str):
