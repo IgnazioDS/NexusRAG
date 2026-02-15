@@ -10,6 +10,11 @@ from nexusrag.services.backup import (
     run_backup_job,
     run_restore_drill,
 )
+from nexusrag.services.compliance.maintenance import (
+    compliance_bundle_periodic,
+    compliance_evaluate_scheduled,
+    compliance_prune_old_evidence,
+)
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +39,9 @@ MaintenanceTask = Literal[
     "backup_create_scheduled",
     "backup_prune_retention",
     "restore_drill_scheduled",
+    "compliance_evaluate_scheduled",
+    "compliance_bundle_periodic",
+    "compliance_prune_old_evidence",
 ]
 
 

@@ -54,6 +54,9 @@ from nexusrag.services.maintenance import (
     prune_idempotency,
     prune_usage_counters,
     restore_drill_scheduled,
+    compliance_evaluate_scheduled,
+    compliance_bundle_periodic,
+    compliance_prune_old_evidence,
 )
 from nexusrag.services.governance import enforce_policy
 
@@ -619,7 +622,7 @@ async def run_maintenance_task(
     request: Request,
     task: str = Query(
         ...,
-        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage|backup_create_scheduled|backup_prune_retention|restore_drill_scheduled)$",
+        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage|backup_create_scheduled|backup_prune_retention|restore_drill_scheduled|compliance_evaluate_scheduled|compliance_bundle_periodic|compliance_prune_old_evidence)$",
     ),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
@@ -634,6 +637,9 @@ async def run_maintenance_task(
         "backup_create_scheduled": backup_create_scheduled,
         "backup_prune_retention": backup_prune_retention,
         "restore_drill_scheduled": restore_drill_scheduled,
+        "compliance_evaluate_scheduled": compliance_evaluate_scheduled,
+        "compliance_bundle_periodic": compliance_bundle_periodic,
+        "compliance_prune_old_evidence": compliance_prune_old_evidence,
     }
     runner = task_map.get(task)
     if runner is None:
