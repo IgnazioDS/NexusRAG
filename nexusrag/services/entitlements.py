@@ -33,6 +33,9 @@ FEATURE_AUDIT = "feature.audit_access"
 FEATURE_HIGH_QUOTA = "feature.high_quota_tier"
 FEATURE_CORPORA_PATCH_PROVIDER = "feature.corpora_patch_provider_config"
 FEATURE_BILLING_WEBHOOK_TEST = "feature.billing_webhook_test"
+FEATURE_IDENTITY_SSO = "feature.identity.sso"
+FEATURE_IDENTITY_SCIM = "feature.identity.scim"
+FEATURE_IDENTITY_JIT = "feature.identity.jit"
 
 FEATURE_KEYS = {
     FEATURE_RETRIEVAL_LOCAL,
@@ -44,6 +47,9 @@ FEATURE_KEYS = {
     FEATURE_HIGH_QUOTA,
     FEATURE_CORPORA_PATCH_PROVIDER,
     FEATURE_BILLING_WEBHOOK_TEST,
+    FEATURE_IDENTITY_SSO,
+    FEATURE_IDENTITY_SCIM,
+    FEATURE_IDENTITY_JIT,
 }
 
 RETRIEVAL_PROVIDER_FEATURES = {

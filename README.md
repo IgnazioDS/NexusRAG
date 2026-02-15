@@ -1102,6 +1102,9 @@ Plan matrix:
 | Corpora provider config patch | no | yes | yes |
 | Billing webhook test | no | yes | yes |
 | High quota tier | no | no | yes |
+| Enterprise SSO (OIDC) | no | yes | yes |
+| SCIM 2.0 provisioning | no | no | yes |
+| JIT provisioning | no | no | yes |
 
 Entitlement enforcement:
 
@@ -1109,6 +1112,9 @@ Entitlement enforcement:
 - `/run` with `audio=true` requires `feature.tts`.
 - `/ops/*` and `/audit/events*` require `feature.ops_admin_access` and `feature.audit_access`.
 - `PATCH /corpora/{id}` with provider changes requires `feature.corpora_patch_provider_config`.
+- SSO endpoints require `feature.identity.sso` and `SSO_ENABLED=true`.
+- SCIM endpoints require `feature.identity.scim` and `SCIM_ENABLED=true`.
+- JIT provisioning requires `feature.identity.jit` and `jit_enabled=true` on the provider.
 
 Feature disabled error:
 
@@ -1150,6 +1156,95 @@ curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $
   http://localhost:8000/v1/admin/plans/t1/overrides \
   -d '{"feature_key":"feature.tts","enabled":true,"config_json":{"voices":["nova"]}}'
 ```
+
+## Enterprise Identity (SSO/SCIM)
+
+Enterprise identity features add OIDC-based SSO, SCIM 2.0 provisioning, and JIT user creation.
+
+Key settings:
+
+- `SSO_ENABLED=true`
+- `SSO_ALLOWED_REDIRECT_HOSTS=app.example.com,admin.example.com`
+- `SSO_STATE_TTL_SECONDS=600`
+- `SSO_NONCE_TTL_SECONDS=600`
+- `SSO_CLOCK_SKEW_SECONDS=120`
+- `SSO_SESSION_TTL_HOURS=8`
+- `SSO_PUBLIC_DISCOVERY_ENABLED=false`
+- `SCIM_ENABLED=true`
+- `SCIM_TOKEN_TTL_DAYS=365`
+- `SCIM_DEFAULT_PAGE_SIZE=50`
+- `SCIM_MAX_PAGE_SIZE=200`
+
+OIDC provider setup (admin, tenant-scoped):
+
+```
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/identity/providers \
+  -d '{
+    "type": "oidc",
+    "name": "Okta",
+    "issuer": "https://example.okta.com/oauth2/default",
+    "client_id": "0oa123",
+    "client_secret_ref": "OKTA_OIDC_CLIENT_SECRET",
+    "auth_url": "https://example.okta.com/oauth2/default/v1/authorize",
+    "token_url": "https://example.okta.com/oauth2/default/v1/token",
+    "jwks_url": "https://example.okta.com/oauth2/default/v1/keys",
+    "scopes_json": ["openid", "profile", "email", "groups"],
+    "default_role": "reader",
+    "role_mapping_json": {"groups": {"Admins": "admin", "Editors": "editor"}},
+    "jit_enabled": true
+  }'
+
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/identity/providers/$PROVIDER_ID/enable
+```
+
+SSO flow (dev mode returns JSON, prod typically uses redirects):
+
+```
+# Start the OIDC flow (returns authorize_url or redirects if response_mode=redirect)
+curl -s "http://localhost:8000/v1/auth/sso/oidc/$PROVIDER_ID/start"
+
+# Callback (normally invoked by IdP)
+curl -s "http://localhost:8000/v1/auth/sso/oidc/$PROVIDER_ID/callback?code=AUTH_CODE&state=STATE"
+```
+
+SCIM provisioning (token-based):
+
+```
+# Create a SCIM token
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/identity/scim/token/create
+
+# Provision a user
+curl -s -X POST -H "Authorization: Bearer $SCIM_TOKEN" \
+  http://localhost:8000/v1/scim/v2/Users \
+  -d '{
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+    "userName": "user@example.com",
+    "displayName": "User Example",
+    "emails": [{"value": "user@example.com", "primary": true}],
+    "active": true
+  }'
+```
+
+Role mapping examples:
+
+- Claim-based: `{"groups": {"Admins": "admin", "Editors": "editor"}}`
+- Single claim: `{"claim": "roles", "mapping": {"staff": "reader"}}`
+
+Token rotation guidance:
+
+1. Create a new SCIM token with `/v1/admin/identity/scim/token/create`.
+2. Update the IdP provisioning connector to use the new token.
+3. Revoke the old token with `/v1/admin/identity/scim/token/revoke`.
+
+Security notes:
+
+- Client secrets are referenced via `client_secret_ref`; plaintext secrets are never stored.
+- ID tokens, access tokens, and SCIM bearer tokens are never logged or persisted.
+- Callback URLs must be HTTPS in non-dev environments.
+- State and nonce values are stored in Redis with TTLs to prevent replay.
 
 ## Tenant Self-Serve API
 
