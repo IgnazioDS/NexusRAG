@@ -18,6 +18,7 @@ from nexusrag.ingestion.chunking import (
 from nexusrag.ingestion.embeddings import embed_text
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.costs.metering import estimate_tokens, record_cost_event
+from nexusrag.services.telemetry import record_segment_timing, set_gauge
 
 
 logger = logging.getLogger(__name__)
@@ -70,10 +71,17 @@ async def _ingest_with_session(
     job_id: str | None,
 ) -> int:
     # Mark processing early so operators can see progress on long ingestions.
+    started = _utc_now()
+    queue_wait_ms: float | None = None
+    if doc.queued_at is not None:
+        queue_wait_ms = max(0.0, (started - doc.queued_at).total_seconds() * 1000.0)
+        # Publish queue wait gauges for ingestion backlog visibility.
+        set_gauge("ingest.queue_wait_ms.latest", queue_wait_ms)
+        record_segment_timing(route_class="ingest", segment="queue_wait", latency_ms=queue_wait_ms)
     doc.status = "processing"
     doc.error_message = None
     doc.failure_reason = None
-    doc.processing_started_at = _utc_now()
+    doc.processing_started_at = started
     doc.completed_at = None
     if job_id:
         # Persist the job id so operators can trace worker activity.
@@ -117,7 +125,12 @@ async def _ingest_with_session(
     doc.status = "succeeded"
     doc.error_message = None
     doc.failure_reason = None
-    doc.completed_at = _utc_now()
+    completed = _utc_now()
+    doc.completed_at = completed
+    processing_duration_ms = max(0.0, (completed - started).total_seconds() * 1000.0)
+    # Publish processing duration gauges for worker saturation diagnostics.
+    set_gauge("ingest.processing_duration_ms.latest", processing_duration_ms)
+    record_segment_timing(route_class="ingest", segment="processing_duration", latency_ms=processing_duration_ms)
     if is_reindex:
         # Use UTC timestamps to keep status fields deterministic across hosts.
         doc.last_reindexed_at = _utc_now()

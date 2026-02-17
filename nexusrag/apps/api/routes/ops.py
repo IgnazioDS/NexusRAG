@@ -27,6 +27,7 @@ from nexusrag.services.backup import (
     run_restore_drill,
 )
 from nexusrag.persistence.db import SessionLocal
+from nexusrag.persistence.db import pool_stats
 from nexusrag.services.failover import (
     FailoverTransitionResult,
     evaluate_readiness,
@@ -44,6 +45,7 @@ from nexusrag.services.telemetry import (
     external_latency_by_integration,
     gauges_snapshot,
     p95_latency,
+    request_segment_latency_by_class,
     request_latency_by_class,
     stream_duration_stats,
 )
@@ -497,6 +499,15 @@ async def ops_metrics(
             "nexusrag_failover_requests_total_rolled_back": metrics_counters.get(
                 "failover_requests_total.rolled_back", 0
             ),
+            "nexusrag_sla_warn_total": metrics_counters.get("sla_warn_total", 0),
+            "nexusrag_sla_degrade_total": metrics_counters.get("sla_degrade_total", 0),
+            "nexusrag_sla_shed_total": metrics_counters.get("sla_shed_total", 0),
+            "nexusrag_cost_warn_total": metrics_counters.get("cost_warn_total", 0),
+            "nexusrag_cost_degrade_total": metrics_counters.get("cost_degrade_total", 0),
+            "nexusrag_cost_capped_total": metrics_counters.get("cost_capped_total", 0),
+            "nexusrag_sse_streams_disconnected": metrics_counters.get("sse_streams_disconnected", 0),
+            "nexusrag_external_retries_total": metrics_counters.get("external_retries_total", 0),
+            "nexusrag_circuit_breaker_open_total": metrics_counters.get("circuit_breaker_open_total", 0),
         }
     )
     payload["gauges"].update(
@@ -507,8 +518,10 @@ async def ops_metrics(
     # Include all telemetry gauges so region-specific failover gauges are visible.
     payload["telemetry_gauges"] = gauges_snapshot()
     payload["latency_ms"] = request_latency_by_class(3600)
+    payload["segment_latency_ms"] = request_segment_latency_by_class(3600)
     payload["external_call_latency_ms"] = external_latency_by_integration(3600)
     payload["sse_stream_duration_ms"] = stream_duration_stats()
+    payload["db_pool"] = pool_stats()
     payload["circuit_breaker_state"] = {
         "retrieval.aws_bedrock": await get_circuit_breaker_state("retrieval.aws_bedrock"),
         "retrieval.gcp_vertex": await get_circuit_breaker_state("retrieval.gcp_vertex"),
@@ -580,6 +593,11 @@ async def ops_slo(
             "documents_text": p95_latency(300, path_prefix="/v1/documents/text"),
         },
         "error_budget": {"remaining_pct": remaining_pct, "burn_rate_5m": burn_rate_5m},
+        "perf": {
+            "route_latency_ms": request_latency_by_class(300),
+            "segment_latency_ms": request_segment_latency_by_class(300),
+            "db_pool": pool_stats(),
+        },
         "status": status,
     }
 

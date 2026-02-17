@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Callable
 
 from langgraph.graph import END, StateGraph
@@ -25,11 +26,15 @@ def build_graph(
     graph = StateGraph(AgentState)
 
     async def load_history(state: AgentState) -> dict:
+        started = time.monotonic()
         messages = await list_messages(session, state["session_id"])
         history = [{"role": msg.role, "content": msg.content} for msg in messages]
-        return {"history": history}
+        timings = dict(state.get("timings_ms") or {})
+        timings["history_load"] = (time.monotonic() - started) * 1000.0
+        return {"history": history, "timings_ms": timings}
 
     async def retrieve(state: AgentState) -> dict:
+        started = time.monotonic()
         retrieved = await retriever.retrieve(
             state["tenant_id"],
             state["corpus_id"],
@@ -48,9 +53,12 @@ def build_graph(
             }
             for item in retrieved
         ]
-        return {"retrieved": retrieved, "citations": citations}
+        timings = dict(state.get("timings_ms") or {})
+        timings["retrieval"] = (time.monotonic() - started) * 1000.0
+        return {"retrieved": retrieved, "citations": citations, "timings_ms": timings}
 
     async def generate(state: AgentState) -> dict:
+        started = time.monotonic()
         messages = build_messages(state["history"], state["retrieved"], state["user_message"])
         answer_parts: list[str] = []
         token_count = 0
@@ -67,9 +75,12 @@ def build_graph(
                 answer_parts.append(delta)
 
         await asyncio.to_thread(run_stream)
-        return {"answer": "".join(answer_parts)}
+        timings = dict(state.get("timings_ms") or {})
+        timings["generation"] = (time.monotonic() - started) * 1000.0
+        return {"answer": "".join(answer_parts), "timings_ms": timings}
 
     async def save_checkpoint(state: AgentState) -> dict:
+        started = time.monotonic()
         snapshot = {
             "session_id": state["session_id"],
             "tenant_id": state["tenant_id"],
@@ -79,7 +90,9 @@ def build_graph(
             "answer": state.get("answer"),
             "citations": state.get("citations", []),
         }
-        return {"checkpoint_state": snapshot}
+        timings = dict(state.get("timings_ms") or {})
+        timings["checkpoint_snapshot"] = (time.monotonic() - started) * 1000.0
+        return {"checkpoint_state": snapshot, "timings_ms": timings}
 
     graph.add_node("load_history", load_history)
     graph.add_node("retrieve", retrieve)

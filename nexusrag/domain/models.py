@@ -1160,6 +1160,9 @@ class Chunk(Base):
 
 
 Index("ix_chunks_corpus_id", Chunk.corpus_id)
+Index("ix_documents_status_queued_at", Document.status, Document.queued_at.desc())
+Index("ix_documents_status_processing_started_at", Document.status, Document.processing_started_at.desc())
+Index("ix_documents_status_completed_at", Document.status, Document.completed_at.desc())
 Index(
     "ix_audit_events_tenant_occurred_at",
     AuditEvent.tenant_id,

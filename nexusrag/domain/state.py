@@ -13,3 +13,5 @@ class AgentState(TypedDict):
     answer: Optional[str]
     citations: list[dict[str, Any]]
     checkpoint_state: Optional[dict[str, Any]]
+    # Carry deterministic graph segment timings for perf instrumentation.
+    timings_ms: dict[str, float]

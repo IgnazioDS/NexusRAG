@@ -62,7 +62,7 @@ from nexusrag.services.resilience import deterministic_canary, get_run_bulkhead
 from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_switch
 from nexusrag.services.sla.evaluator import evaluate_tenant_sla
 from nexusrag.services.sla.signals import record_sla_observation
-from nexusrag.services.telemetry import increment_counter, record_stream_duration
+from nexusrag.services.telemetry import increment_counter, record_segment_timing, record_stream_duration
 from nexusrag.apps.api.deps import (
     Principal,
     get_db,
@@ -446,6 +446,7 @@ async def run(
         window_end=sla_decision.window_end,
     )
     if sla_decision.enforcement_decision == "warn":
+        increment_counter("sla_warn_total")
         await record_event(
             session=db,
             tenant_id=principal.tenant_id,
@@ -462,6 +463,7 @@ async def run(
             best_effort=True,
         )
     if sla_decision.enforcement_decision == "shed":
+        increment_counter("sla_shed_total")
         await record_event(
             session=db,
             tenant_id=principal.tenant_id,
@@ -550,6 +552,7 @@ async def run(
     max_output_tokens = None
     effective_retrieval_provider = resolved_provider
     if sla_decision.enforcement_decision == "degrade" and sla_decision.degrade_actions is not None:
+        increment_counter("sla_degrade_total")
         # Apply SLA-driven mitigation controls before budget enforcement and graph execution.
         effective_audio = not sla_decision.degrade_actions.disable_audio and effective_audio
         effective_top_k = max(1, min(effective_top_k, sla_decision.degrade_actions.top_k_floor))
@@ -606,6 +609,7 @@ async def run(
             raise_on_block=False,
         )
         if budget_decision.degrade_actions:
+            increment_counter("cost_degrade_total")
             # Apply degradation strategies before running expensive operations.
             if budget_decision.degrade_actions.top_k:
                 effective_top_k = max(1, min(payload.top_k, budget_decision.degrade_actions.top_k))
@@ -617,7 +621,10 @@ async def run(
                 # Prefer local retrieval during degraded mode to reduce external spend.
                 retriever.set_forced_provider("local_pgvector")
                 effective_retrieval_provider = "local_pgvector"
+        if budget_decision.status == "warn":
+            increment_counter("cost_warn_total")
         if not budget_decision.allowed:
+            increment_counter("cost_capped_total")
             async def capped_stream() -> AsyncGenerator[str, None]:
                 seq = 0
 
@@ -701,10 +708,17 @@ async def run(
             _release_and_raise(_feature_disabled("TTS is not enabled for this tenant yet"))
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     # TX #1: persist session + user message so history is durable before streaming.
+    tx1_started = time.monotonic()
     try:
         await sessions_repo.upsert_session(db, payload.session_id, principal.tenant_id)
         await messages_repo.add_message(db, payload.session_id, "user", payload.message)
         await db.commit()
+        if settings.instrumentation_detailed_timers:
+            record_segment_timing(
+                route_class="run",
+                segment="persistence_pre_stream",
+                latency_ms=(time.monotonic() - tx1_started) * 1000.0,
+            )
     except Exception as exc:
         # Ensure failed transactions do not poison the session state.
         await db.rollback()
@@ -836,6 +850,7 @@ async def run(
                 "answer": None,
                 "citations": [],
                 "checkpoint_state": None,
+                "timings_ms": {},
             }
             final_state = await run_graph(
                 retriever=retriever,
@@ -860,8 +875,10 @@ async def run(
     async def event_stream() -> AsyncGenerator[str, None]:
         seq = 0
         heartbeat_interval = max(1, int(settings.run_sse_heartbeat_s))
+        flush_interval_s = max(0.0, int(settings.sse_flush_interval_ms) / 1000.0)
         last_emit = time.monotonic()
         stream_start = time.monotonic()
+        first_token_emitted = False
         logical_status_code = 200
 
         def next_seq() -> int:
@@ -930,6 +947,7 @@ async def run(
                     # Stop streaming immediately when the client disconnects.
                     disconnect_event.set()
                     cancel_event.set()
+                    increment_counter("sse_streams_disconnected")
                     break
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=0.1)
@@ -945,16 +963,28 @@ async def run(
                             event_name="heartbeat",
                             event_id=seq,
                         )
+                        if flush_interval_s > 0:
+                            await asyncio.sleep(flush_interval_s)
                         last_emit = now
                     continue
                 if item.get("kind") == "event":
                     # Send debug events as fully-formed SSE payloads.
                     yield emit(item["payload"])
+                    if flush_interval_s > 0:
+                        await asyncio.sleep(flush_interval_s)
                     continue
                 # Stream each delta as its own SSE message to avoid buffering output.
                 delta = item.get("delta")
                 if not isinstance(delta, str):
                     continue
+                if not first_token_emitted:
+                    first_token_emitted = True
+                    if settings.instrumentation_detailed_timers:
+                        record_segment_timing(
+                            route_class="run",
+                            segment="sse_first_token",
+                            latency_ms=(time.monotonic() - stream_start) * 1000.0,
+                        )
                 yield emit(
                     _wrap_payload(
                         "token.delta",
@@ -963,6 +993,8 @@ async def run(
                         {"delta": delta},
                     )
                 )
+                if flush_interval_s > 0:
+                    await asyncio.sleep(flush_interval_s)
 
             if disconnect_event.is_set():
                 # Do not emit final/error events after a client disconnects.
@@ -990,12 +1022,36 @@ async def run(
             answer = final_state.get("answer") or ""
             citations = final_state.get("citations", [])
             checkpoint_state = final_state.get("checkpoint_state") or {}
+            graph_timings = final_state.get("timings_ms") or {}
+            if settings.instrumentation_detailed_timers:
+                segment_map = {
+                    "history_load": "persistence_history_read",
+                    "retrieval": "retrieval",
+                    "generation": "generation_stream",
+                    "checkpoint_snapshot": "checkpoint_snapshot",
+                }
+                for source_key, segment_name in segment_map.items():
+                    timing_value = graph_timings.get(source_key)
+                    if timing_value is None:
+                        continue
+                    record_segment_timing(
+                        route_class="run",
+                        segment=segment_name,
+                        latency_ms=float(timing_value),
+                    )
 
             try:
                 # TX #2: persist assistant + checkpoint only after a successful run.
+                tx2_started = time.monotonic()
                 await messages_repo.add_message(db, payload.session_id, "assistant", answer)
                 await checkpoints_repo.add_checkpoint(db, payload.session_id, checkpoint_state)
                 await db.commit()
+                if settings.instrumentation_detailed_timers:
+                    record_segment_timing(
+                        route_class="run",
+                        segment="persistence_post_stream",
+                        latency_ms=(time.monotonic() - tx2_started) * 1000.0,
+                    )
             except Exception as exc:
                 # Roll back to avoid partial writes if post-run persistence fails.
                 await db.rollback()
@@ -1041,6 +1097,7 @@ async def run(
                 # Skip TTS if the client disconnects after the text response.
                 return
             try:
+                tts_started = time.monotonic()
                 tts = get_tts_provider()
                 audio_bytes = await tts.synthesize(answer)
                 audio_id, _path, audio_url = await save_audio(
@@ -1064,6 +1121,12 @@ async def run(
                     )
                 except Exception as exc:  # noqa: BLE001 - best-effort metering should not fail runs
                     logger.warning("cost_metering_tts_failed request_id=%s", request_id, exc_info=exc)
+                if settings.instrumentation_detailed_timers:
+                    record_segment_timing(
+                        route_class="run",
+                        segment="tts",
+                        latency_ms=(time.monotonic() - tts_started) * 1000.0,
+                    )
                 yield emit(
                     _wrap_payload(
                         "audio.ready",
@@ -1087,7 +1150,14 @@ async def run(
             if not task.done():
                 task.cancel()
             increment_counter("sse_streams_completed")
-            record_stream_duration((time.monotonic() - stream_start) * 1000.0)
+            stream_duration_ms = (time.monotonic() - stream_start) * 1000.0
+            record_stream_duration(stream_duration_ms)
+            if settings.instrumentation_detailed_timers:
+                record_segment_timing(
+                    route_class="run",
+                    segment="sse_completion",
+                    latency_ms=stream_duration_ms,
+                )
             await _record_sla_observation_safe(
                 session=db,
                 tenant_id=principal.tenant_id,

@@ -1,0 +1,5 @@
+[
+  {"name": "standard-a", "tier": "standard", "plan_id": "enterprise"},
+  {"name": "pro-a", "tier": "pro", "plan_id": "enterprise"},
+  {"name": "enterprise-a", "tier": "enterprise", "plan_id": "enterprise"}
+]

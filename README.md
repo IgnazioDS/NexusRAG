@@ -1604,6 +1604,55 @@ connectRunStream({
 });
 ```
 
+## Performance Engineering
+
+Phase 35 adds a reproducible performance suite under `tests/perf/` with deterministic and integration execution modes.
+
+Deterministic perf mode:
+
+- `PERF_MODE_ENABLED=true`
+- `PERF_FAKE_PROVIDER_MODE=true`
+- `LLM_PROVIDER=fake`
+- `INGEST_EXECUTION_MODE=inline`
+
+Integration perf mode:
+
+- uses real runtime components (API + Redis + Postgres + worker)
+- keeps workload shapes deterministic while exercising full queue/worker paths
+
+Quickstart:
+
+```
+# deterministic gates + scenario artifacts
+docker compose exec api make perf-test
+
+# markdown summary from latest JSON artifacts
+docker compose exec api make perf-report
+
+# short soak (15 minutes)
+docker compose exec api python tests/perf/scenarios/run_mixed.py --duration 900 --deterministic
+```
+
+Perf artifacts:
+
+- JSON/markdown reports: `tests/perf/reports/`
+- gate output: `tests/perf/reports/perf-gates-latest.json`
+- rollup summary: `tests/perf/reports/perf-summary-latest.md`
+
+Interpreting reports:
+
+- `route_class.p95_ms` and `route_class.p99_ms` capture end-to-end latency.
+- `sse.first_token_p95_ms` tracks time-to-first-token for `/v1/run`.
+- `extra.ingest_queue_wait_p95_ms` tracks ingestion backlog pressure.
+- `extra.noisy_neighbor_success_ratio` captures multi-tenant fairness.
+
+Capacity model:
+
+- `python3 scripts/capacity_estimate.py --headroom 0.30`
+- Outputs:
+  - `docs/capacity-model.md`
+  - `tests/perf/reports/capacity-model.json`
+
 ## Notes
 
 - `/run` emits `request.accepted`, `token.delta`, `message.final`, optional `audio.*`, and `done` events with a monotonic `seq`.
@@ -1711,6 +1760,8 @@ make up
 make migrate
 make seed
 make test
+make perf-test
+make perf-report
 make sdk-generate
 ```
 

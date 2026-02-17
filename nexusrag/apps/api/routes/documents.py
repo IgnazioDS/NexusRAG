@@ -797,7 +797,8 @@ async def upload_document(
     await store_idempotency_response(
         db=db,
         context=idempotency_ctx,
-        response_status=response.status_code,
+        # Persist explicit accepted status; FastAPI may not hydrate response.status_code yet.
+        response_status=202,
         response_body=jsonable_encoder(payload),
     )
     await _record_sla_observation_safe(
@@ -805,7 +806,7 @@ async def upload_document(
         tenant_id=tenant_id,
         route_class="ingest",
         latency_ms=(time.monotonic() - route_started) * 1000.0,
-        status_code=response.status_code,
+        status_code=202,
     )
     return payload
 
@@ -1094,7 +1095,8 @@ async def ingest_text_document(
     await store_idempotency_response(
         db=db,
         context=idempotency_ctx,
-        response_status=response.status_code,
+        # Persist explicit accepted status; FastAPI may not hydrate response.status_code yet.
+        response_status=202,
         response_body=jsonable_encoder(payload_body),
     )
     await _record_sla_observation_safe(
@@ -1102,7 +1104,7 @@ async def ingest_text_document(
         tenant_id=tenant_id,
         route_class="ingest",
         latency_ms=(time.monotonic() - route_started) * 1000.0,
-        status_code=response.status_code,
+        status_code=202,
     )
     return payload_body
 

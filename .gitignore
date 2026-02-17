@@ -23,6 +23,8 @@ var/audio/
 # Local document storage artifacts
 var/documents/
 governance_artifacts/
+tests/perf/reports/*
+!tests/perf/reports/.gitkeep
 
 # Frontend SDK artifacts
 sdk/frontend/node_modules/

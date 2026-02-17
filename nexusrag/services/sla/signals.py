@@ -8,6 +8,7 @@ import math
 from statistics import mean
 from typing import Deque
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,7 +71,7 @@ async def record_sla_observation(
     tenant_id: str,
     route_class: str,
     latency_ms: float,
-    status_code: int,
+    status_code: int | None,
     saturation_pct: float | None = None,
     now: datetime | None = None,
 ) -> list[SlaMeasurement]:
@@ -90,7 +91,8 @@ async def record_sla_observation(
 
         latencies = [sample[1] for sample in sample_queue]
         request_count = len(sample_queue)
-        error_count = sum(1 for sample in sample_queue if sample[2] >= 500)
+        # Ignore unknown status codes so telemetry ingestion stays non-blocking.
+        error_count = sum(1 for sample in sample_queue if sample[2] is not None and sample[2] >= 500)
         availability_pct = ((request_count - error_count) / request_count * 100.0) if request_count else None
         saturation_values = [sample[3] for sample in sample_queue if sample[3] is not None]
         saturation_avg = mean(saturation_values) if saturation_values else None
@@ -101,35 +103,29 @@ async def record_sla_observation(
             window_seconds=window_seconds,
             window_end=window_end,
         )
-        row = await session.get(SlaMeasurement, measurement_id)
-        if row is None:
-            row = SlaMeasurement(
-                id=measurement_id,
-                tenant_id=tenant_id,
-                route_class=route_class,
-                window_start=window_start,
-                window_end=window_end,
-                request_count=request_count,
-                error_count=error_count,
-                p50_ms=_percentile(latencies, 0.50),
-                p95_ms=_percentile(latencies, 0.95),
-                p99_ms=_percentile(latencies, 0.99),
-                availability_pct=availability_pct,
-                saturation_pct=saturation_avg,
-                computed_at=current,
-            )
-            session.add(row)
-        else:
-            row.window_start = window_start
-            row.window_end = window_end
-            row.request_count = request_count
-            row.error_count = error_count
-            row.p50_ms = _percentile(latencies, 0.50)
-            row.p95_ms = _percentile(latencies, 0.95)
-            row.p99_ms = _percentile(latencies, 0.99)
-            row.availability_pct = availability_pct
-            row.saturation_pct = saturation_avg
-            row.computed_at = current
+        # Upsert per-bucket rows to keep writes idempotent under concurrent requests.
+        values = {
+            "id": measurement_id,
+            "tenant_id": tenant_id,
+            "route_class": route_class,
+            "window_start": window_start,
+            "window_end": window_end,
+            "request_count": request_count,
+            "error_count": error_count,
+            "p50_ms": _percentile(latencies, 0.50),
+            "p95_ms": _percentile(latencies, 0.95),
+            "p99_ms": _percentile(latencies, 0.99),
+            "availability_pct": availability_pct,
+            "saturation_pct": saturation_avg,
+            "computed_at": current,
+        }
+        update_values = {key: value for key, value in values.items() if key != "id"}
+        await session.execute(
+            pg_insert(SlaMeasurement)
+            .values(**values)
+            .on_conflict_do_update(index_elements=["id"], set_=update_values)
+        )
+        row = SlaMeasurement(**values)
         persisted.append(row)
     return persisted
 

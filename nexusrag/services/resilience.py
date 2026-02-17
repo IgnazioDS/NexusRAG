@@ -12,6 +12,7 @@ from redis.asyncio import Redis
 
 from nexusrag.core.config import get_settings
 from nexusrag.core.errors import IntegrationUnavailableError
+from nexusrag.services.telemetry import increment_counter, set_gauge
 
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,8 @@ async def retry_async(
         except Exception as exc:  # noqa: BLE001 - caller handles non-transient failures
             if attempt >= max(policy.max_attempts, 1) or not retryable(exc):
                 raise
+            # Track retry volume so operators can detect retry storms.
+            increment_counter("external_retries_total")
             jitter = random.uniform(0.5, 1.5)
             sleep_s = (policy.backoff_ms / 1000.0) * (2 ** (attempt - 1)) * jitter
             await asyncio.sleep(sleep_s)
@@ -174,6 +177,11 @@ class CircuitBreaker:
         # Emit logs on state transitions for operator visibility.
         if state.state != target:
             logger.warning("circuit_breaker_transition name=%s from=%s to=%s", self._name, state.state, target)
+            increment_counter(f"circuit_breaker_transition_total.{self._name}.{target}")
+            if target == "open":
+                increment_counter("circuit_breaker_open_total")
+            state_value = {"closed": 0.0, "half_open": 0.5, "open": 1.0}.get(target, 0.0)
+            set_gauge(f"circuit_breaker_state.{self._name}", state_value)
             if self._on_transition is not None:
                 await self._on_transition(self._name, target)
         return CircuitBreakerState(target, 0, self._time() if target == "open" else None, 0)
@@ -266,7 +274,11 @@ def get_run_bulkhead() -> Bulkhead:
     # Initialize the /run concurrency bulkhead from settings.
     global _run_bulkhead
     if _run_bulkhead is None:
-        _run_bulkhead = Bulkhead("run", get_settings().run_max_concurrency)
+        settings = get_settings()
+        _run_bulkhead = Bulkhead(
+            "run",
+            settings.run_bulkhead_max_concurrency or settings.run_max_concurrency,
+        )
     return _run_bulkhead
 
 
@@ -274,7 +286,11 @@ def get_ingest_bulkhead() -> Bulkhead:
     # Initialize ingestion worker bulkhead from settings.
     global _ingest_bulkhead
     if _ingest_bulkhead is None:
-        _ingest_bulkhead = Bulkhead("ingest", get_settings().ingest_max_concurrency)
+        settings = get_settings()
+        _ingest_bulkhead = Bulkhead(
+            "ingest",
+            settings.ingest_bulkhead_max_concurrency or settings.ingest_max_concurrency,
+        )
     return _ingest_bulkhead
 
 

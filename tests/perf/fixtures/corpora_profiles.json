@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default",
+    "provider_config_json": {
+      "retrieval": {
+        "provider": "local_pgvector",
+        "top_k_default": 5
+      }
+    }
+  }
+]

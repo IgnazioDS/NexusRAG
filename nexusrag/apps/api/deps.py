@@ -19,6 +19,7 @@ from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.apps.api.rate_limit import enforce_rate_limit, route_class_for_request
 from nexusrag.services.failover import enforce_write_gate
 from nexusrag.services.quota import enforce_quota
+from nexusrag.services.telemetry import record_segment_timing
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -527,49 +528,58 @@ def require_role(minimum_role: str):
         principal: Principal = Depends(get_current_principal),
         db: AsyncSession = Depends(get_db),
     ) -> Principal:
-        if not role_allows(role=principal.role, minimum_role=minimum_role):
-            # Log RBAC denials before raising a 403 response.
+        started = time.monotonic()
+        route_class, cost = route_class_for_request(request)
+        try:
+            if not role_allows(role=principal.role, minimum_role=minimum_role):
+                # Log RBAC denials before raising a 403 response.
+                request_ctx = get_request_context(request)
+                await record_event(
+                    session=db,
+                    tenant_id=principal.tenant_id,
+                    actor_type="api_key",
+                    actor_id=principal.api_key_id,
+                    actor_role=principal.role,
+                    event_type="rbac.forbidden",
+                    outcome="failure",
+                    resource_type="rbac",
+                    request_id=request_ctx["request_id"],
+                    ip_address=request_ctx["ip_address"],
+                    user_agent=request_ctx["user_agent"],
+                    metadata={**_request_metadata(request), "required_role": minimum_role},
+                    error_code="AUTH_FORBIDDEN",
+                    commit=True,
+                    best_effort=True,
+                )
+                raise _forbidden_error("Insufficient role for this operation")
+            # Block write-like operations when failover controls mark this region non-writable.
             request_ctx = get_request_context(request)
-            await record_event(
+            await enforce_write_gate(
                 session=db,
+                route_class=route_class,
                 tenant_id=principal.tenant_id,
-                actor_type="api_key",
                 actor_id=principal.api_key_id,
                 actor_role=principal.role,
-                event_type="rbac.forbidden",
-                outcome="failure",
-                resource_type="rbac",
                 request_id=request_ctx["request_id"],
-                ip_address=request_ctx["ip_address"],
-                user_agent=request_ctx["user_agent"],
-                metadata={**_request_metadata(request), "required_role": minimum_role},
-                error_code="AUTH_FORBIDDEN",
-                commit=True,
-                best_effort=True,
+                path=request.url.path,
             )
-            raise _forbidden_error("Insufficient role for this operation")
-        # Block write-like operations when failover controls mark this region non-writable.
-        route_class, cost = route_class_for_request(request)
-        request_ctx = get_request_context(request)
-        await enforce_write_gate(
-            session=db,
-            route_class=route_class,
-            tenant_id=principal.tenant_id,
-            actor_id=principal.api_key_id,
-            actor_role=principal.role,
-            request_id=request_ctx["request_id"],
-            path=request.url.path,
-        )
-        # Apply rate limits after auth + RBAC checks to protect capacity.
-        await enforce_rate_limit(request=request, response=response, principal=principal, db=db)
-        # Apply quota checks after rate limiting to avoid counting throttled requests.
-        await enforce_quota(
-            request=request,
-            response=response,
-            principal=principal,
-            db=db,
-            estimated_cost=cost,
-        )
-        return principal
+            # Apply rate limits after auth + RBAC checks to protect capacity.
+            await enforce_rate_limit(request=request, response=response, principal=principal, db=db)
+            # Apply quota checks after rate limiting to avoid counting throttled requests.
+            await enforce_quota(
+                request=request,
+                response=response,
+                principal=principal,
+                db=db,
+                estimated_cost=cost,
+            )
+            return principal
+        finally:
+            if get_settings().instrumentation_detailed_timers:
+                record_segment_timing(
+                    route_class=route_class,
+                    segment="auth_rbac",
+                    latency_ms=(time.monotonic() - started) * 1000.0,
+                )
 
     return _dependency

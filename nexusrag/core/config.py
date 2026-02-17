@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     cost_estimator_token_chars_ratio: float = 4.0
     # Default window for cost timeseries endpoints.
     cost_timeseries_default_days: int = 30
+    # Toggle performance harness and deterministic perf gates.
+    perf_mode_enabled: bool = True
+    # Force fake-provider mode during perf runs for reproducibility.
+    perf_fake_provider_mode: bool = True
+    # Gate threshold for /v1/run p95 latency in deterministic mode.
+    perf_run_target_p95_ms: int = 1800
+    # Gate threshold for aggregate workload error-rate.
+    perf_max_error_rate: float = 0.02
+    # Default soak duration for perf scripts.
+    perf_soak_duration_min: int = 15
+    # Output directory for perf report artifacts.
+    perf_report_dir: str = "tests/perf/reports"
     # Toggle SLA policy evaluation and runtime enforcement features.
     sla_engine_enabled: bool = True
     # Default enforcement mode used when a tenant policy is missing/invalid.
@@ -152,6 +164,20 @@ class Settings(BaseSettings):
     autoscaling_hysteresis_pct: int = 10
     # Executor backend for autoscaling apply operations.
     autoscaling_executor: str = "noop"
+    # Enable request-level segment timings for perf diagnostics.
+    instrumentation_detailed_timers: bool = True
+    # SQLAlchemy async pool size for API runtime database usage.
+    api_db_pool_size: int = 20
+    # SQLAlchemy overflow connections allowed above pool size.
+    api_db_max_overflow: int = 10
+    # Postgres statement timeout to bound slow query impact.
+    api_db_statement_timeout_ms: int = 15000
+    # Explicit /run bulkhead limit (falls back to run_max_concurrency).
+    run_bulkhead_max_concurrency: int | None = None
+    # Explicit ingest bulkhead limit (falls back to ingest_max_concurrency).
+    ingest_bulkhead_max_concurrency: int | None = None
+    # Minimum flush cadence for SSE stream frames.
+    sse_flush_interval_ms: int = 20
     # Centralize external call timeouts for integrations (ms).
     ext_call_timeout_ms: int = 8000
     # Retry transient integration failures for a bounded number of attempts.

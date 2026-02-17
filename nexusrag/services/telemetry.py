@@ -24,9 +24,19 @@ class ExternalCallSample:
     success: bool
 
 
+@dataclass(frozen=True)
+class SegmentSample:
+    # Track fine-grained segment timing for perf triage and SLO diagnostics.
+    ts: float
+    route_class: str
+    segment: str
+    latency_ms: float
+
+
 _request_samples: Deque[RequestSample] = deque(maxlen=20000)
 _stream_samples: Deque[float] = deque(maxlen=5000)
 _external_samples: Deque[ExternalCallSample] = deque(maxlen=10000)
+_segment_samples: Deque[SegmentSample] = deque(maxlen=40000)
 _counters: dict[str, int] = defaultdict(int)
 _gauges: dict[str, float] = defaultdict(float)
 
@@ -57,6 +67,18 @@ def record_external_call(*, integration: str, latency_ms: float, success: bool) 
             integration=integration,
             latency_ms=latency_ms,
             success=success,
+        )
+    )
+
+
+def record_segment_timing(*, route_class: str, segment: str, latency_ms: float) -> None:
+    # Store segment-level timings as standalone samples for windowed percentile queries.
+    _segment_samples.append(
+        SegmentSample(
+            ts=time.time(),
+            route_class=route_class,
+            segment=segment,
+            latency_ms=latency_ms,
         )
     )
 
@@ -113,6 +135,29 @@ def request_latency_by_class(window_s: int) -> dict[str, dict[str, float | None]
         result.setdefault(route_class, {})[status_family] = {
             "p50": latencies[p50_idx],
             "p95": latencies[p95_idx],
+            "max": latencies[-1],
+        }
+    return result
+
+
+def request_segment_latency_by_class(window_s: int) -> dict[str, dict[str, dict[str, float | None]]]:
+    # Aggregate p50/p95/p99/max latencies for route-class segments.
+    cutoff = time.time() - window_s
+    grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for sample in _segment_samples:
+        if sample.ts < cutoff:
+            continue
+        grouped[(sample.route_class, sample.segment)].append(sample.latency_ms)
+    result: dict[str, dict[str, dict[str, float | None]]] = {}
+    for (route_class, segment), latencies in grouped.items():
+        latencies.sort()
+        p50_idx = max(0, math.ceil(0.5 * len(latencies)) - 1)
+        p95_idx = max(0, math.ceil(0.95 * len(latencies)) - 1)
+        p99_idx = max(0, math.ceil(0.99 * len(latencies)) - 1)
+        result.setdefault(route_class, {})[segment] = {
+            "p50": latencies[p50_idx],
+            "p95": latencies[p95_idx],
+            "p99": latencies[p99_idx],
             "max": latencies[-1],
         }
     return result

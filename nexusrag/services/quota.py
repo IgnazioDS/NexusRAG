@@ -7,6 +7,7 @@ import random
 from typing import Any, Callable
 
 from fastapi import HTTPException, Request, Response, status
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -512,7 +513,7 @@ async def _get_or_create_counter(
     period_type: str,
     period_start: datetime,
 ) -> UsageCounter:
-    # Lock usage counters to ensure atomic increments.
+    # Acquire a row lock when present so concurrent updates stay serialized.
     stmt = (
         select(UsageCounter)
         .where(
@@ -525,13 +526,21 @@ async def _get_or_create_counter(
     result = await session.execute(stmt)
     counter = result.scalar_one_or_none()
     if counter is None:
-        counter = UsageCounter(
-            tenant_id=tenant_id,
-            period_type=period_type,
-            period_start=period_start,
-            requests_count=0,
+        # Use an idempotent upsert path to avoid duplicate-key races under bursty load.
+        await session.execute(
+            pg_insert(UsageCounter)
+            .values(
+                tenant_id=tenant_id,
+                period_type=period_type,
+                period_start=period_start,
+                requests_count=0,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["tenant_id", "period_type", "period_start"]
+            )
         )
-        session.add(counter)
+        result = await session.execute(stmt)
+        counter = result.scalar_one()
     return counter
 
 

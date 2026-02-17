@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.6.0 - 2026-02-17
+
+- Added reproducible load/soak harness, deterministic perf scenarios, and CI perf gates.
+- Added capacity model tooling and sizing guidance for standard/pro/enterprise tiers.
+- Added noisy-neighbor fairness checks and perf report artifacts.
+- Tuned runtime performance defaults, DB pooling controls, and detailed timing instrumentation.
+
 ## 2.5.0 - 2026-02-17
 
 - Added SLA policy engine with tenant assignments and incident tracking.

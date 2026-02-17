@@ -18,6 +18,7 @@ from nexusrag.services.ingest.ingestion import (
 )
 from nexusrag.core.errors import ServiceBusyError
 from nexusrag.services.resilience import get_ingest_bulkhead
+from nexusrag.services.telemetry import increment_counter, record_segment_timing, set_gauge
 
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,7 @@ async def get_worker_heartbeat() -> datetime | None:
 
 async def enqueue_ingestion_job(payload: IngestionJobPayload) -> str:
     # Generate a stable job id so API callers can trace ingestion progress.
+    started = _utc_now()
     job_id = payload.request_id
     settings = get_settings()
     if settings.ingest_execution_mode.lower() == "inline":
@@ -133,6 +135,8 @@ async def enqueue_ingestion_job(payload: IngestionJobPayload) -> str:
             await _run_inline_job(payload, job_id=job_id, max_retries=settings.ingest_max_retries)
         finally:
             lease.release()
+        enqueue_delay_ms = max(0.0, (_utc_now() - started).total_seconds() * 1000.0)
+        record_segment_timing(route_class="ingest", segment="enqueue_delay", latency_ms=enqueue_delay_ms)
         return job_id
 
     redis = await get_redis_pool()
@@ -142,6 +146,12 @@ async def enqueue_ingestion_job(payload: IngestionJobPayload) -> str:
         _job_id=job_id,
         _queue_name=settings.ingest_queue_name,
     )
+    enqueue_delay_ms = max(0.0, (_utc_now() - started).total_seconds() * 1000.0)
+    record_segment_timing(route_class="ingest", segment="enqueue_delay", latency_ms=enqueue_delay_ms)
+    increment_counter("ingest_enqueued_total")
+    queue_depth = await get_queue_depth()
+    if queue_depth is not None:
+        set_gauge("ingest.queue_depth", float(queue_depth))
     # When a job id already exists, arq returns None; keep tracing with the same id.
     return job.job_id if job else job_id
 
