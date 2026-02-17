@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -62,6 +63,8 @@ from nexusrag.services.idempotency import (
     store_idempotency_response,
 )
 from nexusrag.services.rollouts import resolve_kill_switch
+from nexusrag.services.sla.evaluator import evaluate_tenant_sla
+from nexusrag.services.sla.signals import record_sla_observation
 from nexusrag.services.telemetry import increment_counter
 from nexusrag.services.governance import (
     LEGAL_HOLD_SCOPE_DOCUMENT,
@@ -224,6 +227,127 @@ def _status_url(document_id: str, request: Request | None = None) -> str:
     # Provide a stable polling URL for queued ingestion requests.
     prefix = "/v1" if request is not None and is_versioned_request(request) else ""
     return f"{prefix}/documents/{document_id}"
+
+
+def _sla_headers(*, policy_id: str | None, status_value: str, decision: str, route_class: str, window_end: datetime | None) -> dict[str, str]:
+    # Emit stable SLA headers for ingestion and reindex admission decisions.
+    return {
+        "X-SLA-Status": status_value,
+        "X-SLA-Policy-Id": policy_id or "",
+        "X-SLA-Decision": decision,
+        "X-SLA-Route-Class": route_class,
+        "X-SLA-Window-End": window_end.isoformat() if window_end else "",
+    }
+
+
+async def _record_sla_observation_safe(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    route_class: str,
+    latency_ms: float,
+    status_code: int,
+) -> None:
+    # Persist ingestion SLA telemetry best-effort without blocking write paths.
+    if not get_settings().sla_engine_enabled:
+        return
+    try:
+        await record_sla_observation(
+            session=session,
+            tenant_id=tenant_id,
+            route_class=route_class,
+            latency_ms=latency_ms,
+            status_code=status_code,
+            saturation_pct=None,
+        )
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 - SLA telemetry is advisory
+        await session.rollback()
+        logger.warning("sla_observation_write_failed tenant=%s route_class=%s", tenant_id, route_class, exc_info=exc)
+
+
+async def _evaluate_sla_ingest(
+    *,
+    session: AsyncSession,
+    principal: Principal,
+    request: Request,
+    request_id: str,
+    route_class: str = "ingest",
+) -> dict[str, str]:
+    # Enforce tenant SLA admission decisions for ingest/reindex operations.
+    decision = await evaluate_tenant_sla(
+        session=session,
+        tenant_id=principal.tenant_id,
+        route_class=route_class,
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        request=request,
+        request_id=request_id,
+    )
+    headers = _sla_headers(
+        policy_id=decision.policy_id,
+        status_value=decision.status,
+        decision=decision.enforcement_decision,
+        route_class=route_class,
+        window_end=decision.window_end,
+    )
+    if decision.enforcement_decision == "shed":
+        await record_event(
+            session=session,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.shed",
+            outcome="failure",
+            resource_type=route_class,
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={"policy_id": decision.policy_id},
+            commit=True,
+            best_effort=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SLA_SHED_LOAD",
+                "message": "Request shed due to sustained SLA breach",
+            },
+            headers=headers,
+        )
+    if decision.enforcement_decision == "warn":
+        await record_event(
+            session=session,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.warned",
+            outcome="success",
+            resource_type=route_class,
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={"policy_id": decision.policy_id},
+            commit=True,
+            best_effort=True,
+        )
+    if decision.enforcement_decision == "degrade":
+        await record_event(
+            session=session,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.degraded",
+            outcome="success",
+            resource_type=route_class,
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={"policy_id": decision.policy_id},
+            commit=True,
+            best_effort=True,
+        )
+    return headers
 
 
 async def _resolve_cost_entitlements(
@@ -420,6 +544,7 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
+    route_started = time.monotonic()
     await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
     # Enforce tenant scoping to avoid cross-tenant corpus access.
@@ -511,8 +636,18 @@ async def upload_document(
         )
     text = _parse_text(file, body)
     _validate_text_payload(text)
-    # Apply budget guardrails before writing content to storage or queueing work.
     request_id = str(uuid4())
+    # Enforce SLA admission decisions before budget checks and enqueue work.
+    response.headers.update(
+        await _evaluate_sla_ingest(
+            session=db,
+            principal=principal,
+            request=request,
+            request_id=request_id,
+            route_class="ingest",
+        )
+    )
+    # Apply budget guardrails before writing content to storage or queueing work.
     cost_controls_enabled, cost_visibility_enabled = await _resolve_cost_entitlements(
         session=db,
         tenant_id=tenant_id,
@@ -665,6 +800,13 @@ async def upload_document(
         response_status=response.status_code,
         response_body=jsonable_encoder(payload),
     )
+    await _record_sla_observation_safe(
+        session=db,
+        tenant_id=tenant_id,
+        route_class="ingest",
+        latency_ms=(time.monotonic() - route_started) * 1000.0,
+        status_code=response.status_code,
+    )
     return payload
 
 
@@ -679,6 +821,7 @@ async def ingest_text_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
+    route_started = time.monotonic()
     await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
     _validate_text_payload(payload.text)
@@ -776,8 +919,18 @@ async def ingest_text_document(
         )
     document_id = payload.document_id or str(uuid4())
     chunk_size, chunk_overlap = _resolve_chunk_params(payload)
-    # Apply budget guardrails before storage writes and ingestion queueing.
     request_id = str(uuid4())
+    # Enforce SLA admission decisions before budget checks and enqueue work.
+    response.headers.update(
+        await _evaluate_sla_ingest(
+            session=db,
+            principal=principal,
+            request=request,
+            request_id=request_id,
+            route_class="ingest",
+        )
+    )
+    # Apply budget guardrails before storage writes and ingestion queueing.
     byte_count = len(payload.text.encode("utf-8"))
     cost_controls_enabled, cost_visibility_enabled = await _resolve_cost_entitlements(
         session=db,
@@ -944,6 +1097,13 @@ async def ingest_text_document(
         response_status=response.status_code,
         response_body=jsonable_encoder(payload_body),
     )
+    await _record_sla_observation_safe(
+        session=db,
+        tenant_id=tenant_id,
+        route_class="ingest",
+        latency_ms=(time.monotonic() - route_started) * 1000.0,
+        status_code=response.status_code,
+    )
     return payload_body
 
 
@@ -1029,6 +1189,7 @@ async def reindex_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentAccepted:
     # Bind tenant scope from the authenticated principal to prevent spoofing.
+    route_started = time.monotonic()
     await _ensure_ingest_enabled()
     tenant_id = principal.tenant_id
     request_ctx = get_request_context(request)
@@ -1102,8 +1263,18 @@ async def reindex_document(
         return build_replay_response(replay)
 
     chunk_size, chunk_overlap = _resolve_chunk_params(payload)
-    # Apply budget guardrails before reindexing to prevent cap overruns.
     request_id = str(uuid4())
+    # Enforce SLA admission decisions before budget checks and queueing.
+    response.headers.update(
+        await _evaluate_sla_ingest(
+            session=db,
+            principal=principal,
+            request=request,
+            request_id=request_id,
+            route_class="ingest",
+        )
+    )
+    # Apply budget guardrails before reindexing to prevent cap overruns.
     cost_controls_enabled, cost_visibility_enabled = await _resolve_cost_entitlements(
         session=db,
         tenant_id=tenant_id,
@@ -1221,6 +1392,13 @@ async def reindex_document(
         context=idempotency_ctx,
         response_status=202,
         response_body=jsonable_encoder(payload_body),
+    )
+    await _record_sla_observation_safe(
+        session=db,
+        tenant_id=tenant_id,
+        route_class="ingest",
+        latency_ms=(time.monotonic() - route_started) * 1000.0,
+        status_code=202,
     )
     return payload_body
 

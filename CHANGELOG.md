@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.5.0 - 2026-02-17
+
+- Added SLA policy engine with tenant assignments and incident tracking.
+- Added runtime SLA enforcement for `/v1/run` and ingestion paths (warn/degrade/shed).
+- Added adaptive autoscaling profiles/actions and admin SLA APIs.
+
 ## 2.4.0 - 2026-02-17
 
 - Added cost metering and pricing catalog.
