@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.core.config import EMBED_DIM
+from nexusrag.core.config import EMBED_DIM, get_settings
 from nexusrag.domain.models import Chunk, Document
 from nexusrag.ingestion.chunking import (
     CHUNK_OVERLAP_CHARS,
@@ -16,6 +17,10 @@ from nexusrag.ingestion.chunking import (
 )
 from nexusrag.ingestion.embeddings import embed_text
 from nexusrag.persistence.db import SessionLocal
+from nexusrag.services.costs.metering import estimate_tokens, record_cost_event
+
+
+logger = logging.getLogger(__name__)
 
 
 DOCUMENT_STORAGE_DIR = Path("var/documents")
@@ -117,6 +122,25 @@ async def _ingest_with_session(
         # Use UTC timestamps to keep status fields deterministic across hosts.
         doc.last_reindexed_at = _utc_now()
     await session.commit()
+    # Record embedding costs after the ingest commit so ingestion state stays consistent.
+    try:
+        settings = get_settings()
+        ratio = settings.cost_estimator_token_chars_ratio or 4.0
+        token_count = estimate_tokens(text, ratio=ratio)
+        await record_cost_event(
+            session=None,
+            tenant_id=doc.tenant_id,
+            request_id=job_id,
+            session_id=None,
+            route_class="ingest",
+            component="embedding",
+            provider="internal",
+            units={"tokens": token_count, "chunks": len(chunks)},
+            rate_type="per_1k_tokens",
+            metadata={"estimated": True, "reindex": is_reindex},
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort metering should not fail ingestion
+        logger.warning("cost_metering_embedding_failed document_id=%s", doc.id, exc_info=exc)
     return len(chunks)
 
 

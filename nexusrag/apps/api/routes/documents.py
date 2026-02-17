@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,6 +33,7 @@ from nexusrag.apps.api.deps import (
     require_role,
 )
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.core.config import get_settings
 from nexusrag.domain.models import Chunk, Document, DocumentLabel, DocumentPermission
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import corpora as corpora_repo
@@ -40,11 +42,18 @@ from nexusrag.services.ingest.ingestion import write_text_to_storage
 from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestion_job
 from nexusrag.core.errors import ServiceBusyError
 from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.services.costs.budget_guardrails import cost_headers, evaluate_budget_guardrail
+from nexusrag.services.costs.metering import estimate_cost, estimate_tokens, record_cost_event
 from nexusrag.apps.api.response import SuccessEnvelope, is_versioned_request, success_response
 from nexusrag.services.authz.abac import (
     authorize_document_action,
     authorize_document_create,
     filter_documents_for_principal,
+)
+from nexusrag.services.entitlements import (
+    FEATURE_COST_CONTROLS,
+    FEATURE_COST_VISIBILITY,
+    get_effective_entitlements,
 )
 from nexusrag.services.idempotency import (
     build_replay_response,
@@ -215,6 +224,61 @@ def _status_url(document_id: str, request: Request | None = None) -> str:
     # Provide a stable polling URL for queued ingestion requests.
     prefix = "/v1" if request is not None and is_versioned_request(request) else ""
     return f"{prefix}/documents/{document_id}"
+
+
+async def _resolve_cost_entitlements(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+) -> tuple[bool, bool]:
+    # Resolve cost entitlements once per request to avoid redundant lookups.
+    entitlements = await get_effective_entitlements(session, tenant_id)
+    controls_enabled = bool(
+        entitlements.get(FEATURE_COST_CONTROLS, None)
+        and entitlements[FEATURE_COST_CONTROLS].enabled
+    )
+    visibility_enabled = bool(
+        entitlements.get(FEATURE_COST_VISIBILITY, None)
+        and entitlements[FEATURE_COST_VISIBILITY].enabled
+    )
+    return controls_enabled, visibility_enabled
+
+
+async def _estimate_ingest_cost(
+    *,
+    session: AsyncSession,
+    settings,
+    text: str,
+    byte_count: int,
+    chunk_size: int,
+    tokens_override: int | None = None,
+) -> tuple[Decimal, bool, dict[str, int]]:
+    # Compute deterministic ingest estimates for budget guardrails.
+    ratio = settings.cost_estimator_token_chars_ratio or 4.0
+    tokens = tokens_override if tokens_override is not None else estimate_tokens(text, ratio=ratio)
+    embedding = await estimate_cost(
+        session=session,
+        provider="internal",
+        component="embedding",
+        rate_type="per_1k_tokens",
+        units={"tokens": tokens, "chunk_size": chunk_size},
+    )
+    storage = await estimate_cost(
+        session=session,
+        provider="internal",
+        component="storage",
+        rate_type="per_mb",
+        units={"bytes": byte_count},
+    )
+    queue = await estimate_cost(
+        session=session,
+        provider="internal",
+        component="queue",
+        rate_type="per_request",
+        units={"requests": 1},
+    )
+    total = embedding.cost_usd + storage.cost_usd + queue.cost_usd
+    return total, True, {"tokens": tokens, "bytes": byte_count}
 
 
 async def _ensure_owner_permission(
@@ -447,9 +511,38 @@ async def upload_document(
         )
     text = _parse_text(file, body)
     _validate_text_payload(text)
+    # Apply budget guardrails before writing content to storage or queueing work.
+    request_id = str(uuid4())
+    cost_controls_enabled, cost_visibility_enabled = await _resolve_cost_entitlements(
+        session=db,
+        tenant_id=tenant_id,
+    )
+    if cost_controls_enabled or cost_visibility_enabled:
+        projected_cost, estimated, _estimate_meta = await _estimate_ingest_cost(
+            session=db,
+            settings=get_settings(),
+            text=text,
+            byte_count=len(body),
+            chunk_size=CHUNK_SIZE_CHARS,
+        )
+        decision = await evaluate_budget_guardrail(
+            session=db,
+            tenant_id=tenant_id,
+            projected_cost_usd=projected_cost,
+            estimated=estimated,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            route_class="ingest",
+            request_id=request_id,
+            request=request,
+            operation="ingest",
+            enforce=cost_controls_enabled,
+            raise_on_block=True,
+        )
+        if cost_visibility_enabled:
+            response.headers.update(cost_headers(decision))
     document_id = document_id or str(uuid4())
     storage_path = write_text_to_storage(document_id, text)
-    request_id = str(uuid4())
     queued_at = _utc_now()
 
     try:
@@ -510,6 +603,34 @@ async def upload_document(
         request_id=request_id,
     )
     await _enqueue_or_fail(db, document_id, payload)
+    # Record storage + queue costs after enqueue; failures should not block ingestion.
+    try:
+        await record_cost_event(
+            session=db,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=None,
+            route_class="ingest",
+            component="storage",
+            provider="internal",
+            units={"bytes": len(body)},
+            rate_type="per_mb",
+            metadata={"estimated": True},
+        )
+        await record_cost_event(
+            session=db,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=None,
+            route_class="ingest",
+            component="queue",
+            provider="internal",
+            units={"requests": 1},
+            rate_type="per_request",
+            metadata={"estimated": True},
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort metering should not block ingestion
+        logger.warning("cost_metering_ingest_failed request_id=%s", request_id, exc_info=exc)
     request_ctx = get_request_context(request)
     # Record queued ingestion only after the enqueue succeeds.
     await record_event(
@@ -654,10 +775,40 @@ async def ingest_text_document(
             request=request,
         )
     document_id = payload.document_id or str(uuid4())
-    storage_path = write_text_to_storage(document_id, payload.text)
-    request_id = str(uuid4())
-    queued_at = _utc_now()
     chunk_size, chunk_overlap = _resolve_chunk_params(payload)
+    # Apply budget guardrails before storage writes and ingestion queueing.
+    request_id = str(uuid4())
+    byte_count = len(payload.text.encode("utf-8"))
+    cost_controls_enabled, cost_visibility_enabled = await _resolve_cost_entitlements(
+        session=db,
+        tenant_id=tenant_id,
+    )
+    if cost_controls_enabled or cost_visibility_enabled:
+        projected_cost, estimated, _estimate_meta = await _estimate_ingest_cost(
+            session=db,
+            settings=get_settings(),
+            text=payload.text,
+            byte_count=byte_count,
+            chunk_size=chunk_size,
+        )
+        decision = await evaluate_budget_guardrail(
+            session=db,
+            tenant_id=tenant_id,
+            projected_cost_usd=projected_cost,
+            estimated=estimated,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            route_class="ingest",
+            request_id=request_id,
+            request=request,
+            operation="ingest",
+            enforce=cost_controls_enabled,
+            raise_on_block=True,
+        )
+        if cost_visibility_enabled:
+            response.headers.update(cost_headers(decision))
+    storage_path = write_text_to_storage(document_id, payload.text)
+    queued_at = _utc_now()
 
     try:
         if existing is not None:
@@ -731,6 +882,34 @@ async def ingest_text_document(
         request_id=request_id,
     )
     await _enqueue_or_fail(db, document_id, ingest_payload)
+    # Record storage + queue costs after enqueue; failures should not block ingestion.
+    try:
+        await record_cost_event(
+            session=db,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=None,
+            route_class="ingest",
+            component="storage",
+            provider="internal",
+            units={"bytes": byte_count},
+            rate_type="per_mb",
+            metadata={"estimated": True},
+        )
+        await record_cost_event(
+            session=db,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=None,
+            route_class="ingest",
+            component="queue",
+            provider="internal",
+            units={"requests": 1},
+            rate_type="per_request",
+            metadata={"estimated": True},
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort metering should not block ingestion
+        logger.warning("cost_metering_ingest_failed request_id=%s", request_id, exc_info=exc)
     request_ctx = get_request_context(request)
     # Record queued ingestion only after the enqueue succeeds.
     await record_event(
@@ -842,6 +1021,7 @@ async def get_document(
 async def reindex_document(
     document_id: str,
     request: Request,
+    response: Response,
     payload: ReindexRequest | None = None,
     _reject_tenant: None = Depends(reject_tenant_id_in_body),
     _idempotency_key: str | None = Depends(idempotency_key_header),
@@ -922,7 +1102,45 @@ async def reindex_document(
         return build_replay_response(replay)
 
     chunk_size, chunk_overlap = _resolve_chunk_params(payload)
+    # Apply budget guardrails before reindexing to prevent cap overruns.
     request_id = str(uuid4())
+    cost_controls_enabled, cost_visibility_enabled = await _resolve_cost_entitlements(
+        session=db,
+        tenant_id=tenant_id,
+    )
+    if cost_controls_enabled or cost_visibility_enabled:
+        byte_count = 0
+        if doc.storage_path:
+            try:
+                byte_count = Path(doc.storage_path).stat().st_size
+            except OSError:
+                byte_count = 0
+        ratio = get_settings().cost_estimator_token_chars_ratio or 4.0
+        tokens_override = max(1, int(byte_count / ratio)) if byte_count else 0
+        projected_cost, estimated, _estimate_meta = await _estimate_ingest_cost(
+            session=db,
+            settings=get_settings(),
+            text="",
+            byte_count=byte_count,
+            chunk_size=chunk_size,
+            tokens_override=tokens_override,
+        )
+        decision = await evaluate_budget_guardrail(
+            session=db,
+            tenant_id=tenant_id,
+            projected_cost_usd=projected_cost,
+            estimated=estimated,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            route_class="ingest",
+            request_id=request_id,
+            request=request,
+            operation="reindex",
+            enforce=cost_controls_enabled,
+            raise_on_block=True,
+        )
+        if cost_visibility_enabled:
+            response.headers.update(cost_headers(decision))
     queued_at = _utc_now()
 
     try:
@@ -957,6 +1175,22 @@ async def reindex_document(
         is_reindex=True,
     )
     await _enqueue_or_fail(db, document_id, ingest_payload)
+    # Record queue costs for reindex jobs; failures should not block ingestion.
+    try:
+        await record_cost_event(
+            session=db,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=None,
+            route_class="ingest",
+            component="queue",
+            provider="internal",
+            units={"requests": 1},
+            rate_type="per_request",
+            metadata={"estimated": True, "reindex": True},
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort metering should not block ingestion
+        logger.warning("cost_metering_ingest_failed request_id=%s", request_id, exc_info=exc)
     # Record queued reindex only after the enqueue succeeds.
     await record_event(
         session=db,

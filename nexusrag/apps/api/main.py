@@ -22,6 +22,8 @@ from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.documents import router as documents_router
 from nexusrag.apps.api.routes.compliance_admin import router as compliance_admin_router
 from nexusrag.apps.api.routes.compliance_ops import router as compliance_ops_router
+from nexusrag.apps.api.routes.costs_admin import router as costs_admin_router
+from nexusrag.apps.api.routes.costs_self_serve import router as costs_self_serve_router
 from nexusrag.apps.api.routes.crypto_admin import router as crypto_admin_router
 from nexusrag.apps.api.routes.governance_admin import router as governance_admin_router
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
@@ -153,6 +155,8 @@ def create_app() -> FastAPI:
     app.include_router(crypto_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_ops_router, prefix=f"/{API_VERSION}")
+    app.include_router(costs_admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(costs_self_serve_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(identity_admin_router, prefix=f"/{API_VERSION}")
     # Expose ABAC policy and document ACL management for admins.
@@ -180,6 +184,8 @@ def create_app() -> FastAPI:
     app.include_router(crypto_admin_router, include_in_schema=False)
     app.include_router(compliance_admin_router, include_in_schema=False)
     app.include_router(compliance_ops_router, include_in_schema=False)
+    app.include_router(costs_admin_router, include_in_schema=False)
+    app.include_router(costs_self_serve_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
     app.include_router(identity_admin_router, include_in_schema=False)
     # Retain authz admin routes for legacy compatibility aliases.

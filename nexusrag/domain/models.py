@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -286,6 +287,92 @@ class QuotaSoftCapEvent(Base):
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     metric: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UsageCostEvent(Base):
+    __tablename__ = "usage_cost_events"
+
+    # Record per-request cost events for budgeting and chargeback visibility.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    request_id: Mapped[str | None] = mapped_column(String, index=True)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    route_class: Mapped[str] = mapped_column(String)
+    component: Mapped[str] = mapped_column(String)
+    provider: Mapped[str] = mapped_column(String)
+    units_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    unit_cost_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class TenantBudget(Base):
+    __tablename__ = "tenant_budgets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_tenant_budgets_tenant"),
+    )
+
+    # Store monthly budget policy per tenant with warn/cap settings.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    monthly_budget_usd: Mapped[float] = mapped_column(Numeric(12, 2))
+    warn_ratio: Mapped[float] = mapped_column(Numeric(5, 4), default=0.8)
+    enforce_hard_cap: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    hard_cap_mode: Mapped[str] = mapped_column(String, default="block")
+    current_month_override_usd: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TenantBudgetSnapshot(Base):
+    __tablename__ = "tenant_budget_snapshots"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "year_month", name="uq_budget_snapshots_month"),
+    )
+
+    # Capture monthly spend snapshots for budget enforcement and reporting.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    year_month: Mapped[str] = mapped_column(String(length=7))
+    budget_usd: Mapped[float] = mapped_column(Numeric(12, 2))
+    spend_usd: Mapped[float] = mapped_column(Numeric(12, 6))
+    forecast_usd: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
+    warn_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cap_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PricingCatalog(Base):
+    __tablename__ = "pricing_catalog"
+
+    # Store pricing catalog entries for deterministic cost calculations.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, index=True)
+    provider: Mapped[str] = mapped_column(String)
+    component: Mapped[str] = mapped_column(String)
+    rate_type: Mapped[str] = mapped_column(String)
+    rate_value_usd: Mapped[float] = mapped_column(Numeric(12, 6))
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class ChargebackReport(Base):
+    __tablename__ = "chargeback_reports"
+
+    # Snapshot chargeback totals for reporting and reconciliation.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    currency: Mapped[str] = mapped_column(String, default="USD")
+    total_usd: Mapped[float] = mapped_column(Numeric(12, 6))
+    breakdown_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    generated_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Plan(Base):
@@ -969,6 +1056,23 @@ Index(
     UsageCounter.period_type,
     UsageCounter.period_start,
 )
+Index("ix_usage_cost_events_tenant_occurred", UsageCostEvent.tenant_id, UsageCostEvent.occurred_at)
+Index(
+    "ix_usage_cost_events_component",
+    UsageCostEvent.tenant_id,
+    UsageCostEvent.component,
+    UsageCostEvent.occurred_at,
+)
+Index("ix_tenant_budgets_tenant", TenantBudget.tenant_id)
+Index("ix_tenant_budget_snapshots_tenant", TenantBudgetSnapshot.tenant_id)
+Index("ix_pricing_catalog_version", PricingCatalog.version)
+Index(
+    "ix_pricing_catalog_provider_component_active",
+    PricingCatalog.provider,
+    PricingCatalog.component,
+    PricingCatalog.active,
+)
+Index("ix_chargeback_reports_tenant", ChargebackReport.tenant_id)
 Index("ix_quota_soft_cap_events_tenant", QuotaSoftCapEvent.tenant_id)
 Index("ix_plans_active", Plan.is_active)
 Index("ix_plan_features_plan_id", PlanFeature.plan_id)

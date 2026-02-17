@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 from nexusrag.agent.prompts import build_messages
 from nexusrag.domain.state import AgentState
 from nexusrag.persistence.repos.messages import list_messages
+from nexusrag.services.costs.metering import estimate_tokens
 
 
 def build_graph(
@@ -18,6 +19,8 @@ def build_graph(
     top_k: int,
     token_callback: Callable[[str], None],
     retrieval_callback: Callable[[str, int], None] | None = None,
+    max_output_tokens: int | None = None,
+    token_estimator_ratio: float | None = None,
 ):
     graph = StateGraph(AgentState)
 
@@ -50,8 +53,16 @@ def build_graph(
     async def generate(state: AgentState) -> dict:
         messages = build_messages(state["history"], state["retrieved"], state["user_message"])
         answer_parts: list[str] = []
+        token_count = 0
+        token_ratio = token_estimator_ratio or 4.0
         def run_stream() -> None:
+            nonlocal token_count
             for delta in llm.stream(messages):
+                if max_output_tokens is not None:
+                    token_count += estimate_tokens(delta, ratio=token_ratio)
+                    if token_count > max_output_tokens:
+                        # Stop streaming once we hit the configured output budget.
+                        break
                 token_callback(delta)
                 answer_parts.append(delta)
 
@@ -93,6 +104,8 @@ async def run_graph(
     top_k: int,
     token_callback: Callable[[str], None],
     retrieval_callback: Callable[[str, int], None] | None = None,
+    max_output_tokens: int | None = None,
+    token_estimator_ratio: float | None = None,
 ) -> AgentState:
     graph = build_graph(
         retriever=retriever,
@@ -101,5 +114,7 @@ async def run_graph(
         top_k=top_k,
         token_callback=token_callback,
         retrieval_callback=retrieval_callback,
+        max_output_tokens=max_output_tokens,
+        token_estimator_ratio=token_estimator_ratio,
     )
     return await graph.ainvoke(state)
