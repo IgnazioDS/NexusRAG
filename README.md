@@ -1178,6 +1178,9 @@ Plan matrix:
 | Enterprise SSO (OIDC) | no | yes | yes |
 | SCIM 2.0 provisioning | no | no | yes |
 | JIT provisioning | no | no | yes |
+| Cost visibility | no | yes | yes |
+| Cost controls | no | yes | yes |
+| Chargeback reports | no | no | yes |
 
 Entitlement enforcement:
 
@@ -1188,6 +1191,7 @@ Entitlement enforcement:
 - SSO endpoints require `feature.identity.sso` and `SSO_ENABLED=true`.
 - SCIM endpoints require `feature.identity.scim` and `SCIM_ENABLED=true`.
 - JIT provisioning requires `feature.identity.jit` and `jit_enabled=true` on the provider.
+- Cost endpoints require `feature.cost_visibility`, `feature.cost_controls`, and `feature.chargeback_reports` as applicable.
 
 Feature disabled error:
 
@@ -1318,6 +1322,83 @@ Security notes:
 - ID tokens, access tokens, and SCIM bearer tokens are never logged or persisted.
 - Callback URLs must be HTTPS in non-dev environments.
 - State and nonce values are stored in Redis with TTLs to prevent replay.
+
+## Cost Governance & Chargeback
+
+Cost governance provides request-level metering, tenant budgets, and chargeback reporting with runtime guardrails.
+
+Key settings:
+
+- `COST_GOVERNANCE_ENABLED=true`
+- `COST_DEFAULT_WARN_RATIO=0.8`
+- `COST_DEFAULT_HARD_CAP_MODE=block`
+- `COST_DEGRADE_ENABLE_TTS_DISABLE=true`
+- `COST_DEGRADE_MIN_TOP_K=3`
+- `COST_DEGRADE_MAX_OUTPUT_TOKENS=512`
+- `COST_ESTIMATOR_ENABLED=true`
+- `COST_ESTIMATOR_TOKEN_CHARS_RATIO=4.0`
+- `COST_TIMESERIES_DEFAULT_DAYS=30`
+
+Budget model and modes:
+
+- `warn_ratio` triggers `X-Cost-Status: warn` headers and `cost.warn` SSE events without blocking.
+- `enforce_hard_cap=true` plus `hard_cap_mode=block|degrade` controls whether requests are blocked or downgraded.
+- Degrade mode disables audio first, reduces `top_k`, forces local retrieval, and shortens max output tokens.
+
+Cost headers on successful responses:
+
+- `X-Cost-Month-Budget-Usd`
+- `X-Cost-Month-Spend-Usd`
+- `X-Cost-Month-Remaining-Usd`
+- `X-Cost-Status` (`ok|warn|capped|degraded`)
+- `X-Cost-Estimated` (`true|false`)
+
+Pricing catalog (admin, tenant-scoped):
+
+```
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/costs/pricing/catalog \
+  -d '{
+    "version": "v2026.02",
+    "provider": "internal",
+    "component": "llm",
+    "rate_type": "per_1k_tokens",
+    "rate_value_usd": 0.0025,
+    "effective_from": "2026-02-01T00:00:00Z",
+    "active": true
+  }'
+```
+
+Budget configuration (admin):
+
+```
+curl -s -X PATCH -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/costs/budget \
+  -d '{"monthly_budget_usd":500,"warn_ratio":0.8,"enforce_hard_cap":true,"hard_cap_mode":"degrade"}'
+```
+
+Chargeback reports:
+
+```
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/costs/chargeback/generate?period_start=2026-02-01T00:00:00Z&period_end=2026-03-01T00:00:00Z"
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/costs/chargeback/reports
+```
+
+Self-serve dashboards:
+
+- `GET /v1/self-serve/costs/budget`
+- `GET /v1/self-serve/costs/spend/summary`
+- `GET /v1/self-serve/costs/spend/timeseries`
+- `GET /v1/self-serve/costs/spend/breakdown`
+- `GET /v1/self-serve/costs/chargeback/latest`
+
+Security notes:
+
+- Cost metadata is redacted to counts/identifiers; raw prompts and document content are never stored.
+- Metering is best-effort and never blocks requests if cost writes fail.
 
 ## Tenant Self-Serve API
 

@@ -106,6 +106,24 @@ class Settings(BaseSettings):
     billing_webhook_secret: str | None = None
     # Keep webhook timeouts short to avoid blocking API responses.
     billing_webhook_timeout_ms: int = 2000
+    # Toggle cost governance features (metering, budgets, chargeback).
+    cost_governance_enabled: bool = True
+    # Default warn ratio for budgets when tenant config omits one.
+    cost_default_warn_ratio: float = 0.8
+    # Default hard cap mode when tenant config omits one.
+    cost_default_hard_cap_mode: str = "block"
+    # Allow disabling TTS first when degrading for budget control.
+    cost_degrade_enable_tts_disable: bool = True
+    # Minimum top_k used when degrading retrieval requests.
+    cost_degrade_min_top_k: int = 3
+    # Cap output tokens in degrade mode to bound generation cost.
+    cost_degrade_max_output_tokens: int = 512
+    # Enable fallback estimators when providers do not supply usage metadata.
+    cost_estimator_enabled: bool = True
+    # Approximate characters per token for deterministic estimation.
+    cost_estimator_token_chars_ratio: float = 4.0
+    # Default window for cost timeseries endpoints.
+    cost_timeseries_default_days: int = 30
     # Centralize external call timeouts for integrations (ms).
     ext_call_timeout_ms: int = 8000
     # Retry transient integration failures for a bounded number of attempts.

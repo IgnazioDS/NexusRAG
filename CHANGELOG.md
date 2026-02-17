@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.4.0 - 2026-02-17
+
+- Added cost metering and pricing catalog.
+- Added tenant budgets with warn/block/degrade guardrails.
+- Added admin/self-serve spend analytics and chargeback reports.
+
+## 2.3.0 - 2026-02-16
+
+- Added quality datasets/runs/results and metrics trends.
+- Added runtime quality guardrails and SSE quality events.
+- Added release gate enforcement and override workflow.
+
 ## 2.2.0 - 2026-02-15
 
 - Added ABAC policy engine and document-level ACLs.

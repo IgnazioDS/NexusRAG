@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import AsyncGenerator
 from uuid import uuid4
 
@@ -48,7 +49,15 @@ from nexusrag.providers.tts.factory import get_tts_provider
 from nexusrag.services.audio.storage import save_audio
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.authz.abac import authorize_corpus_action
-from nexusrag.services.entitlements import FEATURE_TTS, require_feature
+from nexusrag.services.costs.budget_guardrails import cost_headers, evaluate_budget_guardrail
+from nexusrag.services.costs.metering import estimate_cost, estimate_tokens, record_cost_event
+from nexusrag.services.entitlements import (
+    FEATURE_COST_CONTROLS,
+    FEATURE_COST_VISIBILITY,
+    FEATURE_TTS,
+    get_effective_entitlements,
+    require_feature,
+)
 from nexusrag.services.resilience import deterministic_canary, get_run_bulkhead
 from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_switch
 from nexusrag.services.telemetry import increment_counter, record_stream_duration
@@ -156,12 +165,123 @@ def _map_tts_error(exc: Exception) -> tuple[str, str]:
     return "TTS_ERROR", "TTS request failed."
 
 
+def _llm_provider_name(settings) -> str:
+    # Normalize provider names for cost attribution.
+    if settings.llm_provider == "fake":
+        return "internal"
+    return settings.llm_provider
+
+
+def _tts_provider_name(settings) -> str:
+    # Normalize TTS provider names for cost attribution.
+    if settings.tts_provider == "fake":
+        return "internal"
+    return settings.tts_provider
+
+
 def _feature_disabled(message: str) -> HTTPException:
     # Return a stable 503 error envelope for disabled features.
     return HTTPException(
         status_code=503,
         detail={"code": "FEATURE_TEMPORARILY_DISABLED", "message": message},
     )
+
+
+async def _estimate_run_cost(
+    *,
+    session: AsyncSession,
+    settings,
+    retrieval_provider: str | None,
+    message: str,
+    top_k: int,
+    audio: bool,
+) -> tuple[Decimal, bool, dict[str, int]]:
+    # Estimate run cost deterministically for budget guardrail checks.
+    ratio = settings.cost_estimator_token_chars_ratio or 4.0
+    input_tokens = estimate_tokens(message, ratio=ratio)
+    output_tokens = int(settings.cost_degrade_max_output_tokens or 0)
+    token_total = max(0, input_tokens + output_tokens)
+    retrieval = await estimate_cost(
+        session=session,
+        provider=retrieval_provider or "internal",
+        component="retrieval",
+        rate_type="per_request",
+        units={"requests": 1, "top_k": top_k},
+    )
+    llm = await estimate_cost(
+        session=session,
+        provider=_llm_provider_name(settings),
+        component="llm",
+        rate_type="per_1k_tokens",
+        units={"tokens": token_total},
+    )
+    total = retrieval.cost_usd + llm.cost_usd
+    if audio:
+        tts_chars = max(0, int(output_tokens * ratio))
+        tts = await estimate_cost(
+            session=session,
+            provider=_tts_provider_name(settings),
+            component="tts",
+            rate_type="per_char",
+            units={"chars": tts_chars},
+        )
+        total += tts.cost_usd
+    # Pre-run estimates always rely on heuristics before usage metadata is known.
+    return total, True, {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+async def _record_run_cost_events(
+    *,
+    session: AsyncSession,
+    settings,
+    tenant_id: str,
+    request_id: str,
+    session_id: str,
+    message: str,
+    answer: str,
+    citations: list[dict],
+    retrieval_provider: str,
+    retrieval_chunks: int,
+    top_k: int,
+) -> None:
+    # Persist best-effort cost events without impacting the response flow.
+    if not settings.cost_governance_enabled:
+        return
+    ratio = settings.cost_estimator_token_chars_ratio or 4.0
+    input_tokens = estimate_tokens(message, ratio=ratio)
+    output_tokens = estimate_tokens(answer, ratio=ratio)
+    try:
+        await record_cost_event(
+            session=session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=session_id,
+            route_class="run",
+            component="retrieval",
+            provider=retrieval_provider,
+            units={"requests": 1, "chunks": retrieval_chunks, "top_k": top_k},
+            rate_type="per_request",
+            metadata={"estimated": True, "chunks": retrieval_chunks},
+        )
+        await record_cost_event(
+            session=session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            session_id=session_id,
+            route_class="run",
+            component="llm",
+            provider=_llm_provider_name(settings),
+            units={"tokens": input_tokens + output_tokens},
+            rate_type="per_1k_tokens",
+            metadata={
+                "estimated": True,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "citations_count": len(citations),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort metering should not fail runs
+        logger.warning("cost_metering_run_failed request_id=%s", request_id, exc_info=exc)
 
 
 @router.post("/run")
@@ -174,6 +294,17 @@ async def run(
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
+    settings = get_settings()
+    # Resolve cost entitlements once to avoid redundant entitlement lookups.
+    cost_entitlements = await get_effective_entitlements(db, principal.tenant_id)
+    cost_controls_enabled = bool(
+        cost_entitlements.get(FEATURE_COST_CONTROLS, None)
+        and cost_entitlements[FEATURE_COST_CONTROLS].enabled
+    )
+    cost_visibility_enabled = bool(
+        cost_entitlements.get(FEATURE_COST_VISIBILITY, None)
+        and cost_entitlements[FEATURE_COST_VISIBILITY].enabled
+    )
     # Honor kill switches before allocating run capacity.
     if await resolve_kill_switch("kill.run"):
         raise _feature_disabled("Run is temporarily disabled")
@@ -225,17 +356,6 @@ async def run(
         # Ensure bulkhead capacity is released on early request failures.
         lease.release()
         raise exc
-    # Enforce plan entitlements for optional TTS usage before persistence.
-    if payload.audio:
-        try:
-            await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_TTS)
-        except HTTPException as exc:
-            _release_and_raise(exc)
-        if await resolve_kill_switch("kill.tts"):
-            _release_and_raise(_feature_disabled("TTS is temporarily disabled"))
-        tts_pct = await resolve_canary_percentage("rollout.tts")
-        if not deterministic_canary(principal.tenant_id, tts_pct):
-            _release_and_raise(_feature_disabled("TTS is not enabled for this tenant yet"))
     # Enforce ABAC policies for corpus-scoped run access.
     try:
         await authorize_corpus_action(
@@ -249,6 +369,7 @@ async def run(
         _release_and_raise(exc)
     # Resolve retrieval provider entitlements early to return stable 403s.
     retriever = RetrievalRouter(db)
+    resolved_provider: str | None = None
     try:
         provider = await retriever.resolve_provider(principal.tenant_id, payload.corpus_id)
     except RetrievalConfigError:
@@ -257,12 +378,131 @@ async def run(
     except HTTPException as exc:
         _release_and_raise(exc)
     else:
+        resolved_provider = provider
         if provider in {"aws_bedrock_kb", "gcp_vertex"}:
             if await resolve_kill_switch("kill.external_retrieval"):
                 _release_and_raise(_feature_disabled("External retrieval is temporarily disabled"))
             rollout_pct = await resolve_canary_percentage("rollout.external_retrieval")
             if not deterministic_canary(principal.tenant_id, rollout_pct):
                 _release_and_raise(_feature_disabled("External retrieval is not enabled for this tenant yet"))
+
+    budget_decision = None
+    effective_top_k = payload.top_k
+    effective_audio = payload.audio
+    max_output_tokens = None
+    effective_retrieval_provider = resolved_provider
+    # Evaluate budget guardrails before persisting or executing retrieval/generation.
+    budget_guardrail_enabled = cost_controls_enabled or cost_visibility_enabled
+    estimate_meta: dict[str, int] = {}
+    if budget_guardrail_enabled:
+        projected_cost, estimated, estimate_meta = await _estimate_run_cost(
+            session=db,
+            settings=settings,
+            retrieval_provider=resolved_provider,
+            message=payload.message,
+            top_k=payload.top_k,
+            audio=payload.audio,
+        )
+        budget_decision = await evaluate_budget_guardrail(
+            session=db,
+            tenant_id=principal.tenant_id,
+            projected_cost_usd=projected_cost,
+            estimated=estimated,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            route_class="run",
+            request_id=request_id,
+            request=http_request,
+            operation="run",
+            enforce=cost_controls_enabled,
+            raise_on_block=False,
+        )
+        if budget_decision.degrade_actions:
+            # Apply degradation strategies before running expensive operations.
+            if budget_decision.degrade_actions.top_k:
+                effective_top_k = max(1, min(payload.top_k, budget_decision.degrade_actions.top_k))
+            if budget_decision.degrade_actions.disable_audio:
+                effective_audio = False
+            if budget_decision.degrade_actions.max_output_tokens:
+                max_output_tokens = budget_decision.degrade_actions.max_output_tokens
+            if resolved_provider in {"aws_bedrock_kb", "gcp_vertex"}:
+                # Prefer local retrieval during degraded mode to reduce external spend.
+                retriever.set_forced_provider("local_pgvector")
+                effective_retrieval_provider = "local_pgvector"
+        if not budget_decision.allowed:
+            async def capped_stream() -> AsyncGenerator[str, None]:
+                seq = 0
+
+                def next_seq() -> int:
+                    nonlocal seq
+                    seq += 1
+                    return seq
+
+                accepted_payload = _wrap_payload(
+                    "request.accepted",
+                    request_id,
+                    payload.session_id,
+                    {"accepted_at": datetime.now(timezone.utc).isoformat()},
+                )
+                accepted_payload["seq"] = next_seq()
+                yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
+
+                capped_payload = _wrap_payload(
+                    "cost.capped",
+                    request_id,
+                    payload.session_id,
+                    {
+                        "status": budget_decision.status,
+                        "budget_usd": str(budget_decision.budget_usd),
+                        "spend_usd": str(budget_decision.spend_usd),
+                        "estimated": budget_decision.estimated,
+                    },
+                )
+                capped_payload["seq"] = next_seq()
+                yield _sse_message(capped_payload, event_name="cost.capped", event_id=capped_payload["seq"])
+
+                error_payload = _wrap_payload(
+                    "error",
+                    request_id,
+                    payload.session_id,
+                    {
+                        "code": "COST_BUDGET_EXCEEDED",
+                        "message": "Cost budget exceeded",
+                    },
+                )
+                error_payload["seq"] = next_seq()
+                yield _sse_message(error_payload, event_id=error_payload["seq"])
+
+                done_payload = _wrap_payload("done", request_id, payload.session_id, {})
+                done_payload["seq"] = next_seq()
+                yield _sse_message(done_payload, event_id=done_payload["seq"])
+
+            headers = {
+                "Cache-Control": "no-cache",
+                "Content-Type": "text/event-stream",
+                "Connection": "keep-alive",
+            }
+            if cost_visibility_enabled and budget_decision is not None:
+                headers.update(cost_headers(budget_decision))
+            return StreamingResponse(
+                capped_stream(),
+                headers=headers,
+                media_type="text/event-stream",
+                status_code=402,
+                background=BackgroundTask(lease.release),
+            )
+
+    # Enforce plan entitlements for optional TTS usage before persistence.
+    if effective_audio:
+        try:
+            await require_feature(session=db, tenant_id=principal.tenant_id, feature_key=FEATURE_TTS)
+        except HTTPException as exc:
+            _release_and_raise(exc)
+        if await resolve_kill_switch("kill.tts"):
+            _release_and_raise(_feature_disabled("TTS is temporarily disabled"))
+        tts_pct = await resolve_canary_percentage("rollout.tts")
+        if not deterministic_canary(principal.tenant_id, tts_pct):
+            _release_and_raise(_feature_disabled("TTS is not enabled for this tenant yet"))
     # Bind tenant scope from the authenticated principal to prevent spoofing.
     # TX #1: persist session + user message so history is durable before streaming.
     try:
@@ -337,8 +577,11 @@ async def run(
         metadata={
             "session_id": payload.session_id,
             "corpus_id": payload.corpus_id,
-            "top_k": payload.top_k,
-            "audio": payload.audio,
+            "top_k_requested": payload.top_k,
+            "top_k_effective": effective_top_k,
+            "audio_requested": payload.audio,
+            "audio_effective": effective_audio,
+            "cost_status": budget_decision.status if budget_decision else "ok",
         },
         commit=True,
         best_effort=True,
@@ -354,6 +597,8 @@ async def run(
     cancel_event = threading.Event()
     # Reuse the request-scoped retriever/LLM to avoid extra connections.
     llm = get_llm_provider(request_id=request_id, cancel_event=cancel_event)
+    retrieval_provider_name = effective_retrieval_provider or "internal"
+    retrieval_chunks = 0
 
     loop = asyncio.get_running_loop()
 
@@ -363,10 +608,11 @@ async def run(
             return
         loop.call_soon_threadsafe(queue.put_nowait, {"kind": "token", "delta": delta})
 
-    settings = get_settings()
-
     def retrieval_callback(provider: str, num_chunks: int) -> None:
         # Emit optional debug events only when explicitly enabled.
+        nonlocal retrieval_provider_name, retrieval_chunks
+        retrieval_provider_name = provider
+        retrieval_chunks = num_chunks
         if not settings.debug_events:
             return
         queue.put_nowait(
@@ -400,9 +646,11 @@ async def run(
                 llm=llm,
                 session=db,
                 state=state,
-                top_k=payload.top_k,
+                top_k=effective_top_k,
                 token_callback=token_callback,
                 retrieval_callback=retrieval_callback,
+                max_output_tokens=max_output_tokens,
+                token_estimator_ratio=settings.cost_estimator_token_chars_ratio,
             )
         except asyncio.CancelledError:
             # Allow cancellation to propagate so disconnects stop streaming quickly.
@@ -439,6 +687,27 @@ async def run(
             {"accepted_at": datetime.now(timezone.utc).isoformat()},
         )
         yield emit(accepted_payload)
+        if budget_decision and budget_decision.status in {"warn", "degraded"}:
+            event_name = "cost.warn" if budget_decision.status == "warn" else "cost.degraded"
+            cost_payload = _wrap_payload(
+                event_name,
+                request_id,
+                payload.session_id,
+                {
+                    "status": budget_decision.status,
+                    "budget_usd": str(budget_decision.budget_usd),
+                    "spend_usd": str(budget_decision.spend_usd),
+                    "remaining_usd": str(budget_decision.remaining_usd)
+                    if budget_decision.remaining_usd is not None
+                    else None,
+                    "estimated": budget_decision.estimated,
+                    "estimate_meta": estimate_meta,
+                    "degrade_actions": budget_decision.degrade_actions.__dict__
+                    if budget_decision.degrade_actions
+                    else {},
+                },
+            )
+            yield emit(cost_payload, event_name=event_name)
         task = asyncio.create_task(run_agent())
         try:
             while not done.is_set() or not queue.empty():
@@ -534,7 +803,21 @@ async def run(
                 )
             )
 
-            if not payload.audio:
+            await _record_run_cost_events(
+                session=db,
+                settings=settings,
+                tenant_id=principal.tenant_id,
+                request_id=request_id,
+                session_id=payload.session_id,
+                message=payload.message,
+                answer=answer,
+                citations=citations,
+                retrieval_provider=retrieval_provider_name,
+                retrieval_chunks=retrieval_chunks,
+                top_k=effective_top_k,
+            )
+
+            if not effective_audio:
                 yield emit(_wrap_payload("done", request_id, payload.session_id, {}))
                 return
             if await http_request.is_disconnected():
@@ -549,6 +832,21 @@ async def run(
                     audio_bytes=audio_bytes,
                     base_url=settings.audio_base_url,
                 )
+                try:
+                    await record_cost_event(
+                        session=db,
+                        tenant_id=principal.tenant_id,
+                        request_id=request_id,
+                        session_id=payload.session_id,
+                        route_class="run",
+                        component="tts",
+                        provider=_tts_provider_name(settings),
+                        units={"chars": len(answer)},
+                        rate_type="per_char",
+                        metadata={"estimated": True},
+                    )
+                except Exception as exc:  # noqa: BLE001 - best-effort metering should not fail runs
+                    logger.warning("cost_metering_tts_failed request_id=%s", request_id, exc_info=exc)
                 yield emit(
                     _wrap_payload(
                         "audio.ready",
@@ -579,6 +877,8 @@ async def run(
         "Content-Type": "text/event-stream",
         "Connection": "keep-alive",
     }
+    if cost_visibility_enabled and budget_decision is not None:
+        headers.update(cost_headers(budget_decision))
     return StreamingResponse(
         event_stream(),
         headers=headers,

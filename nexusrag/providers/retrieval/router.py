@@ -24,6 +24,8 @@ class RetrievalRouter:
         self._session = session
         # Expose the last provider for optional debug events without changing return types.
         self.last_provider: str | None = None
+        # Optional override for degraded-mode routing to lower-cost providers.
+        self._forced_provider: str | None = None
         # Track entitlement checks to avoid redundant gating per request.
         self._entitlement_checked_provider: str | None = None
         # Allow tests to bypass entitlements without external fixtures.
@@ -43,6 +45,10 @@ class RetrievalRouter:
             ),
         }
 
+    def set_forced_provider(self, provider_name: str | None) -> None:
+        # Allow callers to force a provider for degraded-mode retrieval routing.
+        self._forced_provider = provider_name
+
     async def resolve_provider(self, tenant_id: str, corpus_id: str) -> str:
         # Resolve the provider and enforce plan entitlements before retrieval.
         retrieval = await self._load_retrieval_config(tenant_id, corpus_id)
@@ -58,7 +64,7 @@ class RetrievalRouter:
 
     async def retrieve(self, tenant_id: str, corpus_id: str, query: str, top_k: int) -> list[dict]:
         retrieval = await self._load_retrieval_config(tenant_id, corpus_id)
-        provider_name = retrieval["provider"]
+        provider_name = self._forced_provider or retrieval["provider"]
         if self._entitlement_checked_provider != provider_name:
             await self._entitlement_checker(
                 session=self._session,
