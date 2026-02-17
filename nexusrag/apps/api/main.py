@@ -33,6 +33,7 @@ from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.run import router as run_router
 from nexusrag.apps.api.routes.scim import router as scim_router
 from nexusrag.apps.api.routes.self_serve import router as self_serve_router
+from nexusrag.apps.api.routes.sla_admin import router as sla_admin_router
 from nexusrag.apps.api.routes.sso import router as sso_router
 from nexusrag.apps.api.routes.ui import router as ui_router
 from nexusrag.core.logging import configure_logging
@@ -173,6 +174,7 @@ def create_app() -> FastAPI:
     # Expose SSO discovery and callback routes for enterprise identity.
     app.include_router(sso_router, prefix=f"/{API_VERSION}")
     app.include_router(scim_router, prefix=f"/{API_VERSION}")
+    app.include_router(sla_admin_router, prefix=f"/{API_VERSION}")
     # Expose UI-focused BFF endpoints for frontend integration.
     app.include_router(ui_router, prefix=f"/{API_VERSION}")
     app.include_router(corpora_router, prefix=f"/{API_VERSION}")
@@ -198,6 +200,7 @@ def create_app() -> FastAPI:
     app.include_router(self_serve_router, include_in_schema=False)
     app.include_router(sso_router, include_in_schema=False)
     app.include_router(scim_router, include_in_schema=False)
+    app.include_router(sla_admin_router, include_in_schema=False)
     app.include_router(corpora_router, include_in_schema=False)
     app.include_router(run_router, include_in_schema=False)
 

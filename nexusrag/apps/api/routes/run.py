@@ -60,6 +60,8 @@ from nexusrag.services.entitlements import (
 )
 from nexusrag.services.resilience import deterministic_canary, get_run_bulkhead
 from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_switch
+from nexusrag.services.sla.evaluator import evaluate_tenant_sla
+from nexusrag.services.sla.signals import record_sla_observation
 from nexusrag.services.telemetry import increment_counter, record_stream_duration
 from nexusrag.apps.api.deps import (
     Principal,
@@ -187,6 +189,45 @@ def _feature_disabled(message: str) -> HTTPException:
     )
 
 
+def _sla_headers(*, policy_id: str | None, status_value: str, decision: str, route_class: str, window_end: datetime | None) -> dict[str, str]:
+    # Emit stable SLA headers for allow/warn/degrade/shed transparency.
+    return {
+        "X-SLA-Status": status_value,
+        "X-SLA-Policy-Id": policy_id or "",
+        "X-SLA-Decision": decision,
+        "X-SLA-Route-Class": route_class,
+        "X-SLA-Window-End": window_end.isoformat() if window_end else "",
+    }
+
+
+async def _record_sla_observation_safe(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    route_class: str,
+    latency_ms: float,
+    status_code: int,
+    saturation_pct: float | None = None,
+) -> None:
+    # Persist SLA measurements best-effort so runtime responses are never blocked.
+    settings = get_settings()
+    if not settings.sla_engine_enabled:
+        return
+    try:
+        await record_sla_observation(
+            session=session,
+            tenant_id=tenant_id,
+            route_class=route_class,
+            latency_ms=latency_ms,
+            status_code=status_code,
+            saturation_pct=saturation_pct,
+        )
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 - SLA telemetry is advisory, not request-critical
+        await session.rollback()
+        logger.warning("sla_observation_write_failed tenant=%s route_class=%s", tenant_id, route_class, exc_info=exc)
+
+
 async def _estimate_run_cost(
     *,
     session: AsyncSession,
@@ -294,6 +335,7 @@ async def run(
 ) -> StreamingResponse:
     # Per-request identifier for tracing a single streamed conversation.
     request_id = str(uuid4())
+    run_started = time.monotonic()
     settings = get_settings()
     # Resolve cost entitlements once to avoid redundant entitlement lookups.
     cost_entitlements = await get_effective_entitlements(db, principal.tenant_id)
@@ -386,11 +428,157 @@ async def run(
             if not deterministic_canary(principal.tenant_id, rollout_pct):
                 _release_and_raise(_feature_disabled("External retrieval is not enabled for this tenant yet"))
 
+    # Evaluate tenant SLA state before budget and generation flows.
+    sla_decision = await evaluate_tenant_sla(
+        session=db,
+        tenant_id=principal.tenant_id,
+        route_class="run",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        request=http_request,
+        request_id=request_id,
+    )
+    sla_response_headers = _sla_headers(
+        policy_id=sla_decision.policy_id,
+        status_value=sla_decision.status,
+        decision=sla_decision.enforcement_decision,
+        route_class="run",
+        window_end=sla_decision.window_end,
+    )
+    if sla_decision.enforcement_decision == "warn":
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.warned",
+            outcome="success",
+            resource_type="run",
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={"policy_id": sla_decision.policy_id, "status": sla_decision.status},
+            commit=True,
+            best_effort=True,
+        )
+    if sla_decision.enforcement_decision == "shed":
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.shed",
+            outcome="failure",
+            resource_type="run",
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={"policy_id": sla_decision.policy_id, "status": sla_decision.status},
+            commit=True,
+            best_effort=True,
+        )
+
+        async def shed_stream() -> AsyncGenerator[str, None]:
+            seq = 0
+
+            def next_seq() -> int:
+                nonlocal seq
+                seq += 1
+                return seq
+
+            accepted_payload = _wrap_payload(
+                "request.accepted",
+                request_id,
+                payload.session_id,
+                {"accepted_at": datetime.now(timezone.utc).isoformat()},
+            )
+            accepted_payload["seq"] = next_seq()
+            yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
+
+            shed_payload = _wrap_payload(
+                "sla.shed",
+                request_id,
+                payload.session_id,
+                {
+                    "status": sla_decision.status,
+                    "policy_id": sla_decision.policy_id,
+                    "window_end": sla_decision.window_end.isoformat() if sla_decision.window_end else None,
+                },
+            )
+            shed_payload["seq"] = next_seq()
+            yield _sse_message(shed_payload, event_name="sla.shed", event_id=shed_payload["seq"])
+
+            error_payload = _wrap_payload(
+                "error",
+                request_id,
+                payload.session_id,
+                {
+                    "code": "SLA_SHED_LOAD",
+                    "message": "Request shed due to sustained SLA breach",
+                },
+            )
+            error_payload["seq"] = next_seq()
+            yield _sse_message(error_payload, event_id=error_payload["seq"])
+
+            done_payload = _wrap_payload("done", request_id, payload.session_id, {})
+            done_payload["seq"] = next_seq()
+            yield _sse_message(done_payload, event_id=done_payload["seq"])
+
+        await _record_sla_observation_safe(
+            session=db,
+            tenant_id=principal.tenant_id,
+            route_class="run",
+            latency_ms=(time.monotonic() - run_started) * 1000.0,
+            status_code=503,
+        )
+        return StreamingResponse(
+            shed_stream(),
+            headers={
+                **sla_response_headers,
+                "Cache-Control": "no-cache",
+                "Content-Type": "text/event-stream",
+                "Connection": "keep-alive",
+            },
+            media_type="text/event-stream",
+            status_code=503,
+            background=BackgroundTask(lease.release),
+        )
+
     budget_decision = None
     effective_top_k = payload.top_k
     effective_audio = payload.audio
     max_output_tokens = None
     effective_retrieval_provider = resolved_provider
+    if sla_decision.enforcement_decision == "degrade" and sla_decision.degrade_actions is not None:
+        # Apply SLA-driven mitigation controls before budget enforcement and graph execution.
+        effective_audio = not sla_decision.degrade_actions.disable_audio and effective_audio
+        effective_top_k = max(1, min(effective_top_k, sla_decision.degrade_actions.top_k_floor))
+        max_output_tokens = sla_decision.degrade_actions.max_output_tokens
+        if sla_decision.degrade_actions.provider_fallback_order:
+            fallback_provider = sla_decision.degrade_actions.provider_fallback_order[0]
+            retriever.set_forced_provider(fallback_provider)
+            effective_retrieval_provider = fallback_provider
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.degraded",
+            outcome="success",
+            resource_type="run",
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={
+                "policy_id": sla_decision.policy_id,
+                "top_k": effective_top_k,
+                "audio_enabled": effective_audio,
+                "max_output_tokens": max_output_tokens,
+            },
+            commit=True,
+            best_effort=True,
+        )
+
     # Evaluate budget guardrails before persisting or executing retrieval/generation.
     budget_guardrail_enabled = cost_controls_enabled or cost_visibility_enabled
     estimate_meta: dict[str, int] = {}
@@ -481,9 +669,17 @@ async def run(
                 "Cache-Control": "no-cache",
                 "Content-Type": "text/event-stream",
                 "Connection": "keep-alive",
+                **sla_response_headers,
             }
             if cost_visibility_enabled and budget_decision is not None:
                 headers.update(cost_headers(budget_decision))
+            await _record_sla_observation_safe(
+                session=db,
+                tenant_id=principal.tenant_id,
+                route_class="run",
+                latency_ms=(time.monotonic() - run_started) * 1000.0,
+                status_code=402,
+            )
             return StreamingResponse(
                 capped_stream(),
                 headers=headers,
@@ -666,6 +862,7 @@ async def run(
         heartbeat_interval = max(1, int(settings.run_sse_heartbeat_s))
         last_emit = time.monotonic()
         stream_start = time.monotonic()
+        logical_status_code = 200
 
         def next_seq() -> int:
             # Monotonic sequence numbers help clients reconcile stream ordering.
@@ -687,6 +884,24 @@ async def run(
             {"accepted_at": datetime.now(timezone.utc).isoformat()},
         )
         yield emit(accepted_payload)
+        if sla_decision.enforcement_decision in {"warn", "degrade"}:
+            sla_event_name = "sla.warn" if sla_decision.enforcement_decision == "warn" else "sla.degrade.applied"
+            sla_payload = _wrap_payload(
+                sla_event_name,
+                request_id,
+                payload.session_id,
+                {
+                    "status": sla_decision.status,
+                    "policy_id": sla_decision.policy_id,
+                    "decision": sla_decision.enforcement_decision,
+                    "window_end": sla_decision.window_end.isoformat() if sla_decision.window_end else None,
+                    "recommended_actions": list(sla_decision.recommended_actions),
+                    "degrade_actions": sla_decision.degrade_actions.__dict__
+                    if sla_decision.degrade_actions
+                    else {},
+                },
+            )
+            yield emit(sla_payload, event_name=sla_event_name)
         if budget_decision and budget_decision.status in {"warn", "degraded"}:
             event_name = "cost.warn" if budget_decision.status == "warn" else "cost.degraded"
             cost_payload = _wrap_payload(
@@ -757,6 +972,7 @@ async def run(
 
             if error:
                 code, message = _map_error(error)
+                logical_status_code = 500
                 yield emit(
                     _wrap_payload(
                         "error",
@@ -784,6 +1000,7 @@ async def run(
                 # Roll back to avoid partial writes if post-run persistence fails.
                 await db.rollback()
                 code, message = _map_error(exc)
+                logical_status_code = 500
                 yield _sse_message(
                     _wrap_payload(
                         "error",
@@ -871,11 +1088,19 @@ async def run(
                 task.cancel()
             increment_counter("sse_streams_completed")
             record_stream_duration((time.monotonic() - stream_start) * 1000.0)
+            await _record_sla_observation_safe(
+                session=db,
+                tenant_id=principal.tenant_id,
+                route_class="run",
+                latency_ms=(time.monotonic() - run_started) * 1000.0,
+                status_code=logical_status_code,
+            )
 
     headers = {
         "Cache-Control": "no-cache",
         "Content-Type": "text/event-stream",
         "Connection": "keep-alive",
+        **sla_response_headers,
     }
     if cost_visibility_enabled and budget_decision is not None:
         headers.update(cost_headers(budget_decision))

@@ -1400,6 +1400,97 @@ Security notes:
 - Cost metadata is redacted to counts/identifiers; raw prompts and document content are never stored.
 - Metering is best-effort and never blocks requests if cost writes fail.
 
+## SLA Policy Engine & Adaptive Autoscaling
+
+Phase 34 adds a tenant-scoped SLA control plane with policy evaluation, runtime enforcement, incidents, and autoscaling recommendations.
+
+Key settings:
+
+- `SLA_ENGINE_ENABLED=true`
+- `SLA_DEFAULT_ENFORCEMENT_MODE=observe`
+- `SLA_DEFAULT_BREACH_WINDOWS=3`
+- `SLA_MEASUREMENT_WINDOW_SECONDS=60`
+- `SLA_ERROR_BUDGET_WINDOW_MINUTES=60`
+- `SLA_SHED_ENABLED=true`
+- `SLA_DEGRADE_TTS_DISABLE=true`
+- `SLA_DEGRADE_TOP_K_FLOOR=3`
+- `SLA_DEGRADE_MAX_OUTPUT_TOKENS=512`
+- `AUTOSCALING_ENABLED=true`
+- `AUTOSCALING_DRY_RUN=true`
+- `AUTOSCALING_HYSTERESIS_PCT=10`
+- `AUTOSCALING_EXECUTOR=noop`
+
+Decision order:
+
+```text
+measurements/signals -> policy evaluator -> status(healthy|warning|breached)
+-> enforcement decision(allow|warn|degrade|shed) -> runtime headers/SSE/audit
+```
+
+Runtime effects:
+
+- `observe`: evaluate only; request continues.
+- `warn`: request continues with `X-SLA-*` headers and `sla.warn` SSE.
+- `degrade`: request continues with mitigations (disable audio, lower `top_k`, cap output tokens, provider fallback) and `sla.degrade.applied`.
+- `shed`: request is rejected with `503` and `SLA_SHED_LOAD`, plus `sla.shed` SSE.
+
+SLA headers:
+
+- `X-SLA-Status` (`healthy|warning|breached`)
+- `X-SLA-Policy-Id`
+- `X-SLA-Decision` (`allow|warn|degrade|shed`)
+- `X-SLA-Route-Class`
+- `X-SLA-Window-End`
+
+Create policy example:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/sla/policies \
+  -d '{
+    "name":"enterprise-run-sla",
+    "tier":"enterprise",
+    "enabled":true,
+    "version":1,
+    "config_json":{
+      "objectives":{
+        "availability_min_pct":99.9,
+        "p95_ms_max":{"run":1200},
+        "p99_ms_max":{"run":2000},
+        "max_error_budget_burn_5m":2.0
+      },
+      "enforcement":{
+        "mode":"enforce",
+        "breach_window_minutes":5,
+        "consecutive_windows_to_trigger":3
+      },
+      "mitigation":{
+        "allow_degrade":true,
+        "disable_tts_first":true,
+        "reduce_top_k_floor":3,
+        "cap_output_tokens":512,
+        "provider_fallback_order":["local_pgvector"]
+      },
+      "autoscaling_link":{"profile_id":null}
+    }
+  }'
+```
+
+Dry-run autoscaling recommendation:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/sla/autoscaling/evaluate \
+  -d '{
+    "profile_id":"profile_123",
+    "route_class":"run",
+    "current_replicas":2,
+    "p95_ms":1650,
+    "queue_depth":24,
+    "signal_quality":"ok"
+  }'
+```
+
 ## Tenant Self-Serve API
 
 Tenant self-serve endpoints let admins manage API keys, view usage, and request plan upgrades without platform intervention.

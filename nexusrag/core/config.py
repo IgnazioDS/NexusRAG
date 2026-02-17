@@ -124,6 +124,34 @@ class Settings(BaseSettings):
     cost_estimator_token_chars_ratio: float = 4.0
     # Default window for cost timeseries endpoints.
     cost_timeseries_default_days: int = 30
+    # Toggle SLA policy evaluation and runtime enforcement features.
+    sla_engine_enabled: bool = True
+    # Default enforcement mode used when a tenant policy is missing/invalid.
+    sla_default_enforcement_mode: str = "observe"
+    # Number of breached windows required before enforce actions trigger.
+    sla_default_breach_windows: int = 3
+    # Primary measurement cadence for SLA signal aggregation.
+    sla_measurement_window_seconds: int = 60
+    # Rolling window used for error budget burn calculations.
+    sla_error_budget_window_minutes: int = 60
+    # Allow explicit load shedding responses when sustained breaches occur.
+    sla_shed_enabled: bool = True
+    # Apply audio-disable mitigation first in SLA degrade mode when enabled.
+    sla_degrade_tts_disable: bool = True
+    # Floor top_k during SLA degrade mode to reduce retrieval load.
+    sla_degrade_top_k_floor: int = 3
+    # Cap output tokens during SLA degrade mode to bound generation latency.
+    sla_degrade_max_output_tokens: int = 512
+    # Toggle autoscaling recommendation/apply control plane.
+    autoscaling_enabled: bool = True
+    # Keep autoscaling in non-mutating mode unless explicitly disabled.
+    autoscaling_dry_run: bool = True
+    # Background autoscaling recommendation interval.
+    autoscaling_eval_interval_seconds: int = 30
+    # Percent hysteresis applied to scaling targets to avoid oscillation.
+    autoscaling_hysteresis_pct: int = 10
+    # Executor backend for autoscaling apply operations.
+    autoscaling_executor: str = "noop"
     # Centralize external call timeouts for integrations (ms).
     ext_call_timeout_ms: int = 8000
     # Retry transient integration failures for a bounded number of attempts.

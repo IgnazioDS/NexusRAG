@@ -375,6 +375,132 @@ class ChargebackReport(Base):
     generated_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class SlaPolicy(Base):
+    __tablename__ = "sla_policies"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", "version", name="uq_sla_policies_tenant_name_version"),
+    )
+
+    # Version tenant/global SLA policy documents to keep enforcement deterministic.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    tier: Mapped[str] = mapped_column(String)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TenantSlaAssignment(Base):
+    __tablename__ = "tenant_sla_assignments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_tenant_sla_assignments_tenant"),
+    )
+
+    # Bind one active SLA policy per tenant with optional temporary overrides.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    policy_id: Mapped[str] = mapped_column(String, ForeignKey("sla_policies.id"), index=True)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    override_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SlaMeasurement(Base):
+    __tablename__ = "sla_measurements"
+    __table_args__ = (
+        Index("ix_sla_measurements_tenant_route_window_end", "tenant_id", "route_class", "window_end"),
+    )
+
+    # Persist rolling route-class SLA windows for runtime decisions and trends.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    route_class: Mapped[str] = mapped_column(String, index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    request_count: Mapped[int] = mapped_column(Integer)
+    error_count: Mapped[int] = mapped_column(Integer)
+    p50_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p95_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p99_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    availability_pct: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    saturation_pct: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SlaIncident(Base):
+    __tablename__ = "sla_incidents"
+
+    # Track breach lifecycle and mitigation status for operator workflows.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    policy_id: Mapped[str] = mapped_column(String, ForeignKey("sla_policies.id"), index=True)
+    route_class: Mapped[str] = mapped_column(String)
+    breach_type: Mapped[str] = mapped_column(String)
+    severity: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    first_breach_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_breach_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutoscalingProfile(Base):
+    __tablename__ = "autoscaling_profiles"
+    __table_args__ = (
+        Index("ix_autoscaling_profiles_tenant", "tenant_id"),
+    )
+
+    # Define autoscaling bounds and control-loop targets for recommendations.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    scope: Mapped[str] = mapped_column(String)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    route_class: Mapped[str | None] = mapped_column(String, nullable=True)
+    min_replicas: Mapped[int] = mapped_column(Integer)
+    max_replicas: Mapped[int] = mapped_column(Integer)
+    target_p95_ms: Mapped[int] = mapped_column(Integer)
+    target_queue_depth: Mapped[int] = mapped_column(Integer)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer)
+    step_up: Mapped[int] = mapped_column(Integer)
+    step_down: Mapped[int] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AutoscalingAction(Base):
+    __tablename__ = "autoscaling_actions"
+    __table_args__ = (
+        Index("ix_autoscaling_actions_tenant", "tenant_id"),
+    )
+
+    # Persist autoscaling recommendations/applies to preserve full control-plane audit trails.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String, ForeignKey("autoscaling_profiles.id"), index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    route_class: Mapped[str] = mapped_column(String)
+    action: Mapped[str] = mapped_column(String)
+    from_replicas: Mapped[int] = mapped_column(Integer)
+    to_replicas: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(Text)
+    signal_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    executed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Plan(Base):
     __tablename__ = "plans"
 
