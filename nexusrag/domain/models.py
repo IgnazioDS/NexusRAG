@@ -64,6 +64,8 @@ class ApiKey(Base):
     key_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
     # Optional label for key management scripts and auditing.
     name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Enforce optional key expiry for least-privilege and periodic credential rotation.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -868,6 +870,22 @@ class KeyRotationJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PlatformKey(Base):
+    __tablename__ = "platform_keys"
+    __table_args__ = (
+        Index("ix_platform_keys_purpose_status_created", "purpose", "status", text("created_at DESC")),
+    )
+
+    # Track platform-level signing/encryption key lifecycle independently from tenant data keys.
+    key_id: Mapped[str] = mapped_column(String, primary_key=True)
+    purpose: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    # Store encrypted key material to avoid plaintext secrets at rest.
+    secret_ciphertext: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ControlCatalog(Base):
     __tablename__ = "control_catalog"
 
@@ -961,6 +979,37 @@ class ComplianceArtifact(Base):
     created_by_actor_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class ComplianceSnapshot(Base):
+    __tablename__ = "compliance_snapshots"
+    __table_args__ = (
+        Index("ix_compliance_snapshots_created", text("created_at DESC")),
+    )
+
+    # Persist point-in-time control evaluations and redacted evidence metadata for audit exports.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    controls_json: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+
+
+class RetentionRun(Base):
+    __tablename__ = "retention_runs"
+    __table_args__ = (
+        Index("ix_retention_runs_task_last_run", "task", text("last_run_at DESC")),
+    )
+
+    # Record retention maintenance executions for externally verifiable governance posture.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    task: Mapped[str] = mapped_column(String, index=True)
+    last_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    outcome: Mapped[str] = mapped_column(String)
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
 
 class IdempotencyRecord(Base):
@@ -1163,6 +1212,7 @@ Index("ix_chunks_corpus_id", Chunk.corpus_id)
 Index("ix_documents_status_queued_at", Document.status, Document.queued_at.desc())
 Index("ix_documents_status_processing_started_at", Document.status, Document.processing_started_at.desc())
 Index("ix_documents_status_completed_at", Document.status, Document.completed_at.desc())
+Index("ix_api_keys_expires_at", ApiKey.expires_at)
 Index(
     "ix_audit_events_tenant_occurred_at",
     AuditEvent.tenant_id,

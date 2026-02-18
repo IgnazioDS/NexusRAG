@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +53,8 @@ router = APIRouter(prefix="/self-serve", tags=["self-serve"], responses=DEFAULT_
 class ApiKeyCreateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=128)
     role: Literal["reader", "editor", "admin"]
+    # Allow tenant admins to enforce bounded key lifetime at creation time.
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class ApiKeyResponse(BaseModel):
@@ -62,6 +64,7 @@ class ApiKeyResponse(BaseModel):
     role: str
     created_at: str
     last_used_at: str | None
+    expires_at: str | None
     revoked_at: str | None
     is_active: bool
 
@@ -72,6 +75,23 @@ class ApiKeyCreateResponse(ApiKeyResponse):
 
 class ApiKeyListResponse(BaseModel):
     items: list[ApiKeyResponse]
+
+
+class ApiKeyInactiveItem(BaseModel):
+    key_id: str
+    key_prefix: str
+    name: str | None
+    role: str
+    created_at: str
+    last_used_at: str | None
+    expires_at: str | None
+    inactive_days: int
+    is_expired: bool
+
+
+class ApiKeyInactiveReportResponse(BaseModel):
+    inactive_days_threshold: int
+    items: list[ApiKeyInactiveItem]
 
 
 class UsageSummaryResponse(BaseModel):
@@ -275,6 +295,7 @@ async def create_api_key(
             .where(
                 ApiKey.tenant_id == principal.tenant_id,
                 ApiKey.revoked_at.is_(None),
+                or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > func.now()),
                 User.is_active.is_(True),
             )
         )
@@ -299,6 +320,7 @@ async def create_api_key(
         role = normalize_role(payload.role)
         user_id = uuid4().hex
         key_id, raw_key, key_prefix, key_hash = generate_api_key()
+        expires_at = _utc_now() + timedelta(days=payload.expires_in_days) if payload.expires_in_days else None
         user = User(
             id=user_id,
             tenant_id=principal.tenant_id,
@@ -313,6 +335,7 @@ async def create_api_key(
             key_prefix=key_prefix,
             key_hash=key_hash,
             name=payload.name,
+            expires_at=expires_at,
         )
         db.add(user)
         await db.flush()
@@ -341,8 +364,9 @@ async def create_api_key(
         role=role,
         created_at=created_at,
         last_used_at=None,
+        expires_at=api_key.expires_at.isoformat() if api_key.expires_at else None,
         revoked_at=None,
-        is_active=True,
+        is_active=api_key.expires_at is None or api_key.expires_at > _utc_now(),
         api_key=raw_key,
     )
     payload_body = success_response(request=request, data=response_payload)
@@ -373,8 +397,10 @@ async def list_api_keys(
         raise HTTPException(status_code=500, detail="Database error while listing API keys") from exc
 
     items: list[ApiKeyResponse] = []
+    now = _utc_now()
     for api_key, user in result.all():
-        is_active = bool(user.is_active) and api_key.revoked_at is None
+        is_expired = api_key.expires_at is not None and api_key.expires_at <= now
+        is_active = bool(user.is_active) and api_key.revoked_at is None and not is_expired
         items.append(
             ApiKeyResponse(
                 key_id=api_key.id,
@@ -383,6 +409,7 @@ async def list_api_keys(
                 role=user.role,
                 created_at=api_key.created_at.isoformat(),
                 last_used_at=api_key.last_used_at.isoformat() if api_key.last_used_at else None,
+                expires_at=api_key.expires_at.isoformat() if api_key.expires_at else None,
                 revoked_at=api_key.revoked_at.isoformat() if api_key.revoked_at else None,
                 is_active=is_active,
             )
@@ -452,7 +479,8 @@ async def revoke_api_key(
         metadata={"key_id": api_key.id},
     )
 
-    is_active = bool(user.is_active) and api_key.revoked_at is None
+    is_expired = api_key.expires_at is not None and api_key.expires_at <= _utc_now()
+    is_active = bool(user.is_active) and api_key.revoked_at is None and not is_expired
     response_payload = ApiKeyResponse(
         key_id=api_key.id,
         key_prefix=api_key.key_prefix,
@@ -460,6 +488,7 @@ async def revoke_api_key(
         role=user.role,
         created_at=api_key.created_at.isoformat(),
         last_used_at=api_key.last_used_at.isoformat() if api_key.last_used_at else None,
+        expires_at=api_key.expires_at.isoformat() if api_key.expires_at else None,
         revoked_at=api_key.revoked_at.isoformat() if api_key.revoked_at else None,
         is_active=is_active,
     )
@@ -471,6 +500,61 @@ async def revoke_api_key(
         response_body=jsonable_encoder(payload_body),
     )
     return payload_body
+
+
+@router.get(
+    "/api-keys/inactive-report",
+    response_model=SuccessEnvelope[ApiKeyInactiveReportResponse] | ApiKeyInactiveReportResponse,
+)
+async def inactive_api_key_report(
+    request: Request,
+    inactive_days: int = Query(default=90, ge=1, le=3650),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyInactiveReportResponse:
+    # Report stale API keys to support periodic credential hygiene workflows.
+    try:
+        result = await db.execute(
+            select(ApiKey, User)
+            .join(User, ApiKey.user_id == User.id)
+            .where(ApiKey.tenant_id == principal.tenant_id, ApiKey.revoked_at.is_(None))
+            .order_by(ApiKey.created_at.desc())
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=500, detail="Database error while building inactive key report") from exc
+
+    now = _utc_now()
+    threshold = timedelta(days=inactive_days)
+    items: list[ApiKeyInactiveItem] = []
+    for api_key, user in result.all():
+        activity_anchor = api_key.last_used_at or api_key.created_at
+        inactivity_delta = now - activity_anchor
+        is_expired = api_key.expires_at is not None and api_key.expires_at <= now
+        if inactivity_delta < threshold and not is_expired:
+            continue
+        items.append(
+            ApiKeyInactiveItem(
+                key_id=api_key.id,
+                key_prefix=api_key.key_prefix,
+                name=api_key.name,
+                role=user.role,
+                created_at=api_key.created_at.isoformat(),
+                last_used_at=api_key.last_used_at.isoformat() if api_key.last_used_at else None,
+                expires_at=api_key.expires_at.isoformat() if api_key.expires_at else None,
+                inactive_days=max(0, int(inactivity_delta.days)),
+                is_expired=is_expired,
+            )
+        )
+
+    await _audit(
+        db=db,
+        principal=principal,
+        request=request,
+        event_type="selfserve.api_key.inactive_reported",
+        outcome="success",
+        metadata={"inactive_days": inactive_days, "count": len(items)},
+    )
+    return ApiKeyInactiveReportResponse(inactive_days_threshold=inactive_days, items=items)
 
 
 @router.get(

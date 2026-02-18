@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 import asyncio
 import time
@@ -421,6 +422,28 @@ async def get_current_principal(
             actor_id=api_key.id,
             actor_role=user.role,
             event_type="auth.access.failure",
+            outcome="failure",
+            resource_type="auth",
+            request_id=request_ctx["request_id"],
+            ip_address=request_ctx["ip_address"],
+            user_agent=request_ctx["user_agent"],
+            metadata={**_request_metadata(request), "user_id": user.id},
+            error_code=_extract_error_code(error),
+            commit=True,
+            best_effort=True,
+        )
+        raise error
+    if api_key.expires_at is not None and api_key.expires_at <= datetime.now(timezone.utc):
+        # Deny expired credentials explicitly so operators can distinguish expiry from revocation.
+        error = _auth_error("API key expired")
+        request_ctx = get_request_context(request)
+        await record_event(
+            session=db,
+            tenant_id=api_key.tenant_id,
+            actor_type="api_key",
+            actor_id=api_key.id,
+            actor_role=user.role,
+            event_type="auth.api_key.expired",
             outcome="failure",
             resource_type="auth",
             request_id=request_ctx["request_id"],
