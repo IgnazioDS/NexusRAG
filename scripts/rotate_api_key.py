@@ -18,6 +18,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Rotate an API key and revoke the previous credential")
     parser.add_argument("old_key_id", help="API key id to rotate")
     parser.add_argument("--name", default=None, help="Optional label for the new key")
+    parser.add_argument(
+        "--keep-old-active",
+        action="store_true",
+        help="Keep the previous key active (default is to revoke it after rotation)",
+    )
     return parser
 
 
@@ -42,7 +47,9 @@ async def _rotate(args: argparse.Namespace) -> int:
             name=args.name or old_key.name,
             expires_at=old_key.expires_at,
         )
-        old_key.revoked_at = datetime.now(timezone.utc)
+        if not args.keep_old_active:
+            # Default to revoking the previous key to enforce one-active-key rotation hygiene.
+            old_key.revoked_at = datetime.now(timezone.utc)
         session.add(new_key)
         await session.commit()
 
@@ -61,6 +68,7 @@ async def _rotate(args: argparse.Namespace) -> int:
                 "new_key_id": new_key.id,
                 "user_id": old_key.user_id,
                 "name": new_key.name,
+                "old_key_revoked": not args.keep_old_active,
             },
             commit=True,
             best_effort=False,
@@ -69,6 +77,7 @@ async def _rotate(args: argparse.Namespace) -> int:
     print("API key rotated:")
     print(f"  old_key_id: {args.old_key_id}")
     print(f"  new_key_id: {new_id}")
+    print(f"  old_key_revoked: {not args.keep_old_active}")
     print(f"  key_prefix: {key_prefix}")
     print("  api_key:")
     print(f"    {raw_key}")
