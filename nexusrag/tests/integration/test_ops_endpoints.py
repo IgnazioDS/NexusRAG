@@ -228,4 +228,29 @@ async def test_ops_operability_summary_shape(monkeypatch) -> None:
     assert "enabled" in payload
     assert "evaluator_heartbeat_age_s" in payload
     assert "jobs_queued" in payload
+    assert "jobs_delivering" in payload
+    assert "jobs_retrying" in payload
+    assert "jobs_dlq" in payload
     assert "jobs_failed_last_hour" in payload
+
+
+@pytest.mark.asyncio
+async def test_ops_notifications_summary_shape(monkeypatch) -> None:
+    # Validate notification-focused ops summary includes queue and failure aggregates.
+    monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
+    get_settings.cache_clear()
+    app = create_app()
+    headers = await _admin_headers()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ops/notifications", headers=headers)
+    payload = response.json()
+    assert response.status_code == 200
+    assert "jobs_queued" in payload
+    assert "jobs_delivering" in payload
+    assert "jobs_retrying" in payload
+    assert "jobs_dlq" in payload
+    assert "attempts_last_15m" in payload
+    assert "failures_last_15m" in payload
+    assert "top_failure_reasons" in payload

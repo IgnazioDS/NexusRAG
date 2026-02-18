@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -376,13 +377,116 @@ async def test_notification_job_cas_prevents_reprocessing(monkeypatch) -> None:
         async with SessionLocal() as session:
             processed = await notifications_module.process_notification_job(session=session, job_id=job_id)
             assert processed is not None
-            assert processed.status == "succeeded"
+            assert processed.status == "delivered"
 
         async with SessionLocal() as session:
             second = await notifications_module.process_notification_job(session=session, job_id=job_id)
             assert second is None
     finally:
         await _cleanup_tenant(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_notification_job_claim_is_single_owner_under_concurrency(monkeypatch) -> None:
+    tenant_id = f"t-notify-cas-concurrent-{uuid4().hex}"
+    fixed_now = datetime(2026, 2, 18, 12, 9, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(notifications_module, "_utc_now", lambda: fixed_now)
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    async def _slow_deliver(*, destination, payload_bytes, headers):  # type: ignore[override]
+        _ = destination, payload_bytes, headers
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    monkeypatch.setattr(notifications_module, "_deliver", _slow_deliver)
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    job_id = uuid4().hex
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                NotificationJob(
+                    id=job_id,
+                    tenant_id=tenant_id,
+                    incident_id=None,
+                    alert_event_id=None,
+                    destination="noop://concurrency",
+                    dedupe_key="incident.opened",
+                    dedupe_window_start=fixed_now,
+                    payload_json={"event_type": "incident.opened"},
+                    status="queued",
+                    next_attempt_at=fixed_now,
+                    attempt_count=0,
+                    last_error=None,
+                )
+            )
+            await session.commit()
+
+        async def _run_once() -> str | None:
+            async with SessionLocal() as local_session:
+                row = await notifications_module.process_notification_job(session=local_session, job_id=job_id)
+                return row.status if row is not None else None
+
+        statuses = await asyncio.gather(_run_once(), _run_once())
+        delivered_count = sum(1 for status in statuses if status == "delivered")
+        skipped_count = sum(1 for status in statuses if status is None)
+        assert delivered_count == 1
+        assert skipped_count == 1
+    finally:
+        await _cleanup_tenant(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_notification_job_max_age_transitions_to_dlq(monkeypatch) -> None:
+    tenant_id = f"t-notify-expired-{uuid4().hex}"
+    fixed_now = datetime(2026, 2, 18, 12, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(notifications_module, "_utc_now", lambda: fixed_now)
+    monkeypatch.setenv("NOTIFY_MAX_AGE_SECONDS", "1")
+    get_settings.cache_clear()
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                NotificationJob(
+                    id=uuid4().hex,
+                    tenant_id=tenant_id,
+                    incident_id=None,
+                    alert_event_id=None,
+                    destination="noop://expired",
+                    dedupe_key="incident.opened",
+                    dedupe_window_start=fixed_now,
+                    payload_json={"event_type": "incident.opened"},
+                    status="queued",
+                    next_attempt_at=fixed_now,
+                    attempt_count=0,
+                    last_error=None,
+                    created_at=datetime(2026, 2, 18, 11, 0, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 2, 18, 11, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            await session.commit()
+            job = (
+                await session.execute(select(NotificationJob).where(NotificationJob.tenant_id == tenant_id).limit(1))
+            ).scalar_one()
+            processed = await notifications_module.process_notification_job(session=session, job_id=job.id)
+            assert processed is not None
+            assert processed.status == "dlq"
+            dead_letter = (
+                await session.execute(
+                    select(NotificationDeadLetter).where(NotificationDeadLetter.job_id == job.id)
+                )
+            ).scalar_one_or_none()
+            assert dead_letter is not None
+            assert dead_letter.reason == "expired"
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
