@@ -612,6 +612,10 @@ class NotificationDestination(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String, index=True)
     destination_url: Mapped[str] = mapped_column(String)
+    # Persist encrypted webhook secrets so delivery signatures can be generated without plaintext storage.
+    secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Allow deterministic destination-level static headers without hardcoding them in code paths.
+    headers_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -655,6 +659,8 @@ class NotificationAttempt(Base):
     attempt_no: Mapped[int] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Capture outbound payload digest to support receiver-side dedupe verification and delivery forensics.
+    payload_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     outcome: Mapped[str] = mapped_column(String, index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

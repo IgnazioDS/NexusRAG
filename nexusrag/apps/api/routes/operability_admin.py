@@ -163,6 +163,9 @@ def _notification_destination_payload(row: Any) -> dict[str, Any]:
         "id": row.id,
         "tenant_id": row.tenant_id,
         "destination_url": row.destination_url,
+        # Expose destination headers while keeping secret material write-only for operator safety.
+        "headers_json": row.headers_json or {},
+        "has_secret": bool(getattr(row, "secret_encrypted", None)),
         "enabled": row.enabled,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
