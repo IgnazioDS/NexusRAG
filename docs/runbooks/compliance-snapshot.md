@@ -2,7 +2,7 @@
 
 ## Generate snapshot
 
-`POST /v1/admin/compliance/snapshot`
+`POST /v1/admin/compliance/snapshot` or `POST /v1/admin/compliance/snapshots`
 
 Expected result: snapshot id, summary status, and per-control results persisted.
 
@@ -13,7 +13,7 @@ Expected result: snapshot id, summary status, and per-control results persisted.
 
 ## Export evidence bundle
 
-`GET /v1/admin/compliance/bundle/{snapshot_id}.zip`
+`GET /v1/admin/compliance/bundle/{snapshot_id}.zip` or `GET /v1/admin/compliance/snapshots/{snapshot_id}/download`
 
 Verify bundle includes:
 
@@ -24,9 +24,12 @@ Verify bundle includes:
 - `changelog_excerpt.md`
 - `capacity_model_excerpt.md`
 - `perf_gates_excerpt.json`
+- `perf_report_summary.md`
+- `ops_metrics_24h_summary.json`
 
 ## Validation checks
 
 - Secrets are redacted in `config_sanitized.json`
 - Snapshot status matches control result aggregation
 - Audit events emitted for snapshot and bundle generation
+- Archive is persisted to `var/evidence/<snapshot_id>.zip`

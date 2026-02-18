@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag
+.PHONY: up migrate seed test perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag lint typecheck secrets-scan sca
 
 up:
 	# Bring up docker compose services for local dev.
@@ -40,7 +40,7 @@ security-audit:
 
 security-lint:
 	# Run deterministic static checks for security-sensitive modules.
-	python -m ruff check nexusrag/services/compliance nexusrag/services/security nexusrag/apps/api/routes/compliance.py nexusrag/apps/api/routes/keys_admin.py scripts/compliance_snapshot.py scripts/security_secrets_scan.py scripts/rotate_api_key.py --select E9,F63,F7,F82,F401
+	python -m ruff check nexusrag/services/compliance nexusrag/services/security nexusrag/apps/api/routes/compliance.py nexusrag/apps/api/routes/keys_admin.py nexusrag/apps/api/routes/keyring_admin.py nexusrag/apps/api/routes/api_keys_admin.py scripts/compliance_snapshot.py scripts/security_secrets_scan.py scripts/rotate_api_key.py scripts/rotate_platform_key.py --select E9,F63,F7,F82,F401
 	python -m mypy --ignore-missing-imports --follow-imports=skip nexusrag/services/security/keyring.py nexusrag/services/compliance/evidence.py nexusrag/services/compliance/controls.py
 
 security-secrets-scan:
@@ -54,6 +54,23 @@ compliance-snapshot:
 git-network-diag:
 	# Run non-destructive GitHub transport diagnostics for push/pull troubleshooting.
 	./scripts/git_network_diag.sh
+
+lint:
+	# Provide a standard lint entrypoint for CI wrappers and local developer workflows.
+	python -m ruff check nexusrag scripts
+
+typecheck:
+	# Keep type checks deterministic by targeting security/compliance modules with stable import surfaces.
+	python -m mypy --ignore-missing-imports --follow-imports=skip nexusrag/services/security/keyring.py nexusrag/services/compliance/evidence.py nexusrag/services/compliance/controls.py nexusrag/apps/api/routes/api_keys_admin.py nexusrag/apps/api/routes/keyring_admin.py
+
+secrets-scan:
+	# Run deterministic tracked-file secret scans while excluding local env/runtime directories.
+	python scripts/security_secrets_scan.py
+
+sca:
+	# Provide a short alias for dependency vulnerability scanning in pre-release gates.
+	mkdir -p var/security
+	pip-audit --progress-spinner off > var/security/pip-audit.txt
 
 sdk-generate:
 	# Generate TypeScript and Python SDKs from the OpenAPI schema.

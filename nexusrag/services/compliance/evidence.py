@@ -225,7 +225,7 @@ async def build_bundle_archive(session: AsyncSession, snapshot: ComplianceSnapsh
         archive.writestr("perf_report_summary.md", perf_report_summary)
         archive.writestr("ops_metrics_24h_summary.json", json.dumps(ops_metrics, indent=2, sort_keys=True))
     payload = buffer.getvalue()
-    evidence_dir = Path("var/evidence")
+    evidence_dir = Path(get_settings().compliance_evidence_dir)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     # Persist generated bundles under var/evidence for deterministic operator retrieval.
     (evidence_dir / f"{snapshot.id}.zip").write_bytes(payload)

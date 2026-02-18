@@ -1890,6 +1890,10 @@ make security-audit
 make security-lint
 make security-secrets-scan
 make compliance-snapshot
+make lint
+make typecheck
+make secrets-scan
+make sca
 ```
 
 ## Security & Compliance
@@ -1901,14 +1905,36 @@ make security-audit
 make security-lint
 make security-secrets-scan
 make compliance-snapshot TENANT_ID=t1 ACTOR_ID=admin
+make lint
+make typecheck
+make secrets-scan
+make sca
 ```
 
 Compliance snapshot/bundle APIs:
 
 - `POST /v1/admin/compliance/snapshot`
+- `POST /v1/admin/compliance/snapshots`
 - `GET /v1/admin/compliance/snapshots?limit=20`
 - `GET /v1/admin/compliance/snapshots/{id}`
 - `GET /v1/admin/compliance/bundle/{snapshot_id}.zip`
+- `GET /v1/admin/compliance/snapshots/{snapshot_id}/download`
+
+API key lifecycle admin APIs:
+
+- `GET /v1/admin/api-keys?tenant_id=t1`
+- `PATCH /v1/admin/api-keys/{id}`
+
+Keyring admin APIs:
+
+- `GET /v1/admin/keyring`
+- `POST /v1/admin/keyring/rotate?purpose=signing|encryption|backup_signing|backup_encryption|webhook_signing`
+- `POST /v1/admin/keyring/{key_id}/retire`
+
+Retention proof APIs:
+
+- `POST /v1/admin/governance/retention/run?task=prune_all`
+- `GET /v1/admin/governance/retention/status`
 
 Bundle contents:
 
@@ -1919,6 +1945,13 @@ Bundle contents:
 - `changelog_excerpt.md`
 - `capacity_model_excerpt.md`
 - `perf_gates_excerpt.json`
+- `perf_report_summary.md`
+- `ops_metrics_24h_summary.json`
+
+CLI helpers:
+
+- `python scripts/rotate_api_key.py <old_key_id> [--keep-old-active]`
+- `python scripts/list_api_keys.py --tenant t1 --inactive-only`
 
 ## Release process
 
