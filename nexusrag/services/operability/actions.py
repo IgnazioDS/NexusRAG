@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+import os
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -14,9 +15,10 @@ from nexusrag.services.audit import record_event
 from nexusrag.services.failover import set_write_freeze
 from nexusrag.services.resilience import get_resilience_redis, reset_circuit_breaker
 
-
 _FORCED_SHED_PREFIX = "nexusrag:ops:forced_shed:v2"
 _FORCED_TTS_PREFIX = "nexusrag:ops:forced_tts_disabled:v2"
+_FORCED_CONTROL_LEASE_PREFIX = "forced_control_writer_lease"
+_FORCED_CONTROL_LEASE_TOKEN = f"{os.getpid()}:{uuid4().hex}"
 
 
 def _utc_now() -> datetime:
@@ -32,12 +34,33 @@ def _forced_tts_key(tenant_id: str) -> str:
     return f"{_FORCED_TTS_PREFIX}:{tenant_id}"
 
 
+def _forced_control_lease_key() -> str:
+    # Scope writer lease by region so only one process in the active writer region mutates forced flags.
+    return f"{_FORCED_CONTROL_LEASE_PREFIX}:{get_settings().region_id}"
+
+
 def _allowed_writer_region() -> bool:
     # Restrict forced-flag writers to primary region unless assisted failover mode explicitly permits it.
     settings = get_settings()
     if settings.region_role.strip().lower() == "primary":
         return True
     return settings.failover_enabled and settings.failover_mode.strip().lower() == "assisted"
+
+
+async def _acquire_forced_control_lease(redis: Any) -> tuple[bool, str | None]:
+    # Require short-lived writer lease ownership to reduce concurrent writes from misconfigured worker replicas.
+    lease_key = _forced_control_lease_key()
+    lease_token = f"{get_settings().region_id}:{_FORCED_CONTROL_LEASE_TOKEN}"
+    ttl_s = max(5, int(get_settings().ops_forced_writer_lease_ttl_s))
+    acquired = await redis.set(lease_key, lease_token, nx=True, ex=ttl_s)
+    if acquired:
+        return True, None
+    current = await redis.get(lease_key)
+    current_value = current.decode("utf-8") if isinstance(current, (bytes, bytearray)) else str(current or "")
+    if current_value == lease_token:
+        await redis.set(lease_key, lease_token, ex=ttl_s)
+        return True, None
+    return False, "writer_lease_unavailable"
 
 
 async def _set_versioned_flag(*, key: str, value: bool, ttl_s: int) -> dict[str, Any]:
@@ -47,6 +70,9 @@ async def _set_versioned_flag(*, key: str, value: bool, ttl_s: int) -> dict[str,
         return {"applied": False, "reason": "redis_unavailable"}
     if not _allowed_writer_region():
         return {"applied": False, "reason": "region_not_allowed"}
+    lease_acquired, lease_error = await _acquire_forced_control_lease(redis)
+    if not lease_acquired:
+        return {"applied": False, "reason": lease_error or "writer_lease_unavailable"}
 
     version_key = f"{key}:version"
     version = int(await redis.incr(version_key))
