@@ -29,3 +29,5 @@ tests/perf/reports/*
 # Frontend SDK artifacts
 sdk/frontend/node_modules/
 sdk/frontend/dist/
+var/security/pip-audit.txt
+.gitignore
