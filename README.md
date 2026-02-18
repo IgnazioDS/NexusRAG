@@ -1506,6 +1506,7 @@ Key settings:
 - `NOTIFY_MAX_ATTEMPTS=5`
 - `NOTIFY_BACKOFF_MS=500`
 - `NOTIFY_BACKOFF_MAX_MS=15000`
+- `NOTIFY_MAX_AGE_SECONDS=86400`
 - `NOTIFY_DEDUPE_WINDOW_S=300`
 - `NOTIFY_QUEUE_NAME=notifications`
 - `OPS_FORCED_FLAG_TTL_S=900`
@@ -1558,7 +1559,10 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/admin/notifications/jobs?status=retrying"
 
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
-  http://localhost:8000/v1/admin/notifications/jobs/$JOB_ID/retry
+  http://localhost:8000/v1/admin/notifications/jobs/$JOB_ID/retry-now
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/jobs/$JOB_ID/attempts"
 ```
 
 Tenant notification destinations:
@@ -1566,7 +1570,12 @@ Tenant notification destinations:
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
   http://localhost:8000/v1/admin/notifications/destinations \
-  -d '{"tenant_id":"t1","url":"https://example.com/webhook"}'
+  -d '{
+    "tenant_id":"t1",
+    "url":"https://example.com/webhook",
+    "headers_json":{"X-Env":"prod"},
+    "secret":"replace-with-shared-secret"
+  }'
 
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/admin/notifications/destinations?tenant_id=t1"
@@ -1579,6 +1588,18 @@ Notification routing policies:
 - Matching routes are evaluated by `priority` (lower value first), then route destination order.
 - If no route matches: fallback is tenant enabled destinations, then `NOTIFY_WEBHOOK_URLS_JSON`.
 - Delivery is at-least-once; receivers should dedupe using `X-Notification-Id`.
+
+Notification delivery contract:
+
+- `X-Notification-Id`: stable per job id.
+- `X-Notification-Attempt`: 1-based delivery attempt number.
+- `X-Notification-Event-Type`: event type (for example `incident.opened`).
+- `X-Notification-Tenant-Id`: tenant context for receiver-side routing.
+- `X-Notification-Signature`: optional `sha256=<hex>` HMAC over raw JSON body when destination secret is configured.
+- `X-Notification-Id` is regenerated on DLQ replay because replay creates a new job id.
+- Payloads are serialized deterministically and each attempt stores `payload_sha256` for forensic verification.
+- Retry semantics: exponential backoff + deterministic jitter, capped by `NOTIFY_MAX_ATTEMPTS`.
+- Max age policy: jobs older than `NOTIFY_MAX_AGE_SECONDS` move to DLQ with reason `expired`.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
@@ -1600,7 +1621,7 @@ DLQ and replay:
 
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  "http://localhost:8000/v1/admin/notifications/jobs?tenant_id=t1&status=dead_lettered"
+  "http://localhost:8000/v1/admin/notifications/jobs?tenant_id=t1&status=dlq"
 
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/admin/notifications/dlq?tenant_id=t1"
@@ -1614,6 +1635,9 @@ Operability summary:
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   http://localhost:8000/v1/ops/operability
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/ops/notifications
 ```
 
 Operator actions (`Idempotency-Key` required):

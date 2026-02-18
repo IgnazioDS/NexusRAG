@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,6 +45,7 @@ def _apply_env(monkeypatch) -> None:
     monkeypatch.setenv("ALERTING_ENABLED", "true")
     monkeypatch.setenv("INCIDENT_AUTOMATION_ENABLED", "true")
     monkeypatch.setenv("OPS_NOTIFICATION_ADAPTER", "noop")
+    monkeypatch.setenv("KEYRING_MASTER_KEY", "local-test-key")
     monkeypatch.setenv("FAILOVER_ENABLED", "false")
     monkeypatch.setenv("RL_KEY_READ_RPS", "100")
     monkeypatch.setenv("RL_KEY_READ_BURST", "200")
@@ -239,8 +243,15 @@ async def test_background_evaluator_opens_incidents_without_request_traffic(monk
         }
 
     from nexusrag.services.operability import alerts as alerts_module
+    from nexusrag.services.operability import worker as worker_module
 
     monkeypatch.setattr(alerts_module, "_collect_metrics", _metrics_stub)
+    # Keep evaluator test bounded to this tenant so fixture residue never amplifies test runtime.
+    async def _tenant_ids_stub(session):  # type: ignore[override]
+        _ = session
+        return [tenant_id]
+
+    monkeypatch.setattr(worker_module, "list_alerting_tenant_ids", _tenant_ids_stub)
     try:
         redis = await get_resilience_redis()
         if redis is not None:
@@ -270,11 +281,16 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
         role="admin",
         plan_id="enterprise",
     )
+    _raw_other, other_headers, _other_user, _other_key = await create_test_api_key(
+        tenant_id=f"{tenant_id}-other",
+        role="admin",
+        plan_id="enterprise",
+    )
 
     from nexusrag.services.operability import notifications as notifications_module
     from nexusrag.services.operability.incidents import open_incident_for_alert
 
-    async def _always_fail(*, destination, body, notification_id):  # type: ignore[override]
+    async def _always_fail(*, destination, payload_bytes, headers):  # type: ignore[override]
         raise RuntimeError("forced failure")
 
     async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
@@ -316,7 +332,7 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
         async with SessionLocal() as session:
             refreshed = await session.get(NotificationJob, job_id)
             assert refreshed is not None
-            assert refreshed.status in {"retrying", "gave_up"}
+            assert refreshed.status in {"retrying", "dlq"}
             assert refreshed.attempt_count >= 1
 
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -329,12 +345,23 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
             assert detail.status_code == 200
             assert detail.json()["data"]["id"] == job_id
 
-            retry = await client.post(f"/v1/admin/notifications/jobs/{job_id}/retry", headers=headers)
+            retry = await client.post(f"/v1/admin/notifications/jobs/{job_id}/retry-now", headers=headers)
             assert retry.status_code == 200
             assert retry.json()["data"]["id"] == job_id
-            assert retry.json()["data"]["status"] == "retrying"
+            assert retry.json()["data"]["status"] == "queued"
+
+            attempts = await client.get(f"/v1/admin/notifications/jobs/{job_id}/attempts", headers=headers)
+            assert attempts.status_code == 200
+            assert attempts.json()["data"]["items"]
+
+            cross_tenant_attempts = await client.get(
+                f"/v1/admin/notifications/jobs/{job_id}/attempts",
+                headers=other_headers,
+            )
+            assert cross_tenant_attempts.status_code == 404
     finally:
         await _cleanup_tenant(tenant_id)
+        await _cleanup_tenant(f"{tenant_id}-other")
         get_settings.cache_clear()
 
 
@@ -381,7 +408,178 @@ async def test_notification_job_processes_successfully(monkeypatch) -> None:
             ).scalar_one()
             processed = await process_notification_job(session=session, job_id=job.id)
             assert processed is not None
-            assert processed.status == "succeeded"
+            assert processed.status == "delivered"
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_delivery_contract_signature_and_attempt_hash(monkeypatch) -> None:
+    tenant_id = f"t-operability-signature-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    monkeypatch.setenv("KEYRING_MASTER_KEY", "local-test-key")
+    get_settings.cache_clear()
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    captured: dict[str, str] = {}
+    captured_body = b""
+
+    async def _capture_delivery(*, destination, payload_bytes, headers):  # type: ignore[override]
+        nonlocal captured, captured_body
+        captured = {str(k): str(v) for k, v in headers.items()}
+        captured_body = payload_bytes
+        assert destination == "noop://signed"
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    monkeypatch.setattr(notifications_module, "_deliver", _capture_delivery)
+    app = create_app()
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            create_destination = await client.post(
+                "/v1/admin/notifications/destinations",
+                headers=headers,
+                json={
+                    "tenant_id": tenant_id,
+                    "url": "noop://signed",
+                    "headers_json": {"X-Custom-Header": "abc"},
+                    "secret": "tenant-secret",
+                },
+            )
+            assert create_destination.status_code == 200
+            assert create_destination.json()["data"]["has_secret"] is True
+            assert "secret" not in create_destination.json()["data"]
+
+        async with SessionLocal() as session:
+            incident, _created = await open_incident_for_alert(
+                session=session,
+                tenant_id=tenant_id,
+                category="worker.heartbeat.age_s",
+                rule_id=None,
+                severity="high",
+                title="Worker stale",
+                summary="heartbeat stale",
+                details_json={"worker_heartbeat_age_s": 999},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-signed",
+            )
+            assert incident.id
+
+        async with SessionLocal() as session:
+            job = (
+                await session.execute(select(NotificationJob).where(NotificationJob.tenant_id == tenant_id).limit(1))
+            ).scalar_one()
+            processed = await process_notification_job(session=session, job_id=job.id)
+            assert processed is not None
+            assert processed.status == "delivered"
+            job_id = processed.id
+
+        assert captured["X-Notification-Id"] == job_id
+        assert captured["X-Notification-Attempt"] == "1"
+        assert captured["X-Notification-Event-Type"] == "incident.opened"
+        assert captured["X-Notification-Tenant-Id"] == tenant_id
+        assert captured["X-Custom-Header"] == "abc"
+        expected_signature = "sha256=" + hmac.new(
+            b"tenant-secret",
+            captured_body,
+            hashlib.sha256,
+        ).hexdigest()
+        assert captured["X-Notification-Signature"] == expected_signature
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            attempts = await client.get(f"/v1/admin/notifications/jobs/{job_id}/attempts", headers=headers)
+            assert attempts.status_code == 200
+            items = attempts.json()["data"]["items"]
+            assert len(items) == 1
+            assert items[0]["payload_sha256"] == hashlib.sha256(captured_body).hexdigest()
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_missing_signature_emits_audit_event(monkeypatch) -> None:
+    tenant_id = f"t-operability-signature-missing-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    captured_headers: dict[str, str] = {}
+
+    async def _capture_delivery(*, destination, payload_bytes, headers):  # type: ignore[override]
+        nonlocal captured_headers
+        captured_headers = {str(k): str(v) for k, v in headers.items()}
+        assert destination == "noop://unsigned"
+        _ = payload_bytes
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    monkeypatch.setattr(notifications_module, "_deliver", _capture_delivery)
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                NotificationDestination(
+                    id=uuid4().hex,
+                    tenant_id=tenant_id,
+                    destination_url="noop://unsigned",
+                    headers_json={},
+                    secret_encrypted=None,
+                    enabled=True,
+                )
+            )
+            await session.commit()
+            incident, _created = await open_incident_for_alert(
+                session=session,
+                tenant_id=tenant_id,
+                category="worker.heartbeat.age_s",
+                rule_id=None,
+                severity="high",
+                title="Worker stale",
+                summary="heartbeat stale",
+                details_json={"worker_heartbeat_age_s": 999},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-unsigned",
+            )
+            assert incident.id
+
+        async with SessionLocal() as session:
+            job = (
+                await session.execute(select(NotificationJob).where(NotificationJob.tenant_id == tenant_id).limit(1))
+            ).scalar_one()
+            processed = await process_notification_job(session=session, job_id=job.id)
+            assert processed is not None
+            assert processed.status == "delivered"
+
+        assert "X-Notification-Signature" not in captured_headers
+        async with SessionLocal() as session:
+            audit_rows = (
+                await session.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.tenant_id == tenant_id,
+                        AuditEvent.event_type == "notification.signature.missing",
+                    )
+                )
+            ).scalars().all()
+            assert audit_rows
     finally:
         await _cleanup_tenant(tenant_id)
         get_settings.cache_clear()
@@ -403,10 +601,12 @@ async def test_notification_destinations_are_tenant_scoped(monkeypatch) -> None:
             create = await client.post(
                 "/v1/admin/notifications/destinations",
                 headers=headers,
-                json={"tenant_id": tenant_id, "url": "noop://tenant-a"},
+                json={"tenant_id": tenant_id, "url": "noop://tenant-a", "secret": "super-secret"},
             )
             assert create.status_code == 200
             destination_id = create.json()["data"]["id"]
+            assert create.json()["data"]["has_secret"] is True
+            assert "secret_encrypted" not in create.json()["data"]
 
             list_resp = await client.get(
                 f"/v1/admin/notifications/destinations?tenant_id={tenant_id}",
@@ -415,14 +615,16 @@ async def test_notification_destinations_are_tenant_scoped(monkeypatch) -> None:
             assert list_resp.status_code == 200
             items = list_resp.json()["data"]["items"]
             assert any(item["id"] == destination_id and item["enabled"] is True for item in items)
+            assert all("secret_encrypted" not in item for item in items)
 
             disable = await client.patch(
                 f"/v1/admin/notifications/destinations/{destination_id}",
                 headers=headers,
-                json={"enabled": False},
+                json={"enabled": False, "headers_json": {"X-Trace": "1"}},
             )
             assert disable.status_code == 200
             assert disable.json()["data"]["enabled"] is False
+            assert disable.json()["data"]["headers_json"]["X-Trace"] == "1"
 
             delete_resp = await client.delete(
                 f"/v1/admin/notifications/destinations/{destination_id}",
@@ -430,6 +632,24 @@ async def test_notification_destinations_are_tenant_scoped(monkeypatch) -> None:
             )
             assert delete_resp.status_code == 200
             assert delete_resp.json()["data"]["deleted"] is True
+        async with SessionLocal() as session:
+            event_types = (
+                await session.execute(
+                    select(AuditEvent.event_type).where(
+                        AuditEvent.tenant_id == tenant_id,
+                        AuditEvent.event_type.in_(
+                            [
+                                "notification.destination.created",
+                                "notification.destination.updated",
+                                "notification.destination.deleted",
+                            ]
+                        ),
+                    )
+                )
+            ).scalars().all()
+            assert "notification.destination.created" in event_types
+            assert "notification.destination.updated" in event_types
+            assert "notification.destination.deleted" in event_types
     finally:
         await _cleanup_tenant(tenant_id)
         get_settings.cache_clear()
@@ -491,7 +711,7 @@ async def test_notification_routes_crud_is_tenant_scoped(monkeypatch) -> None:
             assert patch_route.json()["data"]["priority"] == 8
 
             cross_tenant = await client.get(f"/v1/admin/notifications/routes?tenant_id={tenant_id}", headers=other_headers)
-            assert cross_tenant.status_code == 403
+            assert cross_tenant.status_code == 404
 
             delete_route = await client.delete(f"/v1/admin/notifications/routes/{route_id}", headers=headers)
             assert delete_route.status_code == 200
@@ -668,7 +888,7 @@ async def test_notification_dlq_and_replay_are_tenant_scoped(monkeypatch) -> Non
     from nexusrag.services.operability import notifications as notifications_module
     from nexusrag.services.operability.incidents import open_incident_for_alert
 
-    async def _always_fail(*, destination, body, notification_id):  # type: ignore[override]
+    async def _always_fail(*, destination, payload_bytes, headers):  # type: ignore[override]
         raise RuntimeError("forced dlq failure")
 
     async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
@@ -704,7 +924,7 @@ async def test_notification_dlq_and_replay_are_tenant_scoped(monkeypatch) -> Non
             ).scalar_one()
             processed = await process_notification_job(session=session, job_id=job.id)
             assert processed is not None
-            assert processed.status == "dead_lettered"
+            assert processed.status == "dlq"
 
         async with SessionLocal() as session:
             dead_letter = (

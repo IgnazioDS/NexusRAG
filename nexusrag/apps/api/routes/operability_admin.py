@@ -36,6 +36,7 @@ from nexusrag.services.operability.notifications import (
     get_notification_dead_letter,
     get_notification_job,
     list_notification_dead_letters,
+    list_notification_attempts,
     list_notification_routes,
     list_notification_destinations,
     list_notification_jobs,
@@ -44,6 +45,7 @@ from nexusrag.services.operability.notifications import (
     replay_dead_letter,
     retry_notification_job_now,
 )
+from nexusrag.services.audit import record_event
 
 router = APIRouter(prefix="/admin", tags=["operability"], responses=DEFAULT_ERROR_RESPONSES)
 
@@ -76,10 +78,14 @@ class FreezeWritesRequest(BaseModel):
 class NotificationDestinationCreateRequest(BaseModel):
     tenant_id: str | None = None
     url: str = Field(..., min_length=1, max_length=1024)
+    headers_json: dict[str, str] | None = None
+    secret: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
 class NotificationDestinationPatchRequest(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    headers_json: dict[str, str] | None = None
+    secret: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
 class NotificationRouteCreateRequest(BaseModel):
@@ -103,7 +109,7 @@ def _scope_tenant(principal: Principal, tenant_id: str | None) -> str:
     # Enforce tenant boundary for operator endpoints even when query params are provided.
     if tenant_id is None or tenant_id == principal.tenant_id:
         return principal.tenant_id
-    raise HTTPException(status_code=403, detail={"code": "AUTHZ_DENIED", "message": "Cross-tenant access denied"})
+    raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Resource not found"})
 
 
 def _incident_payload(row: Any) -> dict[str, Any]:
@@ -163,6 +169,9 @@ def _notification_destination_payload(row: Any) -> dict[str, Any]:
         "id": row.id,
         "tenant_id": row.tenant_id,
         "destination_url": row.destination_url,
+        # Expose destination headers while keeping secret material write-only for operator safety.
+        "headers_json": row.headers_json or {},
+        "has_secret": bool(getattr(row, "secret_encrypted", None)),
         "enabled": row.enabled,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -192,6 +201,19 @@ def _notification_dead_letter_payload(row: Any) -> dict[str, Any]:
         "last_error": row.last_error,
         "payload_json": row.payload_json,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _notification_attempt_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "attempt_no": row.attempt_no,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        "payload_sha256": row.payload_sha256,
+        "outcome": row.outcome,
+        "error": row.error,
     }
 
 
@@ -408,6 +430,7 @@ async def get_notification_job_by_id(
 
 
 @router.post("/notifications/jobs/{job_id}/retry", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+@router.post("/notifications/jobs/{job_id}/retry-now", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
 async def retry_notification_job(
     job_id: str,
     request: Request,
@@ -418,11 +441,28 @@ async def retry_notification_job(
     await _enforce_ops_admin(session=db, principal=principal)
     try:
         row = await retry_notification_job_now(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "NOTIFICATION_JOB_STATE_INVALID", "message": str(exc)}) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail={"code": "SERVICE_BUSY", "message": str(exc)}) from exc
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
     return success_response(request=request, data=_notification_job_payload(row))
+
+
+@router.get("/notifications/jobs/{job_id}/attempts", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])
+async def get_notification_job_attempts(
+    job_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Expose immutable attempt records for tenant-owned jobs to support delivery forensics.
+    await _enforce_ops_admin(session=db, principal=principal)
+    rows = await list_notification_attempts(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
+    return success_response(request=request, data={"items": [_notification_attempt_payload(row) for row in rows]})
 
 
 @router.get("/notifications/destinations", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])
@@ -454,9 +494,26 @@ async def create_notification_destination_handler(
             session=db,
             tenant_id=scoped_tenant,
             destination_url=payload.url,
+            headers_json=payload.headers_json,
+            secret=payload.secret,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "INVALID_INPUT", "message": str(exc)}) from exc
+    await record_event(
+        session=db,
+        tenant_id=scoped_tenant,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="notification.destination.created",
+        outcome="success",
+        resource_type="notification_destination",
+        resource_id=row.id,
+        request_id=request.headers.get("X-Request-Id"),
+        metadata={"destination_url": row.destination_url, "has_secret": bool(row.secret_encrypted)},
+        commit=True,
+        best_effort=True,
+    )
     return success_response(request=request, data=_notification_destination_payload(row))
 
 
@@ -475,9 +532,26 @@ async def patch_notification_destination_handler(
         tenant_id=principal.tenant_id,
         destination_id=destination_id,
         enabled=payload.enabled,
+        headers_json=payload.headers_json,
+        secret=payload.secret,
     )
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification destination not found"})
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="notification.destination.updated",
+        outcome="success",
+        resource_type="notification_destination",
+        resource_id=row.id,
+        request_id=request.headers.get("X-Request-Id"),
+        metadata={"enabled": row.enabled, "has_secret": bool(row.secret_encrypted)},
+        commit=True,
+        best_effort=True,
+    )
     return success_response(request=request, data=_notification_destination_payload(row))
 
 
@@ -497,6 +571,21 @@ async def delete_notification_destination_handler(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification destination not found"})
+    await record_event(
+        session=db,
+        tenant_id=principal.tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="notification.destination.deleted",
+        outcome="success",
+        resource_type="notification_destination",
+        resource_id=destination_id,
+        request_id=request.headers.get("X-Request-Id"),
+        metadata={},
+        commit=True,
+        best_effort=True,
+    )
     return success_response(request=request, data={"deleted": True})
 
 
