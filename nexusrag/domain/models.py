@@ -1172,11 +1172,17 @@ class ComplianceSnapshot(Base):
     # Persist point-in-time control evaluations and redacted evidence metadata for audit exports.
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    # Preserve canonical capture timestamp even when legacy created_at remains for compatibility.
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, index=True)
+    # Keep normalized evaluation payload in one field while summary_json/controls_json remain backward compatible.
+    results_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     controls_json: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    # Persist generated artifact metadata (bundle path/download URL/checksum) for deterministic retrieval.
+    artifact_paths_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
 
 class RetentionRun(Base):

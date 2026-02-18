@@ -24,11 +24,14 @@ router = APIRouter(prefix="/admin/compliance", tags=["compliance"], responses=DE
 class ComplianceSnapshotResponse(BaseModel):
     id: str
     tenant_id: str | None
+    captured_at: str
     created_at: str
     created_by: str | None
     status: str
+    results_json: dict
     summary_json: dict
     controls_json: list[dict]
+    artifact_paths_json: dict
 
 
 def _ensure_enabled() -> None:
@@ -40,14 +43,20 @@ def _ensure_enabled() -> None:
 
 
 def _to_payload(row) -> ComplianceSnapshotResponse:
+    # Return canonical snapshot fields and retain legacy aliases for backward compatible clients.
+    captured_at = row.captured_at or row.created_at
+    results_json = row.results_json or {"summary": row.summary_json, "controls": row.controls_json}
     return ComplianceSnapshotResponse(
         id=row.id,
         tenant_id=row.tenant_id,
+        captured_at=captured_at.isoformat() if captured_at else "",
         created_at=row.created_at.isoformat() if row.created_at else "",
         created_by=row.created_by,
         status=row.status,
+        results_json=results_json,
         summary_json=row.summary_json,
         controls_json=row.controls_json,
+        artifact_paths_json=row.artifact_paths_json or {},
     )
 
 

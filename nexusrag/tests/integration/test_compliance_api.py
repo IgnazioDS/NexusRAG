@@ -12,6 +12,8 @@ from httpx import ASGITransport, AsyncClient
 
 from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
+from nexusrag.domain.models import ComplianceSnapshot
+from nexusrag.persistence.db import SessionLocal
 from nexusrag.tests.utils.auth import create_test_api_key
 
 
@@ -120,7 +122,10 @@ async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> Non
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post("/v1/admin/compliance/snapshots", headers=headers)
         assert created.status_code == 200
-        snapshot_id = created.json()["data"]["id"]
+        created_payload = created.json()["data"]
+        snapshot_id = created_payload["id"]
+        assert created_payload["captured_at"]
+        assert "results_json" in created_payload
 
         listed = await client.get("/v1/admin/compliance/snapshots?limit=5", headers=headers)
         assert listed.status_code == 200
@@ -129,6 +134,12 @@ async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> Non
         bundle = await client.get(f"/v1/admin/compliance/snapshots/{snapshot_id}/download", headers=headers)
         assert bundle.status_code == 200
         assert bundle.headers["content-type"] == "application/zip"
+
+        after_bundle = await client.get(f"/v1/admin/compliance/snapshots/{snapshot_id}", headers=headers)
+        assert after_bundle.status_code == 200
+        artifact_paths = after_bundle.json()["data"]["artifact_paths_json"]
+        assert artifact_paths["bundle_download_path"].endswith(f"/v1/admin/compliance/snapshots/{snapshot_id}/download")
+        assert artifact_paths["bundle_path"]
 
     archive = zipfile.ZipFile(io.BytesIO(bundle.content))
     names = set(archive.namelist())
@@ -141,3 +152,38 @@ async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> Non
     assert config_payload["openai_api_key"] == "[REDACTED]"
 
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_compliance_snapshot_backward_compatibility_for_legacy_rows() -> None:
+    tenant_id = f"t-compliance-legacy-{uuid4().hex}"
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id=tenant_id, role="admin")
+    legacy_id = uuid4().hex
+    legacy_now = _utc_now()
+    async with SessionLocal() as session:
+        # Insert a legacy-shaped row (no captured_at/results/artifacts) to verify API fallback behavior.
+        session.add(
+            ComplianceSnapshot(
+                id=legacy_id,
+                tenant_id=tenant_id,
+                captured_at=None,
+                created_at=legacy_now,
+                created_by="legacy-test",
+                status="pass",
+                results_json=None,
+                summary_json={"status": "pass", "counts": {"pass": 1, "degraded": 0, "fail": 0}},
+                controls_json=[{"control_id": "CC6.1", "status": "pass"}],
+                artifact_paths_json=None,
+            )
+        )
+        await session.commit()
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/v1/admin/compliance/snapshots/{legacy_id}", headers=headers)
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert payload["captured_at"]
+        assert payload["results_json"]["summary"]["status"] == "pass"
+        assert payload["artifact_paths_json"] == {}
