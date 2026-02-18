@@ -33,12 +33,15 @@ from nexusrag.services.operability.notifications import (
     create_notification_destination,
     delete_notification_route,
     delete_notification_destination,
+    get_notification_dead_letter,
     get_notification_job,
+    list_notification_dead_letters,
     list_notification_routes,
     list_notification_destinations,
     list_notification_jobs,
     patch_notification_route,
     patch_notification_destination,
+    replay_dead_letter,
     retry_notification_job_now,
 )
 
@@ -177,6 +180,18 @@ def _notification_route_payload(row: Any) -> dict[str, Any]:
         "destinations_json": row.destinations_json or [],
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _notification_dead_letter_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "job_id": row.job_id,
+        "reason": row.reason,
+        "last_error": row.last_error,
+        "payload_json": row.payload_json,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
 
@@ -401,7 +416,10 @@ async def retry_notification_job(
 ) -> dict[str, Any]:
     # Force a due-at-now retry while preserving dedupe and immutable attempt history.
     await _enforce_ops_admin(session=db, principal=principal)
-    row = await retry_notification_job_now(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    try:
+        row = await retry_notification_job_now(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail={"code": "SERVICE_BUSY", "message": str(exc)}) from exc
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
     return success_response(request=request, data=_notification_job_payload(row))
@@ -563,6 +581,61 @@ async def delete_notification_route_handler(
     if not deleted:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification route not found"})
     return success_response(request=request, data={"deleted": True})
+
+
+@router.get("/notifications/dlq", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])
+async def get_notification_dead_letters_handler(
+    request: Request,
+    tenant_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Expose tenant-scoped DLQ rows for replay and post-incident delivery forensics.
+    await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, tenant_id)
+    rows = await list_notification_dead_letters(session=db, tenant_id=scoped_tenant, limit=limit)
+    return success_response(request=request, data={"items": [_notification_dead_letter_payload(row) for row in rows]})
+
+
+@router.get("/notifications/dlq/{dead_letter_id}", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def get_notification_dead_letter_by_id(
+    dead_letter_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Return one dead-letter row while preserving tenant boundaries.
+    await _enforce_ops_admin(session=db, principal=principal)
+    row = await get_notification_dead_letter(session=db, tenant_id=principal.tenant_id, dead_letter_id=dead_letter_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification DLQ item not found"})
+    return success_response(request=request, data=_notification_dead_letter_payload(row))
+
+
+@router.post("/notifications/dlq/{dead_letter_id}/replay", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def replay_notification_dead_letter(
+    dead_letter_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Replay dead-lettered events through the route resolver to preserve normal destination policy behavior.
+    await _enforce_ops_admin(session=db, principal=principal)
+    try:
+        payload = await replay_dead_letter(
+            session=db,
+            tenant_id=principal.tenant_id,
+            dead_letter_id=dead_letter_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail={"code": "SERVICE_BUSY", "message": str(exc)}) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification DLQ item not found"})
+    return success_response(request=request, data=payload)
 
 
 @router.get("/incidents/{incident_id}/timeline", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])

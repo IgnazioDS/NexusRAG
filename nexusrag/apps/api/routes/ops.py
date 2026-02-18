@@ -330,6 +330,7 @@ async def ops_operability(
         "evaluator_heartbeat_age_s": heartbeat_age,
         "jobs_queued": queue["queued"],
         "jobs_failed_last_hour": queue["failed_last_hour"],
+        "jobs_dead_lettered": queue.get("dead_lettered", 0),
         "timestamp": now.isoformat(),
     }
     return success_response(request=request, data=payload)

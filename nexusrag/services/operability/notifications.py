@@ -16,13 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import (
     NotificationAttempt,
+    NotificationDeadLetter,
     NotificationDestination,
     NotificationJob,
     NotificationRoute,
 )
-from nexusrag.services.audit import record_event
+from nexusrag.services.audit import record_event, sanitize_metadata
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, get_effective_entitlements
 from nexusrag.services.notifications.routing import resolve_destinations
+from nexusrag.services.rollouts import resolve_kill_switch
 
 _READY_STATUSES = ("queued", "retrying")
 _notification_queue_pool = None
@@ -361,6 +363,41 @@ def retry_backoff_ms(*, job_id: str, attempt_no: int) -> int:
     return min(cap, backoff + jitter)
 
 
+async def _is_notification_delivery_paused() -> bool:
+    # Reuse rollout kill-switch semantics so delivery can be paused quickly during incident storms.
+    return await resolve_kill_switch("kill.notifications")
+
+
+def _is_non_retriable_delivery_error(exc: Exception) -> tuple[bool, str]:
+    # Treat selected HTTP 4xx responses as poison events and dead-letter immediately.
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = int(exc.response.status_code)
+        if status_code in {404, 410}:
+            return True, f"http_{status_code}_non_retriable"
+    return False, "retryable_failure"
+
+
+async def _dead_letter_job(
+    *,
+    session: AsyncSession,
+    job: NotificationJob,
+    reason: str,
+    last_error: str | None,
+) -> NotificationDeadLetter:
+    # Persist a redacted DLQ payload so replay/debug flows never rely on raw sensitive webhook content.
+    payload = sanitize_metadata(job.payload_json or {})
+    row = NotificationDeadLetter(
+        id=uuid4().hex,
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        reason=reason,
+        last_error=last_error,
+        payload_json=payload if isinstance(payload, dict) else {"payload": payload},
+    )
+    session.add(row)
+    return row
+
+
 async def _create_notification_jobs(
     *,
     session: AsyncSession,
@@ -491,6 +528,24 @@ async def send_operability_notification(
     entitlement = entitlements.get(FEATURE_OPS_ADMIN)
     if entitlement is None or not entitlement.enabled:
         return
+    if await _is_notification_delivery_paused():
+        # Drop enqueue attempts while paused so outbound delivery storms can be halted deterministically.
+        await record_event(
+            session=session,
+            tenant_id=tenant_id,
+            actor_type="system",
+            actor_id=actor_id,
+            actor_role=actor_role,
+            event_type="notification.delivery.paused",
+            outcome="failure",
+            resource_type="notification_job",
+            resource_id=None,
+            request_id=request_id,
+            metadata={"event_type": event_type},
+            commit=True,
+            best_effort=True,
+        )
+        return
     severity = str(payload.get("severity") or "low")
     source = payload.get("source")
     category = payload.get("category")
@@ -510,6 +565,8 @@ async def send_operability_notification(
 
 async def enqueue_due_notification_jobs(*, session: AsyncSession, limit: int = 50) -> int:
     # Re-enqueue overdue jobs to recover from transient worker outages without changing durable DB state.
+    if await _is_notification_delivery_paused():
+        return 0
     now = _utc_now()
     stale_cutoff = now - timedelta(seconds=max(1, int(get_settings().notify_worker_poll_interval_s)))
     rows = (
@@ -575,6 +632,9 @@ async def _claim_notification_job(*, session: AsyncSession, job_id: str) -> Noti
 
 async def process_notification_job(*, session: AsyncSession, job_id: str) -> NotificationJob | None:
     # Execute one delivery attempt and persist both job state transitions and immutable attempt history.
+    if await _is_notification_delivery_paused():
+        # Keep jobs queued when paused so operators can resume without losing durable records.
+        return None
     job = await _claim_notification_job(session=session, job_id=job_id)
     if job is None:
         return None
@@ -600,9 +660,16 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
         job.attempt_count = attempt_no
         job.last_error = str(exc)
         max_attempts = max(1, int(get_settings().notify_max_attempts))
-        if attempt_no >= max_attempts:
-            job.status = "gave_up"
+        non_retriable, reason = _is_non_retriable_delivery_error(exc)
+        if non_retriable or attempt_no >= max_attempts:
+            job.status = "dead_lettered"
             job.next_attempt_at = attempt.finished_at
+            await _dead_letter_job(
+                session=session,
+                job=job,
+                reason=reason if non_retriable else "max_attempts_exceeded",
+                last_error=str(exc),
+            )
             event_type = "notification.job.gave_up"
         else:
             delay_ms = retry_backoff_ms(job_id=job.id, attempt_no=attempt_no)
@@ -624,10 +691,26 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
             resource_type="notification_job",
             resource_id=job.id,
             request_id=None,
-            metadata={"attempt_no": attempt_no, "destination": job.destination},
+            metadata={"attempt_no": attempt_no, "destination": job.destination, "status": job.status},
             commit=True,
             best_effort=True,
         )
+        if job.status == "dead_lettered":
+            await record_event(
+                session=session,
+                tenant_id=job.tenant_id,
+                actor_type="system",
+                actor_id=None,
+                actor_role=None,
+                event_type="notification.job.dead_lettered",
+                outcome="failure",
+                resource_type="notification_job",
+                resource_id=job.id,
+                request_id=None,
+                metadata={"attempt_no": attempt_no, "destination": job.destination},
+                commit=True,
+                best_effort=True,
+            )
         return job
 
     attempt.finished_at = _utc_now()
@@ -688,6 +771,105 @@ async def get_notification_job(
     return row
 
 
+async def list_notification_dead_letters(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    limit: int = 100,
+) -> list[NotificationDeadLetter]:
+    # Keep DLQ listing tenant-scoped for safe operator replay workflows.
+    rows = (
+        await session.execute(
+            select(NotificationDeadLetter)
+            .where(NotificationDeadLetter.tenant_id == tenant_id)
+            .order_by(NotificationDeadLetter.created_at.desc())
+            .limit(max(1, min(limit, 500)))
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def get_notification_dead_letter(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    dead_letter_id: str,
+) -> NotificationDeadLetter | None:
+    # Return DLQ rows only for the owning tenant.
+    row = await session.get(NotificationDeadLetter, dead_letter_id)
+    if row is None or row.tenant_id != tenant_id:
+        return None
+    return row
+
+
+async def replay_dead_letter(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    dead_letter_id: str,
+    actor_id: str | None,
+    actor_role: str | None,
+    request_id: str | None,
+) -> dict[str, Any] | None:
+    # Replay DLQ records through the same routing resolver used for new notifications.
+    if await _is_notification_delivery_paused():
+        raise RuntimeError("Notification delivery is paused by kill.notifications")
+    dead_letter = await get_notification_dead_letter(
+        session=session,
+        tenant_id=tenant_id,
+        dead_letter_id=dead_letter_id,
+    )
+    if dead_letter is None:
+        return None
+    payload_json = dead_letter.payload_json or {}
+    if not isinstance(payload_json, dict):
+        payload_json = {}
+    replay_payload = payload_json.get("payload")
+    if not isinstance(replay_payload, dict):
+        replay_payload = {}
+    replay_payload = {
+        **replay_payload,
+        "replayed_from_dead_letter_id": dead_letter.id,
+        "replayed_from_job_id": dead_letter.job_id,
+    }
+    event_type = str(payload_json.get("event_type") or "incident.opened")
+    severity = str(payload_json.get("severity") or "low")
+    source_value = payload_json.get("source")
+    category_value = payload_json.get("category")
+    created_job_ids = await _create_notification_jobs(
+        session=session,
+        tenant_id=tenant_id,
+        event_type=event_type,
+        severity=severity,
+        payload=replay_payload,
+        source=str(source_value) if isinstance(source_value, str) else None,
+        category=str(category_value) if isinstance(category_value, str) else None,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        request_id=request_id,
+    )
+    await record_event(
+        session=session,
+        tenant_id=tenant_id,
+        actor_type="api_key" if actor_id else "system",
+        actor_id=actor_id,
+        actor_role=actor_role,
+        event_type="notification.job.replayed",
+        outcome="success",
+        resource_type="notification_dead_letter",
+        resource_id=dead_letter.id,
+        request_id=request_id,
+        metadata={"created_job_ids": created_job_ids},
+        commit=True,
+        best_effort=True,
+    )
+    return {
+        "dead_letter_id": dead_letter.id,
+        "original_job_id": dead_letter.job_id,
+        "created_job_ids": created_job_ids,
+    }
+
+
 async def retry_notification_job_now(
     *,
     session: AsyncSession,
@@ -695,6 +877,8 @@ async def retry_notification_job_now(
     job_id: str,
 ) -> NotificationJob | None:
     # Allow operators to force immediate retries while preserving attempt history and idempotent state machine rules.
+    if await _is_notification_delivery_paused():
+        raise RuntimeError("Notification delivery is paused by kill.notifications")
     row = await get_notification_job(session=session, tenant_id=tenant_id, job_id=job_id)
     if row is None:
         return None
@@ -721,8 +905,20 @@ async def notification_queue_summary(*, session: AsyncSession, tenant_id: str) -
         .select_from(NotificationJob)
         .where(
             NotificationJob.tenant_id == tenant_id,
-            NotificationJob.status.in_(["gave_up", "failed"]),
+            NotificationJob.status.in_(["dead_lettered", "failed", "gave_up"]),
             NotificationJob.updated_at >= (_utc_now() - timedelta(hours=1)),
         )
     )
-    return {"queued": int(queued or 0), "failed_last_hour": int(failed_last_hour or 0)}
+    dead_lettered = await session.scalar(
+        select(func.count())
+        .select_from(NotificationJob)
+        .where(
+            NotificationJob.tenant_id == tenant_id,
+            NotificationJob.status == "dead_lettered",
+        )
+    )
+    return {
+        "queued": int(queued or 0),
+        "failed_last_hour": int(failed_last_hour or 0),
+        "dead_lettered": int(dead_lettered or 0),
+    }
