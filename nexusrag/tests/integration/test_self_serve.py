@@ -261,7 +261,7 @@ async def test_expired_key_is_rejected_and_audited(monkeypatch) -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/v1/self-serve/plan", headers=headers)
         assert response.status_code == 401
-        assert response.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
+        assert response.json()["error"]["code"] == "AUTH_EXPIRED_KEY"
 
     async with SessionLocal() as session:
         rows = (

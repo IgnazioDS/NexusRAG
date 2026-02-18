@@ -172,9 +172,11 @@ async def patch_admin_api_key(
         # Use revoked_at for deterministic disable semantics without introducing extra lifecycle columns.
         api_key.revoked_at = now
         lifecycle_event = "auth.api_key.deactivated"
-    if payload.active is True and api_key.revoked_at is not None and not payload.revoke:
-        # Allow explicit reactivation when operators need to reverse accidental deactivation.
-        api_key.revoked_at = None
+    if payload.active is True and not payload.revoke:
+        # Reactivation resets activity anchor so inactive-key enforcement can be safely reversed by admins.
+        if api_key.revoked_at is not None:
+            api_key.revoked_at = None
+        api_key.last_used_at = now
         lifecycle_event = "auth.api_key.reactivated"
     if payload.revoke:
         api_key.revoked_at = now
@@ -205,6 +207,7 @@ async def patch_admin_api_key(
             "target_api_key_id": api_key.id,
             "expires_at": api_key.expires_at.isoformat() if api_key.expires_at else None,
             "revoked_at": api_key.revoked_at.isoformat() if api_key.revoked_at else None,
+            "last_used_at": api_key.last_used_at.isoformat() if api_key.last_used_at else None,
             "name": api_key.name,
         },
         commit=True,

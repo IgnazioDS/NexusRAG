@@ -10,7 +10,13 @@ from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.services.security import list_platform_keys, retire_platform_key, rotate_platform_key
+from nexusrag.services.security import (
+    KeyringConfigurationError,
+    KeyringDisabledError,
+    list_platform_keys,
+    retire_platform_key,
+    rotate_platform_key,
+)
 
 
 router = APIRouter(prefix="/admin/keys", tags=["security"], responses=DEFAULT_ERROR_RESPONSES)
@@ -29,6 +35,21 @@ class RotateKeyResponse(BaseModel):
     key: PlatformKeyResponse
     secret: str
     replaced_key_id: str | None
+
+
+def _raise_keyring_http_error(exc: Exception) -> None:
+    # Return stable error contracts so operators can distinguish misconfiguration vs optional disablement.
+    if isinstance(exc, KeyringConfigurationError):
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "KEYRING_NOT_CONFIGURED", "message": str(exc)},
+        ) from exc
+    if isinstance(exc, KeyringDisabledError):
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "KEYRING_DISABLED", "message": str(exc)},
+        ) from exc
+    raise exc
 
 
 def _to_payload(row) -> PlatformKeyResponse:
@@ -71,7 +92,10 @@ async def rotate_key(
     db: AsyncSession = Depends(get_db),
 ) -> RotateKeyResponse:
     # Rotate platform keys with a single active key invariant per purpose.
-    row, raw_secret, replaced_key_id = await rotate_platform_key(db, purpose=purpose)
+    try:
+        row, raw_secret, replaced_key_id = await rotate_platform_key(db, purpose=purpose)
+    except (KeyringConfigurationError, KeyringDisabledError) as exc:
+        _raise_keyring_http_error(exc)
     request_ctx = get_request_context(request)
     await record_event(
         session=db,

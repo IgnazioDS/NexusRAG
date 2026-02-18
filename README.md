@@ -1931,6 +1931,18 @@ Keyring admin APIs:
 - `POST /v1/admin/keyring/rotate?purpose=signing|encryption|backup_signing|backup_encryption|webhook_signing`
 - `POST /v1/admin/keyring/{key_id}/retire`
 
+Keyring enforcement behavior:
+
+- `KEYRING_MASTER_KEY_REQUIRED=true` fails closed for key rotation with `KEYRING_NOT_CONFIGURED` when `KEYRING_MASTER_KEY` is missing.
+- `KEYRING_MASTER_KEY_REQUIRED=false` keeps keyring optional for local/dev; rotation returns `KEYRING_DISABLED` if no key source is configured.
+- Evidence bundles use redacted config only and never decrypt key material.
+
+API key inactivity enforcement:
+
+- `AUTH_API_KEY_INACTIVE_ENFORCED=true` and `AUTH_API_KEY_INACTIVE_DAYS=<N>` enforce stale-key denial in auth (`AUTH_INACTIVE_KEY`).
+- Revoked keys return `AUTH_REVOKED_KEY`; expired keys return `AUTH_EXPIRED_KEY`.
+- `PATCH /v1/admin/api-keys/{id}` with `{"active": true}` reactivates a key and resets `last_used_at` as the inactivity anchor.
+
 Retention proof APIs:
 
 - `POST /v1/admin/governance/retention/run?task=prune_all`
@@ -1947,6 +1959,12 @@ Bundle contents:
 - `perf_gates_excerpt.json`
 - `perf_report_summary.md`
 - `ops_metrics_24h_summary.json`
+
+Compliance snapshot canonical fields:
+
+- `captured_at` is the canonical capture timestamp (legacy `created_at` is still returned for compatibility).
+- `results_json` contains normalized evaluation output.
+- `artifact_paths_json` persists generated bundle metadata (`bundle_path`, `bundle_download_path`, timestamps).
 
 CLI helpers:
 

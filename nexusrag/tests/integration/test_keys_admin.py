@@ -7,13 +7,18 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from nexusrag.apps.api.main import create_app
+from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PlatformKey
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.tests.utils.auth import create_test_api_key
 
 
 @pytest.mark.asyncio
-async def test_platform_key_rotate_list_retire_flow() -> None:
+async def test_platform_key_rotate_list_retire_flow(monkeypatch) -> None:
+    # Set an explicit master key so required-mode encryption paths are deterministic in tests.
+    monkeypatch.setenv("KEYRING_MASTER_KEY", "test-keyring-master-key")
+    monkeypatch.setenv("KEYRING_MASTER_KEY_REQUIRED", "true")
+    get_settings.cache_clear()
     tenant_id = f"t-keys-{uuid4().hex}"
     _raw_key, headers, _user_id, _key_id = await create_test_api_key(
         tenant_id=tenant_id,
@@ -39,10 +44,15 @@ async def test_platform_key_rotate_list_retire_flow() -> None:
         retired = await client.post(f"/v1/admin/keys/{payload['key']['key_id']}/retire", headers=headers)
         assert retired.status_code == 200
         assert retired.json()["data"]["status"] == "retired"
+    get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
-async def test_keyring_contract_alias_and_encrypted_storage() -> None:
+async def test_keyring_contract_alias_and_encrypted_storage(monkeypatch) -> None:
+    # Keep required-mode behavior exercised by providing an explicit configured master key.
+    monkeypatch.setenv("KEYRING_MASTER_KEY", "test-keyring-master-key")
+    monkeypatch.setenv("KEYRING_MASTER_KEY_REQUIRED", "true")
+    get_settings.cache_clear()
     tenant_id = f"t-keyring-{uuid4().hex}"
     _raw_key, headers, _user_id, _key_id = await create_test_api_key(
         tenant_id=tenant_id,
@@ -71,3 +81,50 @@ async def test_keyring_contract_alias_and_encrypted_storage() -> None:
         # Persist only ciphertext so database state never contains the returned plaintext secret.
         assert row.secret_ciphertext != payload["secret"]
         assert payload["secret"] not in row.secret_ciphertext
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_keyring_required_mode_missing_master_key_returns_500(monkeypatch) -> None:
+    # Required mode must fail closed when the master key is missing.
+    monkeypatch.delenv("KEYRING_MASTER_KEY", raising=False)
+    monkeypatch.delenv("CRYPTO_LOCAL_MASTER_KEY", raising=False)
+    monkeypatch.setenv("KEYRING_MASTER_KEY_REQUIRED", "true")
+    get_settings.cache_clear()
+
+    tenant_id = f"t-keyring-required-{uuid4().hex}"
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        rotated = await client.post("/v1/admin/keyring/rotate?purpose=backup_signing", headers=headers)
+        assert rotated.status_code == 500
+        assert rotated.json()["error"]["code"] == "KEYRING_NOT_CONFIGURED"
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_keyring_optional_mode_missing_master_key_returns_disabled(monkeypatch) -> None:
+    # Optional mode should explicitly report disabled encryption capability when no key source is configured.
+    monkeypatch.delenv("KEYRING_MASTER_KEY", raising=False)
+    monkeypatch.delenv("CRYPTO_LOCAL_MASTER_KEY", raising=False)
+    monkeypatch.setenv("KEYRING_MASTER_KEY_REQUIRED", "false")
+    get_settings.cache_clear()
+
+    tenant_id = f"t-keyring-optional-{uuid4().hex}"
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        rotated = await client.post("/v1/admin/keyring/rotate?purpose=backup_signing", headers=headers)
+        assert rotated.status_code == 503
+        assert rotated.json()["error"]["code"] == "KEYRING_DISABLED"
+    get_settings.cache_clear()

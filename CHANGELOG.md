@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.9.1 - 2026-02-18
+
+- Enforced keyring required-only mode with explicit `KEYRING_MASTER_KEY_REQUIRED` behavior and deterministic `KEYRING_NOT_CONFIGURED` / `KEYRING_DISABLED` failures.
+- Enforced inactive API key denial (`AUTH_INACTIVE_KEY`) in the auth path, added explicit revoked/expired codes, and enabled admin reactivation to reset activity anchors.
+- Normalized compliance snapshot schema with canonical `captured_at`, `results_json`, and persisted `artifact_paths_json` bundle metadata.
+- Added backward-compatible compliance snapshot response handling for legacy rows and artifact persistence on bundle generation.
+
 ## 2.9.0 - 2026-02-18
 
 - Added admin API key lifecycle management endpoints (`/v1/admin/api-keys`) with expiration/reactivation/revocation controls and deterministic inactivity reporting.

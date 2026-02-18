@@ -28,6 +28,8 @@ curl -sS \
   "http://localhost:8000/v1/admin/compliance/snapshots?limit=20"
 ```
 
+Confirm the selected snapshot includes canonical fields: `captured_at`, `results_json`, and `artifact_paths_json`.
+
 3. Download the bundle:
 
 ```bash

@@ -5,6 +5,7 @@
 `POST /v1/admin/compliance/snapshot` or `POST /v1/admin/compliance/snapshots`
 
 Expected result: snapshot id, summary status, and per-control results persisted.
+Canonical fields are `captured_at`, `results_json`, and `artifact_paths_json` (legacy `created_at` remains for compatibility).
 
 ## List and inspect snapshots
 
@@ -14,6 +15,12 @@ Expected result: snapshot id, summary status, and per-control results persisted.
 ## Export evidence bundle
 
 `GET /v1/admin/compliance/bundle/{snapshot_id}.zip` or `GET /v1/admin/compliance/snapshots/{snapshot_id}/download`
+
+After download, `artifact_paths_json` on the snapshot row should include:
+
+- `bundle_path`
+- `bundle_download_path`
+- `bundle_generated_at`
 
 Verify bundle includes:
 

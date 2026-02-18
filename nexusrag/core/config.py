@@ -259,6 +259,8 @@ class Settings(BaseSettings):
     self_serve_max_active_keys: int = 20
     # Default inactivity threshold used by API key hygiene reports.
     auth_api_key_inactive_days: int = 90
+    # Enforce stale API key denial before rate-limit/quota pipelines when enabled.
+    auth_api_key_inactive_enforced: bool = True
     # Enable idempotency key support for write endpoints.
     idempotency_enabled: bool = True
     # Control TTL for stored idempotency responses.
@@ -309,6 +311,8 @@ class Settings(BaseSettings):
     compliance_evidence_dir: str = "var/evidence"
     # Master key used to encrypt platform keyring material at rest.
     keyring_master_key: str | None = None
+    # Require an explicit keyring master key unless local/dev explicitly disables this guardrail.
+    keyring_master_key_required: bool = True
     # Enable envelope encryption for sensitive artifacts at rest.
     crypto_enabled: bool = True
     # Select the KMS backend used for tenant key operations.

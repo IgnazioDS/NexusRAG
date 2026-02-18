@@ -33,6 +33,21 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _snapshot_captured_at(snapshot: ComplianceSnapshot) -> datetime:
+    # Keep canonical timestamp stable while tolerating legacy rows that only have created_at.
+    return snapshot.captured_at or snapshot.created_at or _utc_now()
+
+
+def _snapshot_results(snapshot: ComplianceSnapshot) -> dict[str, object]:
+    # Serve canonical results_json while preserving compatibility with legacy summary/controls-only rows.
+    if snapshot.results_json is not None:
+        return snapshot.results_json
+    return {
+        "summary": snapshot.summary_json,
+        "controls": snapshot.controls_json,
+    }
+
+
 def _read_excerpt(path: str, *, max_lines: int = 80) -> str:
     file_path = Path(path)
     if not file_path.exists():
@@ -137,6 +152,7 @@ async def create_compliance_snapshot(
     created_by: str | None,
 ) -> ComplianceSnapshot:
     # Persist deterministic compliance posture snapshots for SOC2-style evidence exports.
+    captured_at = _utc_now()
     status, controls = await evaluate_controls(session)
     counts = {
         "pass": sum(1 for item in controls if item["status"] == "pass"),
@@ -146,15 +162,18 @@ async def create_compliance_snapshot(
     summary = {
         "status": status,
         "counts": counts,
-        "generated_at": _utc_now().isoformat(),
+        "generated_at": captured_at.isoformat(),
     }
     row = ComplianceSnapshot(
         id=uuid4().hex,
         tenant_id=tenant_id,
+        captured_at=captured_at,
         created_by=created_by,
         status=status,
+        results_json={"summary": summary, "controls": controls},
         summary_json=summary,
         controls_json=controls,
+        artifact_paths_json={},
     )
     session.add(row)
     await session.commit()
@@ -172,7 +191,7 @@ async def list_compliance_snapshots(
         await session.execute(
             select(ComplianceSnapshot)
             .where(ComplianceSnapshot.tenant_id == tenant_id)
-            .order_by(ComplianceSnapshot.created_at.desc())
+            .order_by(func.coalesce(ComplianceSnapshot.captured_at, ComplianceSnapshot.created_at).desc())
             .limit(max(1, min(limit, 200)))
         )
     ).scalars().all()
@@ -193,13 +212,18 @@ async def get_compliance_snapshot(
 
 async def build_bundle_archive(session: AsyncSession, snapshot: ComplianceSnapshot) -> bytes:
     # Build and persist evidence bundles so operators can export/re-check artifacts deterministically.
+    captured_at = _snapshot_captured_at(snapshot)
+    results_json = _snapshot_results(snapshot)
     payload_snapshot = {
         "id": snapshot.id,
         "tenant_id": snapshot.tenant_id,
+        "captured_at": captured_at.isoformat(),
         "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
         "created_by": snapshot.created_by,
         "status": snapshot.status,
+        "results_json": results_json,
         "summary_json": snapshot.summary_json,
+        "artifact_paths_json": snapshot.artifact_paths_json or {},
     }
     controls = snapshot.controls_json or []
     config_sanitized = sanitize_config_snapshot()
@@ -228,7 +252,16 @@ async def build_bundle_archive(session: AsyncSession, snapshot: ComplianceSnapsh
     evidence_dir = Path(get_settings().compliance_evidence_dir)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     # Persist generated bundles under var/evidence for deterministic operator retrieval.
-    (evidence_dir / f"{snapshot.id}.zip").write_bytes(payload)
+    bundle_path = evidence_dir / f"{snapshot.id}.zip"
+    bundle_path.write_bytes(payload)
+    snapshot.artifact_paths_json = {
+        **(snapshot.artifact_paths_json or {}),
+        "bundle_path": str(bundle_path),
+        "bundle_download_path": f"/v1/admin/compliance/snapshots/{snapshot.id}/download",
+        "bundle_generated_at": _utc_now().isoformat(),
+    }
+    await session.commit()
+    await session.refresh(snapshot)
     return payload
 
 

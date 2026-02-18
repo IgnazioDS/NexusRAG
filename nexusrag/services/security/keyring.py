@@ -25,6 +25,14 @@ _ALLOWED_PURPOSES = {
 _ALLOWED_STATUSES = {"active", "retiring", "retired", "revoked"}
 
 
+class KeyringConfigurationError(RuntimeError):
+    """Raised when required keyring encryption config is missing or invalid."""
+
+
+class KeyringDisabledError(RuntimeError):
+    """Raised when keyring encryption is explicitly optional but currently unavailable."""
+
+
 @dataclass(frozen=True)
 class PlatformKeyView:
     key_id: str
@@ -41,8 +49,16 @@ def _utc_now() -> datetime:
 
 def _build_fernet() -> Fernet:
     settings = get_settings()
-    # Always encrypt persisted key material; fall back to cursor secret only in local/dev mode.
-    source = settings.keyring_master_key or settings.crypto_local_master_key or settings.ui_cursor_secret
+    # Enforce explicit keyring configuration in required mode; never fall back to plaintext storage paths.
+    source = (settings.keyring_master_key or "").strip()
+    if not source:
+        if settings.keyring_master_key_required:
+            raise KeyringConfigurationError("KEYRING_MASTER_KEY is required for keyring encryption")
+        # Optional mode allows local/dev runs without keyring encryption capabilities.
+        fallback = (settings.crypto_local_master_key or "").strip()
+        if not fallback:
+            raise KeyringDisabledError("KEYRING_MASTER_KEY is not configured and keyring is disabled")
+        source = fallback
     digest = hashlib.sha256(source.encode("utf-8")).digest()
     return Fernet(urlsafe_b64encode(digest))
 

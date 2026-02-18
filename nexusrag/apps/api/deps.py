@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 import asyncio
 import time
@@ -45,11 +45,11 @@ _auth_cache: dict[str, tuple[float, Principal]] = {}
 _auth_cache_lock = asyncio.Lock()
 
 
-def _auth_error(message: str) -> HTTPException:
-    # Normalize auth errors for clients without leaking internal details.
+def _auth_error(message: str, *, code: str = "AUTH_UNAUTHORIZED") -> HTTPException:
+    # Normalize auth errors for clients without leaking internal details while preserving stable error codes.
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail={"code": "AUTH_UNAUTHORIZED", "message": message},
+        detail={"code": code, "message": message},
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -412,8 +412,30 @@ async def get_current_principal(
         )
         raise error
     api_key, user = row
-    if api_key.revoked_at is not None or not user.is_active:
-        error = _auth_error("API key is revoked or inactive")
+    if api_key.revoked_at is not None:
+        # Distinguish revoked credentials from other auth failures for deterministic operator handling.
+        error = _auth_error("API key is revoked", code="AUTH_REVOKED_KEY")
+        request_ctx = get_request_context(request)
+        await record_event(
+            session=db,
+            tenant_id=api_key.tenant_id,
+            actor_type="api_key",
+            actor_id=api_key.id,
+            actor_role=user.role,
+            event_type="auth.access.failure",
+            outcome="failure",
+            resource_type="auth",
+            request_id=request_ctx["request_id"],
+            ip_address=request_ctx["ip_address"],
+            user_agent=request_ctx["user_agent"],
+            metadata={**_request_metadata(request), "user_id": user.id},
+            error_code=_extract_error_code(error),
+            commit=True,
+            best_effort=True,
+        )
+        raise error
+    if not user.is_active:
+        error = _auth_error("API key user is inactive")
         request_ctx = get_request_context(request)
         await record_event(
             session=db,
@@ -435,7 +457,7 @@ async def get_current_principal(
         raise error
     if api_key.expires_at is not None and api_key.expires_at <= datetime.now(timezone.utc):
         # Deny expired credentials explicitly so operators can distinguish expiry from revocation.
-        error = _auth_error("API key expired")
+        error = _auth_error("API key expired", code="AUTH_EXPIRED_KEY")
         request_ctx = get_request_context(request)
         await record_event(
             session=db,
@@ -455,6 +477,35 @@ async def get_current_principal(
             best_effort=True,
         )
         raise error
+    if settings.auth_api_key_inactive_enforced and settings.auth_api_key_inactive_days > 0:
+        # Evaluate inactivity from last_used_at fallback to created_at so never-used keys age deterministically.
+        activity_anchor = api_key.last_used_at or api_key.created_at
+        inactive_cutoff = datetime.now(timezone.utc) - timedelta(days=settings.auth_api_key_inactive_days)
+        if activity_anchor <= inactive_cutoff:
+            error = _auth_error("API key inactive", code="AUTH_INACTIVE_KEY")
+            request_ctx = get_request_context(request)
+            await record_event(
+                session=db,
+                tenant_id=api_key.tenant_id,
+                actor_type="api_key",
+                actor_id=api_key.id,
+                actor_role=user.role,
+                event_type="auth.access.failure",
+                outcome="failure",
+                resource_type="auth",
+                request_id=request_ctx["request_id"],
+                ip_address=request_ctx["ip_address"],
+                user_agent=request_ctx["user_agent"],
+                metadata={
+                    **_request_metadata(request),
+                    "user_id": user.id,
+                    "inactive_days_threshold": settings.auth_api_key_inactive_days,
+                },
+                error_code=_extract_error_code(error),
+                commit=True,
+                best_effort=True,
+            )
+            raise error
     if api_key.tenant_id != user.tenant_id:
         error = _forbidden_error("Tenant mismatch for API key")
         request_ctx = get_request_context(request)
