@@ -13,8 +13,10 @@ from nexusrag.domain.models import (
     AuditEvent,
     IncidentTimelineEvent,
     NotificationAttempt,
+    NotificationDeadLetter,
     NotificationDestination,
     NotificationJob,
+    NotificationRoute,
     OpsIncident,
     TenantPlanAssignment,
     User,
@@ -23,11 +25,8 @@ from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.operability import actions as actions_module
 from nexusrag.services.operability import notifications as notifications_module
 from nexusrag.services.operability import worker as worker_module
-from nexusrag.services.operability.notifications import (
-    dedupe_window_start,
-    retry_backoff_ms,
-    send_operability_notification,
-)
+from nexusrag.services.notifications.routing import resolve_destinations
+from nexusrag.services.operability.notifications import dedupe_window_start, retry_backoff_ms, send_operability_notification
 from nexusrag.services.operability.worker import acquire_evaluator_lock, release_evaluator_lock
 from nexusrag.tests.utils.auth import create_test_api_key
 
@@ -79,6 +78,8 @@ async def _cleanup_tenant(tenant_id: str) -> None:
                 NotificationAttempt.job_id.in_(select(NotificationJob.id).where(NotificationJob.tenant_id == tenant_id))
             )
         )
+        await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
+        await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
         await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
         await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
         await session.execute(delete(AlertEvent).where(AlertEvent.tenant_id == tenant_id))
@@ -174,7 +175,6 @@ async def test_notification_enqueue_dedupes_within_window(monkeypatch) -> None:
     get_settings.cache_clear()
     fixed_now = datetime(2026, 2, 18, 12, 8, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(notifications_module, "_utc_now", lambda: fixed_now)
-    monkeypatch.setattr(notifications_module, "_global_notification_destinations", lambda: ["noop://local"])
 
     async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
         return True
@@ -263,6 +263,85 @@ async def test_destination_resolution_prefers_tenant_rows(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_route_resolution_uses_priority_then_wildcard(monkeypatch) -> None:
+    tenant_id = f"t-notify-routes-{uuid4().hex}"
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://global-default\"]")
+    get_settings.cache_clear()
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    try:
+        async with SessionLocal() as session:
+            destination_specific = NotificationDestination(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                destination_url="noop://specific",
+                enabled=True,
+            )
+            destination_wildcard = NotificationDestination(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                destination_url="noop://wildcard",
+                enabled=True,
+            )
+            session.add_all([destination_specific, destination_wildcard])
+            await session.commit()
+            session.add_all(
+                [
+                    NotificationRoute(
+                        id=uuid4().hex,
+                        tenant_id=tenant_id,
+                        name="specific",
+                        enabled=True,
+                        priority=10,
+                        match_json={"event_type": "incident.opened", "severity": ["high"]},
+                        destinations_json=[{"destination_id": destination_specific.id}],
+                    ),
+                    NotificationRoute(
+                        id=uuid4().hex,
+                        tenant_id=tenant_id,
+                        name="wildcard",
+                        enabled=True,
+                        priority=20,
+                        match_json={"event_type": "*", "severity": ["high", "critical"]},
+                        destinations_json=[{"destination_id": destination_wildcard.id}],
+                    ),
+                ]
+            )
+            await session.commit()
+            resolved = await resolve_destinations(
+                session=session,
+                tenant_id=tenant_id,
+                event_type="incident.opened",
+                severity="high",
+            )
+            assert [row.destination_url for row in resolved] == ["noop://specific", "noop://wildcard"]
+            assert [row.source for row in resolved] == ["route", "route"]
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_route_resolution_falls_back_to_global_when_no_tenant_destinations(monkeypatch) -> None:
+    tenant_id = f"t-notify-global-fallback-{uuid4().hex}"
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://global-fallback\"]")
+    get_settings.cache_clear()
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    try:
+        async with SessionLocal() as session:
+            resolved = await resolve_destinations(
+                session=session,
+                tenant_id=tenant_id,
+                event_type="incident.opened",
+                severity="high",
+            )
+            assert [row.destination_url for row in resolved] == ["noop://global-fallback"]
+            assert [row.source for row in resolved] == ["global_default"]
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_notification_job_cas_prevents_reprocessing(monkeypatch) -> None:
     tenant_id = f"t-notify-cas-{uuid4().hex}"
     fixed_now = datetime(2026, 2, 18, 12, 8, 12, tzinfo=timezone.utc)
@@ -304,3 +383,30 @@ async def test_notification_job_cas_prevents_reprocessing(monkeypatch) -> None:
             assert second is None
     finally:
         await _cleanup_tenant(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_kill_notifications_blocks_enqueue(monkeypatch) -> None:
+    tenant_id = f"t-notify-kill-{uuid4().hex}"
+    monkeypatch.setenv("KILL_NOTIFICATIONS", "true")
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://local\"]")
+    get_settings.cache_clear()
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    try:
+        async with SessionLocal() as session:
+            await send_operability_notification(
+                session=session,
+                tenant_id=tenant_id,
+                event_type="incident.opened",
+                payload={"incident_id": "inc-kill-test", "severity": "high"},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-kill",
+            )
+            jobs = (
+                await session.execute(select(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
+            ).scalars().all()
+            assert jobs == []
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
