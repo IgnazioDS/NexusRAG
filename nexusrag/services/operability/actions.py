@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from nexusrag.core.config import get_settings
 from nexusrag.domain.models import OperatorAction
 from nexusrag.services.audit import record_event
 from nexusrag.services.failover import set_write_freeze
 from nexusrag.services.resilience import get_resilience_redis, reset_circuit_breaker
 
 
-_force_flags_local: dict[str, str] = {}
-_FORCED_SHED_PREFIX = "nexusrag:ops:forced_shed"
-_FORCED_TTS_PREFIX = "nexusrag:ops:forced_tts_disabled"
+_FORCED_SHED_PREFIX = "nexusrag:ops:forced_shed:v2"
+_FORCED_TTS_PREFIX = "nexusrag:ops:forced_tts_disabled:v2"
 
 
 def _utc_now() -> datetime:
@@ -31,56 +32,80 @@ def _forced_tts_key(tenant_id: str) -> str:
     return f"{_FORCED_TTS_PREFIX}:{tenant_id}"
 
 
-async def set_forced_shed(*, tenant_id: str, route_class: str, enabled: bool) -> None:
-    # Store forced-shed flags in Redis when available, with local fallback for tests.
+def _allowed_writer_region() -> bool:
+    # Restrict forced-flag writers to primary region unless assisted failover mode explicitly permits it.
+    settings = get_settings()
+    if settings.region_role.strip().lower() == "primary":
+        return True
+    return settings.failover_enabled and settings.failover_mode.strip().lower() == "assisted"
+
+
+async def _set_versioned_flag(*, key: str, value: bool, ttl_s: int) -> dict[str, Any]:
+    # Encode forced-control flags with version + region metadata so cross-region writes are auditable and bounded.
     redis = await get_resilience_redis()
-    key = _forced_shed_key(tenant_id, route_class)
     if redis is None:
-        if enabled:
-            _force_flags_local[key] = "1"
-        else:
-            _force_flags_local.pop(key, None)
-        return
-    if enabled:
-        await redis.set(key, "1")
-    else:
-        await redis.delete(key)
+        return {"applied": False, "reason": "redis_unavailable"}
+    if not _allowed_writer_region():
+        return {"applied": False, "reason": "region_not_allowed"}
+
+    version_key = f"{key}:version"
+    version = int(await redis.incr(version_key))
+    payload = {
+        "value": bool(value),
+        "version": version,
+        "set_by_region": get_settings().region_id,
+        "set_at": _utc_now().isoformat(),
+        "ttl_s": max(1, int(ttl_s)),
+    }
+    await redis.set(key, json.dumps(payload), ex=max(1, int(ttl_s)))
+    return {"applied": True, "flag": payload}
+
+
+def _decode_flag_payload(raw_value: str) -> bool:
+    # Parse structured forced-control payloads and fail safe to disabled on malformed values.
+    try:
+        decoded = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return raw_value == "1"
+    if isinstance(decoded, dict):
+        return bool(decoded.get("value"))
+    return False
+
+
+async def set_forced_shed(*, tenant_id: str, route_class: str, enabled: bool, ttl_s: int | None = None) -> dict[str, Any]:
+    # Apply forced shed as a TTL-bounded versioned flag to prevent stale control-plane states.
+    ttl = int(ttl_s or get_settings().ops_forced_flag_ttl_s)
+    return await _set_versioned_flag(key=_forced_shed_key(tenant_id, route_class), value=enabled, ttl_s=ttl)
 
 
 async def get_forced_shed(*, tenant_id: str, route_class: str) -> bool:
-    # Resolve forced-shed state without failing closed on Redis outages.
+    # Resolve forced-shed state and fail open (disabled) when Redis is unavailable.
     redis = await get_resilience_redis()
-    key = _forced_shed_key(tenant_id, route_class)
     if redis is None:
-        return _force_flags_local.get(key) == "1"
-    value = await redis.get(key)
-    return value == "1"
+        return False
+    value = await redis.get(_forced_shed_key(tenant_id, route_class))
+    if not value:
+        return False
+    raw = value.decode("utf-8") if isinstance(value, (bytes, bytearray)) else str(value)
+    return _decode_flag_payload(raw)
 
 
-async def set_forced_tts_disabled(*, tenant_id: str, disabled: bool) -> None:
-    # Keep forced TTS disablements tenant-scoped to avoid cross-tenant coupling.
-    redis = await get_resilience_redis()
-    key = _forced_tts_key(tenant_id)
-    if redis is None:
-        if disabled:
-            _force_flags_local[key] = "1"
-        else:
-            _force_flags_local.pop(key, None)
-        return
-    if disabled:
-        await redis.set(key, "1")
-    else:
-        await redis.delete(key)
+async def set_forced_tts_disabled(*, tenant_id: str, disabled: bool, ttl_s: int | None = None) -> dict[str, Any]:
+    # Apply forced TTS disable as a bounded flag so emergency controls expire without manual cleanup.
+    ttl = int(ttl_s or get_settings().ops_forced_flag_ttl_s)
+    return await _set_versioned_flag(key=_forced_tts_key(tenant_id), value=disabled, ttl_s=ttl)
 
 
 async def get_forced_tts_disabled(*, tenant_id: str) -> bool:
-    # Resolve forced TTS disablement with local fallback in deterministic test mode.
+    # Resolve forced TTS disablement and default to false when Redis is unavailable.
     redis = await get_resilience_redis()
-    key = _forced_tts_key(tenant_id)
     if redis is None:
-        return _force_flags_local.get(key) == "1"
-    value = await redis.get(key)
-    return value == "1"
+        return False
+    value = await redis.get(_forced_tts_key(tenant_id))
+    if not value:
+        return False
+    raw = value.decode("utf-8") if isinstance(value, (bytes, bytearray)) else str(value)
+    return _decode_flag_payload(raw)
 
 
 async def apply_operator_action(
@@ -135,11 +160,11 @@ async def apply_operator_action(
             )
         elif action_type == "enable_shed":
             route_class = str((params or {}).get("route_class") or "run")
-            await set_forced_shed(tenant_id=tenant_id, route_class=route_class, enabled=True)
-            result_json = {"tenant_id": tenant_id, "route_class": route_class, "enabled": True}
+            flag_result = await set_forced_shed(tenant_id=tenant_id, route_class=route_class, enabled=True)
+            result_json = {"tenant_id": tenant_id, "route_class": route_class, "enabled": bool(flag_result.get("applied")), **flag_result}
         elif action_type == "disable_tts":
-            await set_forced_tts_disabled(tenant_id=tenant_id, disabled=True)
-            result_json = {"tenant_id": tenant_id, "disabled": True}
+            flag_result = await set_forced_tts_disabled(tenant_id=tenant_id, disabled=True)
+            result_json = {"tenant_id": tenant_id, "disabled": bool(flag_result.get("applied")), **flag_result}
         elif action_type == "reset_breaker":
             breaker_name = str((params or {}).get("integration") or "")
             await reset_circuit_breaker(breaker_name)
