@@ -1,4 +1,6 @@
 from nexusrag.services.security.keyring import (
+    KeyringConfigurationError,
+    KeyringDisabledError,
     PlatformKeyView,
     list_platform_keys,
     retire_platform_key,
@@ -6,6 +8,8 @@ from nexusrag.services.security.keyring import (
 )
 
 __all__ = [
+    "KeyringConfigurationError",
+    "KeyringDisabledError",
     "PlatformKeyView",
     "list_platform_keys",
     "retire_platform_key",

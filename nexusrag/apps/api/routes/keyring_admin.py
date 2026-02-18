@@ -8,7 +8,13 @@ from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.services.security import list_platform_keys, retire_platform_key, rotate_platform_key
+from nexusrag.services.security import (
+    KeyringConfigurationError,
+    KeyringDisabledError,
+    list_platform_keys,
+    retire_platform_key,
+    rotate_platform_key,
+)
 
 
 router = APIRouter(prefix="/admin/keyring", tags=["security"], responses=DEFAULT_ERROR_RESPONSES)
@@ -27,6 +33,21 @@ class KeyringRotateResponse(BaseModel):
     key: KeyringItemResponse
     secret: str
     replaced_key_id: str | None
+
+
+def _raise_keyring_http_error(exc: Exception) -> None:
+    # Keep operator failures explicit: required-mode misconfig is server error, optional-mode is disabled.
+    if isinstance(exc, KeyringConfigurationError):
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "KEYRING_NOT_CONFIGURED", "message": str(exc)},
+        ) from exc
+    if isinstance(exc, KeyringDisabledError):
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "KEYRING_DISABLED", "message": str(exc)},
+        ) from exc
+    raise exc
 
 
 def _to_payload(row) -> KeyringItemResponse:
@@ -66,7 +87,10 @@ async def rotate_keyring_key(
     db: AsyncSession = Depends(get_db),
 ) -> KeyringRotateResponse:
     # Keep rotation atomic so each purpose has exactly one active key after the transaction.
-    row, raw_secret, replaced_key_id = await rotate_platform_key(db, purpose=purpose)
+    try:
+        row, raw_secret, replaced_key_id = await rotate_platform_key(db, purpose=purpose)
+    except (KeyringConfigurationError, KeyringDisabledError) as exc:
+        _raise_keyring_http_error(exc)
     request_ctx = get_request_context(request)
     await record_event(
         session=db,

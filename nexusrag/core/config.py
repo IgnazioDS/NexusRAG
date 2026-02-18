@@ -309,6 +309,8 @@ class Settings(BaseSettings):
     compliance_evidence_dir: str = "var/evidence"
     # Master key used to encrypt platform keyring material at rest.
     keyring_master_key: str | None = None
+    # Require an explicit keyring master key unless local/dev explicitly disables this guardrail.
+    keyring_master_key_required: bool = True
     # Enable envelope encryption for sensitive artifacts at rest.
     crypto_enabled: bool = True
     # Select the KMS backend used for tenant key operations.
