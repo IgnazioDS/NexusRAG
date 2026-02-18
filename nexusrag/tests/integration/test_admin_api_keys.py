@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from nexusrag.apps.api.main import create_app
+from nexusrag.core.config import get_settings
 from nexusrag.domain.models import ApiKey, AuditEvent, User
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.auth.api_keys import generate_api_key
@@ -111,3 +112,70 @@ async def test_admin_api_keys_patch_updates_lifecycle_and_audits() -> None:
         assert "auth.api_key.revoked" in events
 
     await _cleanup_tenant(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_inactive_key_denied_until_admin_reactivates(monkeypatch) -> None:
+    # Disable auth principal cache and enforce inactivity for deterministic denial/reactivation assertions.
+    monkeypatch.setenv("AUTH_CACHE_TTL_S", "0")
+    monkeypatch.setenv("AUTH_API_KEY_INACTIVE_ENFORCED", "true")
+    monkeypatch.setenv("AUTH_API_KEY_INACTIVE_DAYS", "30")
+    get_settings.cache_clear()
+
+    tenant_id = f"t-admin-keys-inactive-{uuid4().hex}"
+    _admin_raw, admin_headers, _admin_user_id, _admin_key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+    )
+    stale_now = datetime.now(timezone.utc) - timedelta(days=120)
+    stale_key_id, stale_raw, stale_prefix, stale_hash = generate_api_key()
+    stale_user_id = uuid4().hex
+    async with SessionLocal() as session:
+        session.add(User(id=stale_user_id, tenant_id=tenant_id, email=None, role="reader", is_active=True))
+        await session.flush()
+        session.add(
+            ApiKey(
+                id=stale_key_id,
+                user_id=stale_user_id,
+                tenant_id=tenant_id,
+                key_prefix=stale_prefix,
+                key_hash=stale_hash,
+                name="inactive-reader",
+                last_used_at=stale_now,
+            )
+        )
+        await session.commit()
+
+    stale_headers = {"Authorization": f"Bearer {stale_raw}"}
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.get("/v1/documents", headers=stale_headers)
+        assert denied.status_code == 401
+        assert denied.json()["error"]["code"] == "AUTH_INACTIVE_KEY"
+
+        reactivate = await client.patch(
+            f"/v1/admin/api-keys/{stale_key_id}",
+            headers=admin_headers,
+            json={"active": True},
+        )
+        assert reactivate.status_code == 200
+        assert reactivate.json()["data"]["last_used_at"] is not None
+
+        allowed = await client.get("/v1/documents", headers=stale_headers)
+        assert allowed.status_code == 200
+
+    async with SessionLocal() as session:
+        inactive_failures = (
+            await session.execute(
+                select(AuditEvent)
+                .where(AuditEvent.tenant_id == tenant_id)
+                .where(AuditEvent.actor_id == stale_key_id)
+                .where(AuditEvent.event_type == "auth.access.failure")
+                .where(AuditEvent.error_code == "AUTH_INACTIVE_KEY")
+            )
+        ).scalars().all()
+        assert inactive_failures
+
+    await _cleanup_tenant(tenant_id)
+    get_settings.cache_clear()

@@ -216,6 +216,9 @@ async def test_revoked_key_is_unauthorized(monkeypatch) -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/documents", headers=headers)
     assert response.status_code == 401
+    payload = response.json()
+    code = payload.get("detail", {}).get("code") if isinstance(payload.get("detail"), dict) else None
+    assert code == "AUTH_REVOKED_KEY"
 
 
 @pytest.mark.asyncio
