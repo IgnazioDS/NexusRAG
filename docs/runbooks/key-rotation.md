@@ -6,9 +6,18 @@ Platform keyring (`/v1/admin/keyring` and `/v1/admin/keys` compatibility path) a
 
 ## Platform keyring flow
 
+Precondition:
+
+- `KEYRING_MASTER_KEY` must be configured when `KEYRING_MASTER_KEY_REQUIRED=true`.
+
 1. Rotate a key: `POST /v1/admin/keyring/rotate?purpose=signing|encryption|backup_signing|backup_encryption|webhook_signing`
 2. Validate new key metadata in `GET /v1/admin/keyring`
 3. Retire older key if needed: `POST /v1/admin/keyring/{key_id}/retire`
+
+Failure modes:
+
+- Required mode + missing master key -> `KEYRING_NOT_CONFIGURED` (500).
+- Optional mode + missing key source -> `KEYRING_DISABLED` (503).
 
 ## API key flow
 
@@ -17,6 +26,7 @@ Platform keyring (`/v1/admin/keyring` and `/v1/admin/keys` compatibility path) a
 3. Distribute new plaintext key securely (shown once)
 4. Confirm audit event `auth.api_key.rotated`
 5. Confirm old key is revoked and cannot authenticate (unless phased rollout is intentional)
+6. If an old key was denied as stale (`AUTH_INACTIVE_KEY`), reactivate via `PATCH /v1/admin/api-keys/{id}` with `{"active": true}`
 
 ## Verification
 
