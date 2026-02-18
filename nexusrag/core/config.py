@@ -164,6 +164,20 @@ class Settings(BaseSettings):
     autoscaling_hysteresis_pct: int = 10
     # Executor backend for autoscaling apply operations.
     autoscaling_executor: str = "noop"
+    # Enable deterministic alert-rule evaluation from ops and admin workflows.
+    alerting_enabled: bool = True
+    # Enable automatic incident creation and lifecycle automation from alert triggers.
+    incident_automation_enabled: bool = True
+    # Minimum severity that auto-opens incidents when alerts trigger.
+    incident_auto_open_min_severity: str = "high"
+    # Notification adapter for alert/incident hooks (noop or webhook).
+    ops_notification_adapter: str = "noop"
+    # Optional webhook URL used when ops_notification_adapter=webhook.
+    ops_notification_webhook_url: str | None = None
+    # Require a recent worker heartbeat for preflight success when enabled.
+    preflight_require_worker_heartbeat: bool = False
+    # Directory for GA readiness checklist artifacts.
+    ga_checklist_output_dir: str = "var/ops"
     # Enable request-level segment timings for perf diagnostics.
     instrumentation_detailed_timers: bool = True
     # SQLAlchemy async pool size for API runtime database usage.
