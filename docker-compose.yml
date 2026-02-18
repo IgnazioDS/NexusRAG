@@ -47,6 +47,17 @@ services:
     volumes:
       - .:/app
 
+  notify_receiver:
+    build: .
+    # Run the reference receiver to validate sender↔receiver contracts in local and E2E workflows.
+    command: ["python", "scripts/notify_receiver.py"]
+    env_file:
+      - .env
+    ports:
+      - "9001:9001"
+    volumes:
+      - .:/app
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
