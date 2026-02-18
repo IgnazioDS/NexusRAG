@@ -29,11 +29,15 @@ from nexusrag.services.operability import (
 )
 from nexusrag.services.operability.incidents import assign_incident
 from nexusrag.services.operability.notifications import (
+    create_notification_route,
     create_notification_destination,
+    delete_notification_route,
     delete_notification_destination,
     get_notification_job,
+    list_notification_routes,
     list_notification_destinations,
     list_notification_jobs,
+    patch_notification_route,
     patch_notification_destination,
     retry_notification_job_now,
 )
@@ -73,6 +77,23 @@ class NotificationDestinationCreateRequest(BaseModel):
 
 class NotificationDestinationPatchRequest(BaseModel):
     enabled: bool
+
+
+class NotificationRouteCreateRequest(BaseModel):
+    tenant_id: str | None = None
+    name: str = Field(..., min_length=1, max_length=120)
+    enabled: bool = True
+    priority: int = Field(default=100, ge=0, le=10_000)
+    match_json: dict[str, Any] | None = None
+    destinations_json: list[Any]
+
+
+class NotificationRoutePatchRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=0, le=10_000)
+    match_json: dict[str, Any] | None = None
+    destinations_json: list[Any] | None = None
 
 
 def _scope_tenant(principal: Principal, tenant_id: str | None) -> str:
@@ -140,6 +161,20 @@ def _notification_destination_payload(row: Any) -> dict[str, Any]:
         "tenant_id": row.tenant_id,
         "destination_url": row.destination_url,
         "enabled": row.enabled,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _notification_route_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "name": row.name,
+        "enabled": row.enabled,
+        "priority": row.priority,
+        "match_json": row.match_json or {},
+        "destinations_json": row.destinations_json or [],
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -325,15 +360,17 @@ async def resolve_incident_handler(
 async def get_notification_jobs(
     request: Request,
     status_filter: str | None = Query(default=None, alias="status"),
+    tenant_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, list[dict[str, Any]]]:
     # Expose tenant-scoped notification queue state for delivery triage.
     await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, tenant_id)
     rows = await list_notification_jobs(
         session=db,
-        tenant_id=principal.tenant_id,
+        tenant_id=scoped_tenant,
         status_filter=status_filter,
         limit=limit,
     )
@@ -442,6 +479,89 @@ async def delete_notification_destination_handler(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification destination not found"})
+    return success_response(request=request, data={"deleted": True})
+
+
+@router.get("/notifications/routes", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])
+async def get_notification_routes(
+    request: Request,
+    tenant_id: str | None = Query(default=None),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Return route rows in evaluation order so operators can verify deterministic precedence.
+    await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, tenant_id)
+    rows = await list_notification_routes(session=db, tenant_id=scoped_tenant)
+    return success_response(request=request, data={"items": [_notification_route_payload(row) for row in rows]})
+
+
+@router.post("/notifications/routes", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def create_notification_route_handler(
+    payload: NotificationRouteCreateRequest,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Enforce tenant scoping and schema validation at write time to prevent ambiguous route behavior.
+    await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, payload.tenant_id)
+    try:
+        row = await create_notification_route(
+            session=db,
+            tenant_id=scoped_tenant,
+            name=payload.name,
+            enabled=payload.enabled,
+            priority=payload.priority,
+            match_json=payload.match_json,
+            destinations_json=payload.destinations_json,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_INPUT", "message": str(exc)}) from exc
+    return success_response(request=request, data=_notification_route_payload(row))
+
+
+@router.patch("/notifications/routes/{route_id}", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def patch_notification_route_handler(
+    route_id: str,
+    payload: NotificationRoutePatchRequest,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Keep patch semantics explicit and tenant-scoped to prevent cross-tenant route drift.
+    await _enforce_ops_admin(session=db, principal=principal)
+    updates = payload.model_dump(exclude_unset=True)
+    try:
+        row = await patch_notification_route(
+            session=db,
+            tenant_id=principal.tenant_id,
+            route_id=route_id,
+            updates=updates,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_INPUT", "message": str(exc)}) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification route not found"})
+    return success_response(request=request, data=_notification_route_payload(row))
+
+
+@router.delete("/notifications/routes/{route_id}", response_model=SuccessEnvelope[dict[str, bool]] | dict[str, bool])
+async def delete_notification_route_handler(
+    route_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
+    # Delete tenant-owned routes only and keep missing rows as 404 without leakage.
+    await _enforce_ops_admin(session=db, principal=principal)
+    deleted = await delete_notification_route(
+        session=db,
+        tenant_id=principal.tenant_id,
+        route_id=route_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification route not found"})
     return success_response(request=request, data={"deleted": True})
 
 

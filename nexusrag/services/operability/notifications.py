@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -15,10 +14,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import NotificationAttempt, NotificationDestination, NotificationJob
-from nexusrag.persistence.db import SessionLocal
+from nexusrag.domain.models import (
+    NotificationAttempt,
+    NotificationDestination,
+    NotificationJob,
+    NotificationRoute,
+)
 from nexusrag.services.audit import record_event
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, get_effective_entitlements
+from nexusrag.services.notifications.routing import resolve_destinations
 
 _READY_STATUSES = ("queued", "retrying")
 _notification_queue_pool = None
@@ -31,34 +35,6 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _global_notification_destinations() -> list[str]:
-    # Resolve global fallback destinations from config for tenants without explicit routing rows.
-    settings = get_settings()
-    parsed: list[str] = []
-    try:
-        raw = json.loads(settings.notify_webhook_urls_json)
-    except json.JSONDecodeError:
-        raw = []
-    if isinstance(raw, list):
-        parsed.extend(str(value).strip() for value in raw if isinstance(value, str) and value.strip())
-
-    adapter = settings.ops_notification_adapter.strip().lower()
-    if adapter == "webhook" and settings.ops_notification_webhook_url:
-        parsed.append(settings.ops_notification_webhook_url.strip())
-    if not parsed and adapter == "noop":
-        parsed.append("noop://default")
-
-    # Preserve config order while de-duplicating destinations.
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for destination in parsed:
-        if destination in seen:
-            continue
-        seen.add(destination)
-        deduped.append(destination)
-    return deduped
-
-
 def _validate_destination_url(destination_url: str) -> str:
     # Restrict destinations to explicit URL schemes so notification routing never accepts ambiguous targets.
     normalized = destination_url.strip()
@@ -68,20 +44,14 @@ def _validate_destination_url(destination_url: str) -> str:
 
 
 async def resolve_notification_destinations(*, session: AsyncSession, tenant_id: str) -> list[str]:
-    # Prefer tenant-scoped destinations and fall back to global defaults for backward compatibility.
-    rows = (
-        await session.execute(
-            select(NotificationDestination)
-            .where(
-                NotificationDestination.tenant_id == tenant_id,
-                NotificationDestination.enabled.is_(True),
-            )
-            .order_by(NotificationDestination.created_at.asc())
-        )
-    ).scalars().all()
-    if rows:
-        return [row.destination_url for row in rows]
-    return _global_notification_destinations()
+    # Keep legacy helper contract by delegating to the canonical route-based destination resolver.
+    resolved = await resolve_destinations(
+        session=session,
+        tenant_id=tenant_id,
+        event_type="*",
+        severity="low",
+    )
+    return [row.destination_url for row in resolved]
 
 
 async def list_notification_destinations(
@@ -163,6 +133,178 @@ async def delete_notification_destination(
     return True
 
 
+def _normalize_match_json(match_json: dict[str, Any] | None) -> dict[str, Any]:
+    # Normalize route filters so evaluation semantics stay deterministic across admin updates.
+    if match_json is None:
+        return {}
+    if not isinstance(match_json, dict):
+        raise ValueError("match_json must be an object")
+    allowed_keys = {"event_type", "severity", "source", "category"}
+    normalized: dict[str, Any] = {}
+    for key, raw in match_json.items():
+        if key not in allowed_keys:
+            raise ValueError(f"Unsupported match_json key: {key}")
+        if isinstance(raw, str):
+            value = raw.strip()
+            if value:
+                normalized[key] = value.lower()
+            continue
+        if isinstance(raw, list):
+            values = [str(item).strip().lower() for item in raw if str(item).strip()]
+            if values:
+                normalized[key] = values
+            continue
+        raise ValueError(f"match_json.{key} must be a string or list of strings")
+    severity_values = normalized.get("severity")
+    if isinstance(severity_values, str):
+        if severity_values not in {"low", "medium", "high", "critical"}:
+            raise ValueError("match_json.severity contains unsupported value")
+    elif isinstance(severity_values, list):
+        invalid = [value for value in severity_values if value not in {"low", "medium", "high", "critical"}]
+        if invalid:
+            raise ValueError("match_json.severity contains unsupported value")
+    return normalized
+
+
+def _normalize_route_destinations(raw: list[Any] | None) -> list[dict[str, Any]]:
+    # Store route destination references in one normalized shape to keep ordering explicit and replay-safe.
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("destinations_json must be an array")
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, str):
+            destination_id = item.strip()
+            if destination_id:
+                normalized.append({"destination_id": destination_id, "enabled": True})
+            continue
+        if isinstance(item, dict):
+            destination_id = str(item.get("destination_id", "")).strip()
+            if not destination_id:
+                raise ValueError("destinations_json items require destination_id")
+            normalized.append(
+                {
+                    "destination_id": destination_id,
+                    "enabled": bool(item.get("enabled", True)),
+                }
+            )
+            continue
+        raise ValueError("destinations_json items must be destination ids or objects")
+    if not normalized:
+        raise ValueError("destinations_json must include at least one destination")
+    return normalized
+
+
+async def _validate_route_destination_ids(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    destinations_json: list[dict[str, Any]],
+) -> None:
+    # Reject unknown destination ids so route evaluation never references cross-tenant or missing rows.
+    destination_ids = [str(item.get("destination_id")) for item in destinations_json]
+    rows = (
+        await session.execute(
+            select(NotificationDestination.id).where(
+                NotificationDestination.tenant_id == tenant_id,
+                NotificationDestination.id.in_(destination_ids),
+            )
+        )
+    ).scalars().all()
+    known = set(rows)
+    unknown = [destination_id for destination_id in destination_ids if destination_id not in known]
+    if unknown:
+        raise ValueError("destinations_json references unknown destination_id")
+
+
+async def list_notification_routes(*, session: AsyncSession, tenant_id: str) -> list[NotificationRoute]:
+    # Return tenant routes in evaluation order so admins can reason about effective precedence.
+    rows = (
+        await session.execute(
+            select(NotificationRoute)
+            .where(NotificationRoute.tenant_id == tenant_id)
+            .order_by(NotificationRoute.priority.asc(), NotificationRoute.created_at.asc(), NotificationRoute.id.asc())
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def create_notification_route(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    name: str,
+    enabled: bool,
+    priority: int,
+    match_json: dict[str, Any] | None,
+    destinations_json: list[Any] | None,
+) -> NotificationRoute:
+    # Create route rows with pre-validated filters and destination references to keep matching deterministic.
+    normalized_match = _normalize_match_json(match_json)
+    normalized_destinations = _normalize_route_destinations(destinations_json)
+    await _validate_route_destination_ids(
+        session=session,
+        tenant_id=tenant_id,
+        destinations_json=normalized_destinations,
+    )
+    row = NotificationRoute(
+        id=uuid4().hex,
+        tenant_id=tenant_id,
+        name=name.strip() or "route",
+        enabled=bool(enabled),
+        priority=int(priority),
+        match_json=normalized_match,
+        destinations_json=normalized_destinations,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def patch_notification_route(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    route_id: str,
+    updates: dict[str, Any],
+) -> NotificationRoute | None:
+    # Apply partial route updates atomically while preserving tenant boundaries and destination integrity.
+    row = await session.get(NotificationRoute, route_id)
+    if row is None or row.tenant_id != tenant_id:
+        return None
+    if "name" in updates and updates["name"] is not None:
+        row.name = str(updates["name"]).strip() or row.name
+    if "enabled" in updates and updates["enabled"] is not None:
+        row.enabled = bool(updates["enabled"])
+    if "priority" in updates and updates["priority"] is not None:
+        row.priority = int(updates["priority"])
+    if "match_json" in updates:
+        row.match_json = _normalize_match_json(updates.get("match_json"))
+    if "destinations_json" in updates:
+        normalized_destinations = _normalize_route_destinations(updates.get("destinations_json"))
+        await _validate_route_destination_ids(
+            session=session,
+            tenant_id=tenant_id,
+            destinations_json=normalized_destinations,
+        )
+        row.destinations_json = normalized_destinations
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def delete_notification_route(*, session: AsyncSession, tenant_id: str, route_id: str) -> bool:
+    # Delete only tenant-owned routes and return a stable boolean for idempotent API handlers.
+    row = await session.get(NotificationRoute, route_id)
+    if row is None or row.tenant_id != tenant_id:
+        return False
+    await session.delete(row)
+    await session.commit()
+    return True
+
+
 async def get_notification_queue_pool():
     # Cache ARQ Redis pool per event loop to avoid reconnect churn in API and worker code paths.
     global _notification_queue_pool, _notification_queue_pool_loop
@@ -219,6 +361,119 @@ def retry_backoff_ms(*, job_id: str, attempt_no: int) -> int:
     return min(cap, backoff + jitter)
 
 
+async def _create_notification_jobs(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    event_type: str,
+    severity: str,
+    payload: dict[str, Any],
+    source: str | None,
+    category: str | None,
+    actor_id: str | None,
+    actor_role: str | None,
+    request_id: str | None,
+) -> list[str]:
+    # Use one destination resolver for create/replay flows so routing behavior is consistent and testable.
+    destinations = await resolve_destinations(
+        session=session,
+        tenant_id=tenant_id,
+        event_type=event_type,
+        severity=severity,
+        source=source,
+        category=category,
+        metadata=payload,
+    )
+    if not destinations:
+        return []
+
+    now = _utc_now()
+    window_start = dedupe_window_start(now=now, window_seconds=get_settings().notify_dedupe_window_s)
+    incident_id = payload.get("incident_id")
+    if not isinstance(incident_id, str):
+        incident_id = None
+    alert_event_id = payload.get("alert_event_id")
+    if not isinstance(alert_event_id, str):
+        alert_event_id = None
+    dedupe_key = str(payload.get("dedupe_key") or event_type)
+    created_job_ids: list[str] = []
+    for resolved in destinations:
+        job = NotificationJob(
+            id=uuid4().hex,
+            tenant_id=tenant_id,
+            incident_id=incident_id,
+            alert_event_id=alert_event_id,
+            destination=resolved.destination_url,
+            dedupe_key=dedupe_key,
+            dedupe_window_start=window_start,
+            payload_json={
+                "event_type": event_type,
+                "severity": severity,
+                "source": source,
+                "category": category,
+                "tenant_id": tenant_id,
+                "payload": payload,
+                "route_id": resolved.route_id,
+                "destination_id": resolved.destination_id,
+                "destination_source": resolved.source,
+            },
+            status="queued",
+            next_attempt_at=now,
+            attempt_count=0,
+            last_error=None,
+        )
+        session.add(job)
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Drop duplicate jobs inside the dedupe window so repeated incident updates don't fan out endlessly.
+            await session.rollback()
+            continue
+        created_job_ids.append(job.id)
+        await record_event(
+            session=session,
+            tenant_id=tenant_id,
+            actor_type="system",
+            actor_id=actor_id,
+            actor_role=actor_role,
+            event_type="notification.job.enqueued",
+            outcome="success",
+            resource_type="notification_job",
+            resource_id=job.id,
+            request_id=request_id,
+            metadata={
+                "destination": resolved.destination_url,
+                "event_type": event_type,
+                "dedupe_key": dedupe_key,
+                "route_id": resolved.route_id,
+                "destination_source": resolved.source,
+            },
+            commit=True,
+            best_effort=True,
+        )
+    for job_id in created_job_ids:
+        enqueued = await enqueue_notification_job(job_id=job_id)
+        if enqueued:
+            continue
+        # Record enqueue degradation so operators can distinguish transport outages from endpoint failures.
+        await record_event(
+            session=session,
+            tenant_id=tenant_id,
+            actor_type="system",
+            actor_id=actor_id,
+            actor_role=actor_role,
+            event_type="notification.job.enqueue_degraded",
+            outcome="failure",
+            resource_type="notification_job",
+            resource_id=job_id,
+            request_id=request_id,
+            metadata={"event_type": event_type},
+            commit=True,
+            best_effort=True,
+        )
+    return created_job_ids
+
+
 async def send_operability_notification(
     *,
     session: AsyncSession,
@@ -236,81 +491,21 @@ async def send_operability_notification(
     entitlement = entitlements.get(FEATURE_OPS_ADMIN)
     if entitlement is None or not entitlement.enabled:
         return
-    destinations = await resolve_notification_destinations(session=session, tenant_id=tenant_id)
-    if not destinations:
-        return
-
-    now = _utc_now()
-    window_start = dedupe_window_start(now=now, window_seconds=get_settings().notify_dedupe_window_s)
-    incident_id = payload.get("incident_id")
-    if not isinstance(incident_id, str):
-        incident_id = None
-    alert_event_id = payload.get("alert_event_id")
-    if not isinstance(alert_event_id, str):
-        alert_event_id = None
-    dedupe_key = str(payload.get("dedupe_key") or event_type)
-
-    for destination in destinations:
-        async with SessionLocal() as job_session:
-            job = NotificationJob(
-                id=uuid4().hex,
-                tenant_id=tenant_id,
-                incident_id=incident_id,
-                alert_event_id=alert_event_id,
-                destination=destination,
-                dedupe_key=dedupe_key,
-                dedupe_window_start=window_start,
-                payload_json={
-                    "event_type": event_type,
-                    "tenant_id": tenant_id,
-                    "payload": payload,
-                },
-                status="queued",
-                next_attempt_at=now,
-                attempt_count=0,
-                last_error=None,
-            )
-            job_session.add(job)
-            try:
-                await job_session.commit()
-            except IntegrityError:
-                # Drop duplicate jobs inside the dedupe window so repeated incident updates don't fan out endlessly.
-                await job_session.rollback()
-                continue
-            await record_event(
-                session=job_session,
-                tenant_id=tenant_id,
-                actor_type="system",
-                actor_id=actor_id,
-                actor_role=actor_role,
-                event_type="notification.job.enqueued",
-                outcome="success",
-                resource_type="notification_job",
-                resource_id=job.id,
-                request_id=request_id,
-                metadata={"destination": destination, "event_type": event_type, "dedupe_key": dedupe_key},
-                commit=True,
-                best_effort=True,
-            )
-        enqueued = await enqueue_notification_job(job_id=job.id)
-        if not enqueued:
-            async with SessionLocal() as fallback_session:
-                # Record enqueue degradation so operators can distinguish transport outages from endpoint failures.
-                await record_event(
-                    session=fallback_session,
-                    tenant_id=tenant_id,
-                    actor_type="system",
-                    actor_id=actor_id,
-                    actor_role=actor_role,
-                    event_type="notification.job.enqueue_degraded",
-                    outcome="failure",
-                    resource_type="notification_job",
-                    resource_id=job.id,
-                    request_id=request_id,
-                    metadata={"destination": destination},
-                    commit=True,
-                    best_effort=True,
-                )
+    severity = str(payload.get("severity") or "low")
+    source = payload.get("source")
+    category = payload.get("category")
+    await _create_notification_jobs(
+        session=session,
+        tenant_id=tenant_id,
+        event_type=event_type,
+        severity=severity,
+        payload=payload,
+        source=str(source) if isinstance(source, str) else None,
+        category=str(category) if isinstance(category, str) else None,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        request_id=request_id,
+    )
 
 
 async def enqueue_due_notification_jobs(*, session: AsyncSession, limit: int = 50) -> int:
