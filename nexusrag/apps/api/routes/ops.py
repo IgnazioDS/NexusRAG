@@ -328,9 +328,43 @@ async def ops_operability(
     payload = {
         "enabled": get_settings().operability_background_evaluator_enabled,
         "evaluator_heartbeat_age_s": heartbeat_age,
-        "jobs_queued": queue["queued"],
-        "jobs_failed_last_hour": queue["failed_last_hour"],
-        "jobs_dead_lettered": queue.get("dead_lettered", 0),
+        "jobs_queued": queue["jobs_queued"],
+        "jobs_delivering": queue["jobs_delivering"],
+        "jobs_retrying": queue["jobs_retrying"],
+        "jobs_dlq": queue["jobs_dlq"],
+        # Keep legacy key for compatibility with older operator scripts.
+        "jobs_dead_lettered": queue["jobs_dlq"],
+        "jobs_failed_last_hour": queue["jobs_failed_last_hour"],
+        "attempts_last_15m": queue["attempts_last_15m"],
+        "failures_last_15m": queue["failures_last_15m"],
+        "top_failure_reasons": queue.get("top_failure_reasons", []),
+        "timestamp": now.isoformat(),
+    }
+    return success_response(request=request, data=payload)
+
+
+@router.get("/notifications", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def ops_notifications(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict:
+    # Provide notification-delivery specific observability for admin triage workflows.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    now = _utc_now()
+    queue = await notification_queue_summary(session=db, tenant_id=principal.tenant_id)
+    payload = {
+        "jobs_queued": queue["jobs_queued"],
+        "jobs_delivering": queue["jobs_delivering"],
+        "jobs_retrying": queue["jobs_retrying"],
+        "jobs_dlq": queue["jobs_dlq"],
+        "attempts_last_15m": queue["attempts_last_15m"],
+        "failures_last_15m": queue["failures_last_15m"],
+        "top_failure_reasons": queue.get("top_failure_reasons", []),
         "timestamp": now.isoformat(),
     }
     return success_response(request=request, data=payload)

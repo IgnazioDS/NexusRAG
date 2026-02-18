@@ -85,7 +85,7 @@ async def prune_notification_history(session: AsyncSession) -> int:
     # Delete only terminal notification rows after retention to preserve active delivery state.
     settings = get_settings()
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.ui_action_retention_days)
-    terminal_statuses = ("succeeded", "gave_up", "failed")
+    terminal_statuses = ("delivered", "dlq")
     job_ids = (
         await session.execute(
             select(NotificationJob.id).where(
