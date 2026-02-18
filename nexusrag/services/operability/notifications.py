@@ -821,6 +821,8 @@ async def replay_dead_letter(
     )
     if dead_letter is None:
         return None
+    dead_letter_id_value = dead_letter.id
+    original_job_id = dead_letter.job_id
     payload_json = dead_letter.payload_json or {}
     if not isinstance(payload_json, dict):
         payload_json = {}
@@ -831,6 +833,8 @@ async def replay_dead_letter(
         **replay_payload,
         "replayed_from_dead_letter_id": dead_letter.id,
         "replayed_from_job_id": dead_letter.job_id,
+        # Force a fresh dedupe bucket key so operator-initiated replay always creates a new durable job.
+        "dedupe_key": f"replay:{dead_letter.id}",
     }
     event_type = str(payload_json.get("event_type") or "incident.opened")
     severity = str(payload_json.get("severity") or "low")
@@ -857,15 +861,16 @@ async def replay_dead_letter(
         event_type="notification.job.replayed",
         outcome="success",
         resource_type="notification_dead_letter",
-        resource_id=dead_letter.id,
+        resource_id=dead_letter_id_value,
         request_id=request_id,
         metadata={"created_job_ids": created_job_ids},
         commit=True,
         best_effort=True,
     )
     return {
-        "dead_letter_id": dead_letter.id,
-        "original_job_id": dead_letter.job_id,
+        # Return captured identifiers to avoid ORM attribute refresh after the audit commit.
+        "dead_letter_id": dead_letter_id_value,
+        "original_job_id": original_job_id,
         "created_job_ids": created_job_ids,
     }
 
