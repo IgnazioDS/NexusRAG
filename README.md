@@ -1502,12 +1502,14 @@ Key settings:
 - `OPERABILITY_EVAL_INTERVAL_S=30`
 - `INCIDENT_AUTOMATION_ENABLED=true`
 - `INCIDENT_AUTO_OPEN_MIN_SEVERITY=high`
-- `NOTIFY_WEBHOOK_URLS_JSON=["https://.../hook"]`
+- `NOTIFY_WEBHOOK_URLS_JSON=["https://.../hook"]` (global fallback only)
 - `NOTIFY_MAX_ATTEMPTS=5`
 - `NOTIFY_BACKOFF_MS=500`
 - `NOTIFY_BACKOFF_MAX_MS=15000`
 - `NOTIFY_DEDUPE_WINDOW_S=300`
+- `NOTIFY_QUEUE_NAME=notifications`
 - `OPS_FORCED_FLAG_TTL_S=900`
+- `OPS_FORCED_WRITER_LEASE_TTL_S=30`
 
 Worker services:
 
@@ -1559,6 +1561,17 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
   http://localhost:8000/v1/admin/notifications/jobs/$JOB_ID/retry
 ```
 
+Tenant notification destinations:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/notifications/destinations \
+  -d '{"tenant_id":"t1","url":"https://example.com/webhook"}'
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/destinations?tenant_id=t1"
+```
+
 Operability summary:
 
 ```bash
@@ -1572,6 +1585,14 @@ Operator actions (`Idempotency-Key` required):
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Idempotency-Key: op-1" \
   http://localhost:8000/v1/admin/ops/actions/disable-tts
 ```
+
+Git publish diagnostics:
+
+```bash
+./scripts/git_network_diag.sh
+```
+
+See `docs/runbooks/github-push-troubleshooting.md` for HTTPS/SSH fallback workflows.
 
 ## Preflight & GA Checklist
 

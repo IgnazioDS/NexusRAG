@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot
+.PHONY: up migrate seed test perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag
 
 up:
 	# Bring up docker compose services for local dev.
@@ -50,6 +50,10 @@ security-secrets-scan:
 compliance-snapshot:
 	# Persist a compliance snapshot directly from the service layer.
 	python scripts/compliance_snapshot.py --tenant "$${TENANT_ID:-t1}" --actor "$${ACTOR_ID:-system}"
+
+git-network-diag:
+	# Run non-destructive GitHub transport diagnostics for push/pull troubleshooting.
+	./scripts/git_network_diag.sh
 
 sdk-generate:
 	# Generate TypeScript and Python SDKs from the OpenAPI schema.
