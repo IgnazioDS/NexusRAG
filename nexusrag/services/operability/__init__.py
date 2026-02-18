@@ -1,6 +1,7 @@
 from nexusrag.services.operability.alerts import (
     ensure_default_alert_rules,
     evaluate_alert_rules,
+    list_alerting_tenant_ids,
     list_alert_rules,
     patch_alert_rule,
     trigger_runtime_alert,
@@ -24,6 +25,7 @@ __all__ = [
     "assign_incident",
     "ensure_default_alert_rules",
     "evaluate_alert_rules",
+    "list_alerting_tenant_ids",
     "get_forced_shed",
     "get_forced_tts_disabled",
     "list_alert_rules",

@@ -97,6 +97,15 @@ async def open_incident_for_alert(
         )
         await session.commit()
         await session.refresh(existing)
+        await send_operability_notification(
+            session=session,
+            tenant_id=tenant_id,
+            event_type="incident.updated",
+            payload={"incident_id": existing.id, "category": category, "severity": existing.severity},
+            actor_id=actor_id,
+            actor_role=actor_role,
+            request_id=request_id,
+        )
         return existing, False
 
     incident = OpsIncident(

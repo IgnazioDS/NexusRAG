@@ -567,6 +567,57 @@ class OperatorAction(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class NotificationJob(Base):
+    __tablename__ = "notification_jobs"
+    __table_args__ = (
+        Index("ix_notification_jobs_tenant_status_next", "tenant_id", "status", "next_attempt_at"),
+        Index("ix_notification_jobs_incident_created", "incident_id", text("created_at DESC")),
+        UniqueConstraint(
+            "tenant_id",
+            "incident_id",
+            "destination",
+            "dedupe_key",
+            "dedupe_window_start",
+            name="uq_notification_jobs_dedupe_window",
+        ),
+    )
+
+    # Persist delivery-intent records so notifications survive process restarts and transient failures.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    incident_id: Mapped[str | None] = mapped_column(String, ForeignKey("ops_incidents.id"), nullable=True, index=True)
+    alert_event_id: Mapped[str | None] = mapped_column(String, ForeignKey("alert_events.id"), nullable=True, index=True)
+    destination: Mapped[str] = mapped_column(String)
+    dedupe_key: Mapped[str] = mapped_column(String)
+    dedupe_window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String, index=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class NotificationAttempt(Base):
+    __tablename__ = "notification_attempts"
+    __table_args__ = (
+        Index("ix_notification_attempts_job_started", "job_id", text("started_at DESC")),
+        UniqueConstraint("job_id", "attempt_no", name="uq_notification_attempts_job_attempt"),
+    )
+
+    # Keep immutable attempt rows for delivery forensics and retry tuning.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("notification_jobs.id"), index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    outcome: Mapped[str] = mapped_column(String, index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AutoscalingProfile(Base):
     __tablename__ = "autoscaling_profiles"
     __table_args__ = (

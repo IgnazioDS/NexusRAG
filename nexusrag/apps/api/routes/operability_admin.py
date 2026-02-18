@@ -29,6 +29,11 @@ from nexusrag.services.operability import (
     resolve_incident,
 )
 from nexusrag.services.operability.incidents import assign_incident
+from nexusrag.services.operability.notifications import (
+    get_notification_job,
+    list_notification_jobs,
+    retry_notification_job_now,
+)
 
 
 router = APIRouter(prefix="/admin", tags=["operability"], responses=DEFAULT_ERROR_RESPONSES)
@@ -97,6 +102,24 @@ def _action_payload(row: Any) -> dict[str, Any]:
         "error_code": row.error_code,
         "requested_at": row.requested_at.isoformat() if row.requested_at else None,
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+    }
+
+
+def _notification_job_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "incident_id": row.incident_id,
+        "alert_event_id": row.alert_event_id,
+        "destination": row.destination,
+        "dedupe_key": row.dedupe_key,
+        "dedupe_window_start": row.dedupe_window_start.isoformat() if row.dedupe_window_start else None,
+        "status": row.status,
+        "attempt_count": row.attempt_count,
+        "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else None,
+        "last_error": row.last_error,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
@@ -274,6 +297,55 @@ async def resolve_incident_handler(
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Incident not found"})
     return success_response(request=request, data=_incident_payload(row))
+
+
+@router.get("/notifications/jobs", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])
+async def get_notification_jobs(
+    request: Request,
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Expose tenant-scoped notification queue state for delivery triage.
+    await _enforce_ops_admin(session=db, principal=principal)
+    rows = await list_notification_jobs(
+        session=db,
+        tenant_id=principal.tenant_id,
+        status_filter=status_filter,
+        limit=limit,
+    )
+    return success_response(request=request, data={"items": [_notification_job_payload(row) for row in rows]})
+
+
+@router.get("/notifications/jobs/{job_id}", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def get_notification_job_by_id(
+    job_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Return one notification job to inspect retry state and last error details.
+    await _enforce_ops_admin(session=db, principal=principal)
+    row = await get_notification_job(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
+    return success_response(request=request, data=_notification_job_payload(row))
+
+
+@router.post("/notifications/jobs/{job_id}/retry", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def retry_notification_job(
+    job_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Force a due-at-now retry while preserving dedupe and immutable attempt history.
+    await _enforce_ops_admin(session=db, principal=principal)
+    row = await retry_notification_job_now(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
+    return success_response(request=request, data=_notification_job_payload(row))
 
 
 @router.get("/incidents/{incident_id}/timeline", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])

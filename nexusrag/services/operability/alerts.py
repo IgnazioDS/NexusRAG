@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import AlertEvent, AlertRule, SlaIncident, SlaMeasurement
+from nexusrag.domain.models import AlertEvent, AlertRule, SlaIncident, SlaMeasurement, TenantPlanAssignment
 from nexusrag.services.audit import record_event
 from nexusrag.services.ingest.queue import get_queue_depth, get_worker_heartbeat
 from nexusrag.services.operability.incidents import open_incident_for_alert
@@ -106,6 +106,20 @@ async def ensure_default_alert_rules(*, session: AsyncSession, tenant_id: str) -
         return
     session.add_all(_default_rules_for_tenant(tenant_id))
     await session.commit()
+
+
+async def list_alerting_tenant_ids(*, session: AsyncSession) -> list[str]:
+    # Evaluate alerting per tenant from persisted tenancy sources to avoid request-path dependency.
+    tenant_union = union_all(
+        select(TenantPlanAssignment.tenant_id.label("tenant_id")).where(TenantPlanAssignment.tenant_id.is_not(None)),
+        select(AlertRule.tenant_id.label("tenant_id")).where(AlertRule.tenant_id.is_not(None)),
+    ).subquery()
+    rows = (
+        await session.execute(
+            select(func.distinct(tenant_union.c.tenant_id)).order_by(tenant_union.c.tenant_id.asc())
+        )
+    ).scalars().all()
+    return [tenant_id for tenant_id in rows if isinstance(tenant_id, str) and tenant_id]
 
 
 async def list_alert_rules(*, session: AsyncSession, tenant_id: str) -> list[AlertRule]:
@@ -321,7 +335,13 @@ async def evaluate_alert_rules(
             session=session,
             tenant_id=tenant_id,
             event_type="alert.triggered",
-            payload={"rule_id": rule.rule_id, "severity": rule.severity, "reason": reason},
+            payload={
+                "alert_event_id": event.id,
+                "incident_id": incident_id,
+                "rule_id": rule.rule_id,
+                "severity": rule.severity,
+                "reason": reason,
+            },
             actor_id=actor_id,
             actor_role=actor_role,
             request_id=request_id,
