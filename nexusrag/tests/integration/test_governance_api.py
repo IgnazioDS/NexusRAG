@@ -285,6 +285,8 @@ async def test_retention_proof_endpoints() -> None:
         run_data = run_resp.json()["data"]
         assert run_data["task"] == "prune_all"
         assert "items_pruned_by_table" in run_data
+        assert "prune_idempotency" in run_data["items_pruned_by_table"]
+        assert "cleanup_notifications" in run_data["items_pruned_by_table"]
 
         status_resp = await client.get("/v1/admin/governance/retention/status", headers=headers)
         assert status_resp.status_code == 200
