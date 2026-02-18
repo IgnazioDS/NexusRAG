@@ -1491,6 +1491,77 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
   }'
 ```
 
+## Alerting & Incidents
+
+Phase 37 adds deterministic alert-rule evaluation, incident automation, and operator response workflows.
+
+Key settings:
+
+- `ALERTING_ENABLED=true`
+- `INCIDENT_AUTOMATION_ENABLED=true`
+- `INCIDENT_AUTO_OPEN_MIN_SEVERITY=high`
+- `OPS_NOTIFICATION_ADAPTER=noop|webhook`
+- `OPS_NOTIFICATION_WEBHOOK_URL=...`
+
+List and tune alert rules:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/alerts/rules
+
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/alerts/rules/$RULE_ID \
+  -d '{"enabled":true,"thresholds_json":{"value":2.0}}'
+```
+
+Evaluate alerts and inspect triggered rows:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/alerts/evaluate?window=5m"
+```
+
+Incident lifecycle:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/incidents?status=open"
+
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/incidents/$INCIDENT_ID/ack \
+  -d '{"note":"Acknowledged by on-call"}'
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/incidents/$INCIDENT_ID/timeline
+```
+
+Operator actions (`Idempotency-Key` required):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Idempotency-Key: op-1" \
+  http://localhost:8000/v1/admin/ops/actions/disable-tts
+```
+
+## Preflight & GA Checklist
+
+Run deploy preflight checks:
+
+```bash
+make preflight
+```
+
+Generate GA readiness artifacts:
+
+```bash
+make ga-checklist
+```
+
+Artifacts are written under `var/ops/` by default:
+
+- `preflight.json`
+- `ga-checklist-<timestamp>.json`
+- `ga-checklist-<timestamp>.md`
+
 ## Tenant Self-Serve API
 
 Tenant self-serve endpoints let admins manage API keys, view usage, and request plan upgrades without platform intervention.
