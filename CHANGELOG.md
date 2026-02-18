@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.8.2 - 2026-02-18
+
+- Added tenant-scoped notification destination routing APIs with global fallback support.
+- Moved notification delivery to an ARQ-backed worker while preserving `notification_jobs`/`notification_attempts` as durable source of truth.
+- Added publish reliability tooling (`scripts/git_network_diag.sh`) and GitHub push troubleshooting runbook.
+- Hardened forced control writes with a short-lived writer lease plus region-role enforcement.
+
 ## 2.8.1 - 2026-02-18
 
 - Added background operability evaluator worker with distributed locking and heartbeat reporting.
