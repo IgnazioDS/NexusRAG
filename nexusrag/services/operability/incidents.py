@@ -11,7 +11,6 @@ from nexusrag.domain.models import IncidentTimelineEvent, OpsIncident
 from nexusrag.services.audit import record_event
 from nexusrag.services.operability.notifications import send_operability_notification
 
-
 _UNRESOLVED_STATUSES = ("open", "acknowledged", "assigned", "mitigating")
 
 

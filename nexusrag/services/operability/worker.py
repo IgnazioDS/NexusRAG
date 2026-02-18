@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import logging
 from typing import Any
 from uuid import uuid4
 
@@ -13,11 +13,9 @@ from nexusrag.core.config import get_settings
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.operability.alerts import evaluate_alert_rules, list_alerting_tenant_ids
 from nexusrag.services.operability.notifications import (
-    claim_due_notification_jobs,
-    process_notification_job,
+    enqueue_due_notification_jobs,
 )
 from nexusrag.services.resilience import get_resilience_redis
-
 
 logger = logging.getLogger(__name__)
 
@@ -145,21 +143,15 @@ async def run_background_evaluator_cycle() -> dict[str, Any]:
 
 
 async def run_notification_delivery_cycle(*, limit: int = 50) -> dict[str, int]:
-    # Drain due notification jobs in bounded batches for deterministic retry throughput.
+    # Re-enqueue due notification jobs so ARQ workers can process retries on schedule.
     try:
         async with SessionLocal() as session:
-            job_ids = await claim_due_notification_jobs(session=session, limit=limit)
+            enqueued = await enqueue_due_notification_jobs(session=session, limit=limit)
     except SQLAlchemyError as exc:
         if _is_missing_table_error(exc):
-            return {"claimed": 0, "processed": 0}
+            return {"enqueued": 0}
         raise
-    processed = 0
-    for job_id in job_ids:
-        async with SessionLocal() as session:
-            row = await process_notification_job(session=session, job_id=job_id)
-            if row is not None:
-                processed += 1
-    return {"claimed": len(job_ids), "processed": processed}
+    return {"enqueued": int(enqueued)}
 
 
 async def run_background_evaluator_loop() -> None:
@@ -174,7 +166,7 @@ async def run_background_evaluator_loop() -> None:
 
 
 async def run_notification_delivery_loop() -> None:
-    # Run notification delivery polling continuously to convert queued jobs into attempts/outcomes.
+    # Keep a compatibility loop that periodically re-enqueues due jobs for ARQ delivery workers.
     interval = max(1, int(get_settings().notify_worker_poll_interval_s))
     while True:
         try:

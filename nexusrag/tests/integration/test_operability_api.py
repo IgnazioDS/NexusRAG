@@ -19,17 +19,18 @@ from nexusrag.domain.models import (
     IdempotencyRecord,
     IncidentTimelineEvent,
     NotificationAttempt,
+    NotificationDestination,
     NotificationJob,
-    OpsIncident,
     OperatorAction,
+    OpsIncident,
     TenantPlanAssignment,
     User,
 )
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.entitlements import reset_entitlements_cache
-from nexusrag.services.resilience import get_resilience_redis
 from nexusrag.services.operability.notifications import process_notification_job
 from nexusrag.services.operability.worker import run_background_evaluator_cycle
+from nexusrag.services.resilience import get_resilience_redis
 from nexusrag.tests.utils.auth import create_test_api_key
 
 
@@ -63,6 +64,7 @@ async def _cleanup_tenant(tenant_id: str) -> None:
                 )
             )
         )
+        await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
         await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
         await session.execute(delete(AlertEvent).where(AlertEvent.tenant_id == tenant_id))
         await session.execute(delete(IncidentTimelineEvent).where(IncidentTimelineEvent.tenant_id == tenant_id))
@@ -265,13 +267,17 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
         plan_id="enterprise",
     )
 
-    from nexusrag.services.operability.incidents import open_incident_for_alert
     from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
 
-    async def _always_fail(*, destination, body):  # type: ignore[override]
+    async def _always_fail(*, destination, body, notification_id):  # type: ignore[override]
         raise RuntimeError("forced failure")
 
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
     monkeypatch.setattr(notifications_module, "_deliver", _always_fail)
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
 
     app = create_app()
     transport = ASGITransport(app=app)
@@ -300,12 +306,6 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
             job_id = jobs[0].id
 
         async with SessionLocal() as session:
-            row = await session.get(NotificationJob, job_id)
-            assert row is not None
-            row.status = "sending"
-            await session.commit()
-
-        async with SessionLocal() as session:
             processed = await process_notification_job(session=session, job_id=job_id)
             assert processed is not None
 
@@ -329,6 +329,161 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
             assert retry.status_code == 200
             assert retry.json()["data"]["id"] == job_id
             assert retry.json()["data"]["status"] == "retrying"
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_job_processes_successfully(monkeypatch) -> None:
+    tenant_id = f"t-operability-notify-success-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://test-success\"]")
+    get_settings.cache_clear()
+    await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    try:
+        async with SessionLocal() as session:
+            incident, _created = await open_incident_for_alert(
+                session=session,
+                tenant_id=tenant_id,
+                category="worker.heartbeat.age_s",
+                rule_id=None,
+                severity="high",
+                title="Worker stale",
+                summary="heartbeat stale",
+                details_json={"worker_heartbeat_age_s": 999},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-notify-success",
+            )
+            assert incident.id
+
+        async with SessionLocal() as session:
+            job = (
+                await session.execute(
+                    select(NotificationJob).where(NotificationJob.tenant_id == tenant_id).limit(1)
+                )
+            ).scalar_one()
+            processed = await process_notification_job(session=session, job_id=job.id)
+            assert processed is not None
+            assert processed.status == "succeeded"
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_destinations_are_tenant_scoped(monkeypatch) -> None:
+    tenant_id = f"t-operability-dest-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            create = await client.post(
+                "/v1/admin/notifications/destinations",
+                headers=headers,
+                json={"tenant_id": tenant_id, "url": "noop://tenant-a"},
+            )
+            assert create.status_code == 200
+            destination_id = create.json()["data"]["id"]
+
+            list_resp = await client.get(
+                f"/v1/admin/notifications/destinations?tenant_id={tenant_id}",
+                headers=headers,
+            )
+            assert list_resp.status_code == 200
+            items = list_resp.json()["data"]["items"]
+            assert any(item["id"] == destination_id and item["enabled"] is True for item in items)
+
+            disable = await client.patch(
+                f"/v1/admin/notifications/destinations/{destination_id}",
+                headers=headers,
+                json={"enabled": False},
+            )
+            assert disable.status_code == 200
+            assert disable.json()["data"]["enabled"] is False
+
+            delete_resp = await client.delete(
+                f"/v1/admin/notifications/destinations/{destination_id}",
+                headers=headers,
+            )
+            assert delete_resp.status_code == 200
+            assert delete_resp.json()["data"]["deleted"] is True
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_incident_notifications_use_tenant_destinations(monkeypatch) -> None:
+    tenant_id = f"t-operability-routing-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://global-fallback\"]")
+    get_settings.cache_clear()
+    await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                NotificationDestination(
+                    id=uuid4().hex,
+                    tenant_id=tenant_id,
+                    destination_url="noop://tenant-override",
+                    enabled=True,
+                )
+            )
+            await session.commit()
+            incident, created = await open_incident_for_alert(
+                session=session,
+                tenant_id=tenant_id,
+                category="queue.depth",
+                rule_id=None,
+                severity="high",
+                title="Queue depth high",
+                summary="queue depth threshold exceeded",
+                details_json={"queue_depth": 999},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-routing",
+            )
+            assert created is True
+            assert incident.id
+
+        async with SessionLocal() as session:
+            jobs = (
+                await session.execute(
+                    select(NotificationJob).where(NotificationJob.tenant_id == tenant_id)
+                )
+            ).scalars().all()
+            assert jobs
+            assert {job.destination for job in jobs} == {"noop://tenant-override"}
     finally:
         await _cleanup_tenant(tenant_id)
         get_settings.cache_clear()

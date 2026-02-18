@@ -13,7 +13,7 @@ COPY scripts /app/scripts
 COPY tests /app/tests
 COPY Makefile /app/Makefile
 
-RUN pip install --no-cache-dir --upgrade pip \
+RUN pip install --no-cache-dir --upgrade "pip<26" \
     # Install dev extras so pytest is available inside the container.
     && pip install --no-cache-dir -e .[dev]
 

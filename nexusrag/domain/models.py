@@ -601,6 +601,24 @@ class NotificationJob(Base):
     )
 
 
+class NotificationDestination(Base):
+    __tablename__ = "notification_destinations"
+    __table_args__ = (
+        Index("ix_notification_destinations_tenant_enabled", "tenant_id", "enabled"),
+        UniqueConstraint("tenant_id", "destination_url", name="uq_notification_destinations_tenant_url"),
+    )
+
+    # Store tenant-scoped notification routing endpoints to avoid global-only fan-out behavior.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    destination_url: Mapped[str] = mapped_column(String)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class NotificationAttempt(Base):
     __tablename__ = "notification_attempts"
     __table_args__ = (

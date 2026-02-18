@@ -37,8 +37,8 @@ services:
 
   notification_worker:
     build: .
-    # Drain notification jobs with retries so delivery survives API restarts.
-    command: ["python", "scripts/notification_worker.py"]
+    # Run the ARQ notification worker so retries and delayed jobs use Redis scheduling semantics.
+    command: ["arq", "nexusrag.workers.notification_worker.WorkerSettings"]
     env_file:
       - .env
     depends_on:

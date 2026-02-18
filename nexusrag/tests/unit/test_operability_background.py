@@ -13,6 +13,7 @@ from nexusrag.domain.models import (
     AuditEvent,
     IncidentTimelineEvent,
     NotificationAttempt,
+    NotificationDestination,
     NotificationJob,
     OpsIncident,
     TenantPlanAssignment,
@@ -22,7 +23,11 @@ from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.operability import actions as actions_module
 from nexusrag.services.operability import notifications as notifications_module
 from nexusrag.services.operability import worker as worker_module
-from nexusrag.services.operability.notifications import dedupe_window_start, retry_backoff_ms, send_operability_notification
+from nexusrag.services.operability.notifications import (
+    dedupe_window_start,
+    retry_backoff_ms,
+    send_operability_notification,
+)
 from nexusrag.services.operability.worker import acquire_evaluator_lock, release_evaluator_lock
 from nexusrag.tests.utils.auth import create_test_api_key
 
@@ -74,6 +79,7 @@ async def _cleanup_tenant(tenant_id: str) -> None:
                 NotificationAttempt.job_id.in_(select(NotificationJob.id).where(NotificationJob.tenant_id == tenant_id))
             )
         )
+        await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
         await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
         await session.execute(delete(AlertEvent).where(AlertEvent.tenant_id == tenant_id))
         await session.execute(delete(IncidentTimelineEvent).where(IncidentTimelineEvent.tenant_id == tenant_id))
@@ -125,12 +131,24 @@ async def test_forced_flags_ttl_region_and_fail_open(monkeypatch) -> None:
     monkeypatch.setattr(actions_module, "get_resilience_redis", _redis)
     monkeypatch.setenv("REGION_ROLE", "primary")
     monkeypatch.setenv("FAILOVER_MODE", "manual")
+    monkeypatch.setenv("REGION_ID", "ap-southeast-1")
     get_settings.cache_clear()
     applied = await actions_module.set_forced_shed(tenant_id="t-ops", route_class="run", enabled=True, ttl_s=2)
     assert applied["applied"] is True
     assert await actions_module.get_forced_shed(tenant_id="t-ops", route_class="run") is True
     redis.advance(3)
     assert await actions_module.get_forced_shed(tenant_id="t-ops", route_class="run") is False
+
+    lease_block_redis = _FakeRedis()
+    await lease_block_redis.set("forced_control_writer_lease:ap-southeast-1", "other-region:token", ex=30)
+
+    async def _lease_blocked_redis():  # type: ignore[override]
+        return lease_block_redis
+
+    monkeypatch.setattr(actions_module, "get_resilience_redis", _lease_blocked_redis)
+    lease_blocked = await actions_module.set_forced_tts_disabled(tenant_id="t-ops", disabled=True)
+    assert lease_blocked["applied"] is False
+    assert lease_blocked["reason"] == "writer_lease_unavailable"
 
     monkeypatch.setenv("REGION_ROLE", "standby")
     monkeypatch.setenv("FAILOVER_MODE", "manual")
@@ -156,7 +174,12 @@ async def test_notification_enqueue_dedupes_within_window(monkeypatch) -> None:
     get_settings.cache_clear()
     fixed_now = datetime(2026, 2, 18, 12, 8, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(notifications_module, "_utc_now", lambda: fixed_now)
-    monkeypatch.setattr(notifications_module, "_notification_destinations", lambda: ["noop://local"])
+    monkeypatch.setattr(notifications_module, "_global_notification_destinations", lambda: ["noop://local"])
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
     await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
     try:
         async with SessionLocal() as session:
@@ -203,3 +226,81 @@ async def test_notification_enqueue_dedupes_within_window(monkeypatch) -> None:
     finally:
         await _cleanup_tenant(tenant_id)
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_destination_resolution_prefers_tenant_rows(monkeypatch) -> None:
+    tenant_id = f"t-notify-dest-{uuid4().hex}"
+    other_tenant_id = f"{tenant_id}-other"
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://global-default\"]")
+    get_settings.cache_clear()
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                NotificationDestination(
+                    id=uuid4().hex,
+                    tenant_id=tenant_id,
+                    destination_url="noop://tenant-destination",
+                    enabled=True,
+                )
+            )
+            await session.commit()
+            tenant_destinations = await notifications_module.resolve_notification_destinations(
+                session=session,
+                tenant_id=tenant_id,
+            )
+            global_destinations = await notifications_module.resolve_notification_destinations(
+                session=session,
+                tenant_id=other_tenant_id,
+            )
+            assert tenant_destinations == ["noop://tenant-destination"]
+            assert global_destinations == ["noop://global-default"]
+    finally:
+        await _cleanup_tenant(tenant_id)
+        await _cleanup_tenant(other_tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_job_cas_prevents_reprocessing(monkeypatch) -> None:
+    tenant_id = f"t-notify-cas-{uuid4().hex}"
+    fixed_now = datetime(2026, 2, 18, 12, 8, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(notifications_module, "_utc_now", lambda: fixed_now)
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    job_id = uuid4().hex
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                NotificationJob(
+                    id=job_id,
+                    tenant_id=tenant_id,
+                    incident_id=None,
+                    alert_event_id=None,
+                    destination="noop://cas",
+                    dedupe_key="incident.opened",
+                    dedupe_window_start=fixed_now,
+                    payload_json={"event_type": "incident.opened"},
+                    status="queued",
+                    next_attempt_at=fixed_now,
+                    attempt_count=0,
+                    last_error=None,
+                )
+            )
+            await session.commit()
+
+        async with SessionLocal() as session:
+            processed = await notifications_module.process_notification_job(session=session, job_id=job_id)
+            assert processed is not None
+            assert processed.status == "succeeded"
+
+        async with SessionLocal() as session:
+            second = await notifications_module.process_notification_job(session=session, job_id=job_id)
+            assert second is None
+    finally:
+        await _cleanup_tenant(tenant_id)

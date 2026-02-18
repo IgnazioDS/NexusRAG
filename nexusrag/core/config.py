@@ -192,10 +192,16 @@ class Settings(BaseSettings):
     notify_backoff_max_ms: int = 15_000
     # Dedupe interval window in seconds for incident notification fan-out.
     notify_dedupe_window_s: int = 300
-    # Poll interval for the notification worker DB queue loop.
+    # ARQ queue name for durable notification delivery jobs.
+    notify_queue_name: str = "notifications"
+    # Poll interval for due-job requeue scheduler in the notification worker.
     notify_worker_poll_interval_s: int = 2
+    # Batch size for due notification job requeue scans.
+    notify_requeue_batch_size: int = 100
     # Default TTL for forced operator control flags to avoid stale cross-region state.
     ops_forced_flag_ttl_s: int = 900
+    # Lease TTL for forced-control writers so only one region writer process updates flags at a time.
+    ops_forced_writer_lease_ttl_s: int = 30
     # Require a recent worker heartbeat for preflight success when enabled.
     preflight_require_worker_heartbeat: bool = False
     # Directory for GA readiness checklist artifacts.

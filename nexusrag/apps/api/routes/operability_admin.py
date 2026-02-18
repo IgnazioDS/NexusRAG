@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -30,11 +29,14 @@ from nexusrag.services.operability import (
 )
 from nexusrag.services.operability.incidents import assign_incident
 from nexusrag.services.operability.notifications import (
+    create_notification_destination,
+    delete_notification_destination,
     get_notification_job,
+    list_notification_destinations,
     list_notification_jobs,
+    patch_notification_destination,
     retry_notification_job_now,
 )
-
 
 router = APIRouter(prefix="/admin", tags=["operability"], responses=DEFAULT_ERROR_RESPONSES)
 
@@ -62,6 +64,15 @@ class IncidentResolveRequest(BaseModel):
 class FreezeWritesRequest(BaseModel):
     freeze: bool = True
     reason: str | None = None
+
+
+class NotificationDestinationCreateRequest(BaseModel):
+    tenant_id: str | None = None
+    url: str = Field(..., min_length=1, max_length=1024)
+
+
+class NotificationDestinationPatchRequest(BaseModel):
+    enabled: bool
 
 
 def _scope_tenant(principal: Principal, tenant_id: str | None) -> str:
@@ -118,6 +129,17 @@ def _notification_job_payload(row: Any) -> dict[str, Any]:
         "attempt_count": row.attempt_count,
         "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else None,
         "last_error": row.last_error,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _notification_destination_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "destination_url": row.destination_url,
+        "enabled": row.enabled,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -346,6 +368,81 @@ async def retry_notification_job(
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
     return success_response(request=request, data=_notification_job_payload(row))
+
+
+@router.get("/notifications/destinations", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])
+async def get_notification_destinations(
+    request: Request,
+    tenant_id: str | None = Query(default=None),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Keep destination listing tenant-scoped and explicit so routing config is operator-auditable.
+    await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, tenant_id)
+    rows = await list_notification_destinations(session=db, tenant_id=scoped_tenant)
+    return success_response(request=request, data={"items": [_notification_destination_payload(row) for row in rows]})
+
+
+@router.post("/notifications/destinations", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def create_notification_destination_handler(
+    payload: NotificationDestinationCreateRequest,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Route creation through tenant scope checks to prevent cross-tenant routing injection.
+    await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, payload.tenant_id)
+    try:
+        row = await create_notification_destination(
+            session=db,
+            tenant_id=scoped_tenant,
+            destination_url=payload.url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_INPUT", "message": str(exc)}) from exc
+    return success_response(request=request, data=_notification_destination_payload(row))
+
+
+@router.patch("/notifications/destinations/{destination_id}", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def patch_notification_destination_handler(
+    destination_id: str,
+    payload: NotificationDestinationPatchRequest,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Toggle destination state without deleting row history so operators can re-enable quickly.
+    await _enforce_ops_admin(session=db, principal=principal)
+    row = await patch_notification_destination(
+        session=db,
+        tenant_id=principal.tenant_id,
+        destination_id=destination_id,
+        enabled=payload.enabled,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification destination not found"})
+    return success_response(request=request, data=_notification_destination_payload(row))
+
+
+@router.delete("/notifications/destinations/{destination_id}", response_model=SuccessEnvelope[dict[str, bool]] | dict[str, bool])
+async def delete_notification_destination_handler(
+    destination_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
+    # Delete tenant-owned destinations only; missing rows return 404 without cross-tenant leakage.
+    await _enforce_ops_admin(session=db, principal=principal)
+    deleted = await delete_notification_destination(
+        session=db,
+        tenant_id=principal.tenant_id,
+        destination_id=destination_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification destination not found"})
+    return success_response(request=request, data={"deleted": True})
 
 
 @router.get("/incidents/{incident_id}/timeline", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])

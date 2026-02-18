@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -17,7 +17,6 @@ from nexusrag.services.operability.incidents import open_incident_for_alert
 from nexusrag.services.operability.notifications import send_operability_notification
 from nexusrag.services.resilience import get_circuit_breaker_state
 from nexusrag.services.telemetry import availability, counters_snapshot, gauges_snapshot, p95_latency
-
 
 _WINDOW_SECONDS = {"5m": 300, "1h": 3600}
 
