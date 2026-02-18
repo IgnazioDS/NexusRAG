@@ -38,6 +38,9 @@ from nexusrag.services.failover import (
     set_write_freeze,
 )
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
+from nexusrag.services.operability import trigger_runtime_alert
+from nexusrag.services.operability.notifications import notification_queue_summary
+from nexusrag.services.operability.worker import get_operability_worker_heartbeat
 from nexusrag.services.resilience import get_circuit_breaker_state
 from nexusrag.services.telemetry import (
     availability,
@@ -225,6 +228,11 @@ async def _get_worker_heartbeat() -> datetime | None:
     return await ingest_queue.get_worker_heartbeat()
 
 
+async def _get_operability_worker_heartbeat() -> datetime | None:
+    # Surface evaluator heartbeat separately so alerting liveness is visible even without request traffic.
+    return await get_operability_worker_heartbeat()
+
+
 # Allow legacy unwrapped responses; v1 middleware wraps envelopes.
 @router.get("/health", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
 async def ops_health(
@@ -247,11 +255,27 @@ async def ops_health(
 
     heartbeat = await _get_worker_heartbeat() if redis_ok else None
     heartbeat_age_s = (now - heartbeat).total_seconds() if heartbeat else None
+    operability_heartbeat = await _get_operability_worker_heartbeat() if redis_ok else None
+    operability_heartbeat_age_s = (now - operability_heartbeat).total_seconds() if operability_heartbeat else None
 
     stale_threshold = settings.worker_heartbeat_stale_after_s
     heartbeat_stale = heartbeat_age_s is None or heartbeat_age_s > stale_threshold
 
     status = "ok" if db_ok and redis_ok and not heartbeat_stale else "degraded"
+    if heartbeat_stale:
+        # Emit a runtime alert when worker heartbeat is stale so incident automation can dedupe/escalate.
+        await trigger_runtime_alert(
+            session=db,
+            tenant_id=principal.tenant_id,
+            source="worker.heartbeat.age_s",
+            severity="high",
+            title="Worker heartbeat stale",
+            summary="Ingestion worker heartbeat is missing or stale",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+            details_json={"worker_heartbeat_age_s": heartbeat_age_s, "stale_after_s": stale_threshold},
+        )
 
     payload = {
         "status": status,
@@ -259,6 +283,7 @@ async def ops_health(
         "db": "ok" if db_ok else "degraded",
         "redis": "ok" if redis_ok else "degraded",
         "worker_heartbeat_age_s": heartbeat_age_s,
+        "operability_worker_heartbeat_age_s": operability_heartbeat_age_s if settings.operability_background_evaluator_enabled else None,
         "queue_depth": queue_depth,
         "timestamp": now.isoformat(),
     }
@@ -281,6 +306,32 @@ async def ops_health(
         commit=True,
         best_effort=True,
     )
+    return success_response(request=request, data=payload)
+
+
+@router.get("/operability", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def ops_operability(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict:
+    # Provide compact operability-worker and notification-queue status for on-call triage.
+    await require_feature(
+        session=db,
+        tenant_id=principal.tenant_id,
+        feature_key=FEATURE_OPS_ADMIN,
+    )
+    now = _utc_now()
+    heartbeat = await _get_operability_worker_heartbeat()
+    heartbeat_age = (now - heartbeat).total_seconds() if heartbeat else None
+    queue = await notification_queue_summary(session=db, tenant_id=principal.tenant_id)
+    payload = {
+        "enabled": get_settings().operability_background_evaluator_enabled,
+        "evaluator_heartbeat_age_s": heartbeat_age,
+        "jobs_queued": queue["queued"],
+        "jobs_failed_last_hour": queue["failed_last_hour"],
+        "timestamp": now.isoformat(),
+    }
     return success_response(request=request, data=payload)
 
 
@@ -528,6 +579,21 @@ async def ops_metrics(
         "tts.openai": await get_circuit_breaker_state("tts.openai"),
         "billing.webhook": await get_circuit_breaker_state("billing.webhook"),
     }
+    open_breakers = [name for name, breaker_state in payload["circuit_breaker_state"].items() if breaker_state == "open"]
+    if open_breakers:
+        # Trigger alert automation for sustained breaker-open conditions observed by operators.
+        await trigger_runtime_alert(
+            session=db,
+            tenant_id=principal.tenant_id,
+            source="breaker.open.count",
+            severity="high",
+            title="Circuit breaker open",
+            summary="One or more integration circuit breakers are open",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+            details_json={"open_breakers": open_breakers, "open_count": len(open_breakers)},
+        )
     request_ctx = get_request_context(request)
     # Record ops views for administrative investigations.
     await record_event(

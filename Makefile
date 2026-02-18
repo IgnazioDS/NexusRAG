@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test perf-test perf-report sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot
+.PHONY: up migrate seed test perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot
 
 up:
 	# Bring up docker compose services for local dev.
@@ -23,6 +23,14 @@ perf-test:
 perf-report:
 	# Build a markdown summary from latest perf artifacts.
 	python tests/perf/report_summary.py
+
+preflight:
+	# Run deploy preflight checks and emit machine-readable output.
+	python scripts/preflight.py --output-json var/ops/preflight.json
+
+ga-checklist:
+	# Generate GA readiness checklist artifacts from current runtime state.
+	python scripts/ga_checklist.py --output-dir "$${GA_CHECKLIST_OUTPUT_DIR:-var/ops}"
 
 security-audit:
 	# Run dependency vulnerability audit and emit machine-readable artifacts.

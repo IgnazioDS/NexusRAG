@@ -23,6 +23,30 @@ services:
     volumes:
       - .:/app
 
+  operability_worker:
+    build: .
+    # Run periodic alert/incident evaluation independent from request traffic.
+    command: ["python", "scripts/operability_worker.py"]
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+
+  notification_worker:
+    build: .
+    # Drain notification jobs with retries so delivery survives API restarts.
+    command: ["python", "scripts/notification_worker.py"]
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:

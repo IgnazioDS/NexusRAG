@@ -1,0 +1,30 @@
+{
+  "default": {
+    "5m": {
+      "slo.burn_rate": 0.1,
+      "error.rate": 0.001,
+      "latency.p95.run": 200.0,
+      "latency.p99.run": 350.0,
+      "queue.depth": 2,
+      "worker.heartbeat.age_s": 5,
+      "breaker.open.count": 0,
+      "sla.breach.streak": 0,
+      "sla.shed.count": 0,
+      "quota.hard_cap.blocks": 0,
+      "rate_limit.hit.spike": 0
+    },
+    "1h": {
+      "slo.burn_rate": 0.1,
+      "error.rate": 0.001,
+      "latency.p95.run": 200.0,
+      "latency.p99.run": 350.0,
+      "queue.depth": 2,
+      "worker.heartbeat.age_s": 5,
+      "breaker.open.count": 0,
+      "sla.breach.streak": 0,
+      "sla.shed.count": 0,
+      "quota.hard_cap.blocks": 0,
+      "rate_limit.hit.spike": 0
+    }
+  }
+}

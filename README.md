@@ -1491,6 +1491,108 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $A
   }'
 ```
 
+## Alerting & Incidents
+
+Phase 37 adds deterministic alert-rule evaluation, incident automation, and operator response workflows.
+
+Key settings:
+
+- `ALERTING_ENABLED=true`
+- `OPERABILITY_BACKGROUND_EVALUATOR_ENABLED=true`
+- `OPERABILITY_EVAL_INTERVAL_S=30`
+- `INCIDENT_AUTOMATION_ENABLED=true`
+- `INCIDENT_AUTO_OPEN_MIN_SEVERITY=high`
+- `NOTIFY_WEBHOOK_URLS_JSON=["https://.../hook"]`
+- `NOTIFY_MAX_ATTEMPTS=5`
+- `NOTIFY_BACKOFF_MS=500`
+- `NOTIFY_BACKOFF_MAX_MS=15000`
+- `NOTIFY_DEDUPE_WINDOW_S=300`
+- `OPS_FORCED_FLAG_TTL_S=900`
+
+Worker services:
+
+```bash
+docker compose up -d operability_worker notification_worker
+docker compose logs --tail=200 operability_worker
+docker compose logs --tail=200 notification_worker
+```
+
+List and tune alert rules:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/alerts/rules
+
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/alerts/rules/$RULE_ID \
+  -d '{"enabled":true,"thresholds_json":{"value":2.0}}'
+```
+
+Evaluate alerts and inspect triggered rows:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/alerts/evaluate?window=5m"
+```
+
+Incident lifecycle:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/incidents?status=open"
+
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/incidents/$INCIDENT_ID/ack \
+  -d '{"note":"Acknowledged by on-call"}'
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/incidents/$INCIDENT_ID/timeline
+```
+
+Notification queue triage:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/jobs?status=retrying"
+
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/notifications/jobs/$JOB_ID/retry
+```
+
+Operability summary:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/ops/operability
+```
+
+Operator actions (`Idempotency-Key` required):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Idempotency-Key: op-1" \
+  http://localhost:8000/v1/admin/ops/actions/disable-tts
+```
+
+## Preflight & GA Checklist
+
+Run deploy preflight checks:
+
+```bash
+make preflight
+```
+
+Generate GA readiness artifacts:
+
+```bash
+make ga-checklist
+```
+
+Artifacts are written under `var/ops/` by default:
+
+- `preflight.json`
+- `ga-checklist-<timestamp>.json`
+- `ga-checklist-<timestamp>.md`
+
 ## Tenant Self-Serve API
 
 Tenant self-serve endpoints let admins manage API keys, view usage, and request plan upgrades without platform intervention.

@@ -74,6 +74,13 @@ async def _admin_headers() -> dict[str, str]:
     return headers
 
 
+@pytest.fixture(autouse=True)
+def _disable_failover(monkeypatch) -> None:
+    # Keep ops endpoint tests focused on endpoint behavior, not failover write-gate state.
+    monkeypatch.setenv("FAILOVER_ENABLED", "false")
+    get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_ops_health_heartbeat_degraded(monkeypatch) -> None:
     # Ensure the ops health endpoint degrades when heartbeat is missing.
@@ -203,3 +210,22 @@ async def test_ops_metrics_shape(monkeypatch) -> None:
     assert "gauges" in payload
     assert "nexusrag_ingest_enqueued_total" in payload["counters"]
     assert "nexusrag_ingest_queue_depth" in payload["gauges"]
+
+
+@pytest.mark.asyncio
+async def test_ops_operability_summary_shape(monkeypatch) -> None:
+    # Validate operability summary includes evaluator heartbeat and notification queue counters.
+    monkeypatch.setenv("INGEST_EXECUTION_MODE", "queue")
+    get_settings.cache_clear()
+    app = create_app()
+    headers = await _admin_headers()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ops/operability", headers=headers)
+    payload = response.json()
+    assert response.status_code == 200
+    assert "enabled" in payload
+    assert "evaluator_heartbeat_age_s" in payload
+    assert "jobs_queued" in payload
+    assert "jobs_failed_last_hour" in payload

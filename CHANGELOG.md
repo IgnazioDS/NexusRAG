@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.8.1 - 2026-02-18
+
+- Added background operability evaluator worker with distributed locking and heartbeat reporting.
+- Added durable notification jobs/attempts with retry backoff, dedupe windows, and admin queue endpoints.
+- Added versioned forced-control flags with TTL and region-role enforcement safeguards.
+- Added `/v1/ops/operability` summary endpoint and compose worker services for evaluator/delivery loops.
+
+## 2.8.0 - 2026-02-18
+
+- Added alert rules registry and deterministic alert evaluation APIs (`/v1/admin/alerts/*`).
+- Added incident automation lifecycle APIs with timeline support (`/v1/admin/incidents/*`).
+- Added operator action endpoints with idempotency and persisted action records (`/v1/admin/ops/actions/*`).
+- Added deploy preflight and GA checklist automation (`make preflight`, `make ga-checklist`).
+
 ## 2.7.0 - 2026-02-18
 
 - Added compliance control catalog snapshots and in-memory evidence bundle exports with redacted config payloads.

@@ -19,6 +19,12 @@ from nexusrag.domain.models import (
     EvidenceBundle,
     KeyRotationJob,
     LegalHold,
+    NotificationAttempt,
+    NotificationJob,
+    OpsIncident,
+    IncidentTimelineEvent,
+    AlertEvent,
+    AlertRule,
     PlatformKey,
     PolicyRule,
     RegionStatus,
@@ -60,6 +66,12 @@ async def reset_failover_tables_between_tests() -> None:
             await session.execute(delete(ComplianceSnapshot))
             await session.execute(delete(ControlEvaluation))
             await session.execute(delete(EvidenceBundle))
+            await session.execute(delete(NotificationAttempt))
+            await session.execute(delete(NotificationJob))
+            await session.execute(delete(IncidentTimelineEvent))
+            await session.execute(delete(OpsIncident))
+            await session.execute(delete(AlertEvent))
+            await session.execute(delete(AlertRule))
             await session.execute(delete(RetentionRun))
             await session.execute(delete(PlatformKey))
             await session.execute(delete(KeyRotationJob))
