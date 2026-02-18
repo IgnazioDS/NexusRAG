@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,10 +11,10 @@ from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.security import list_platform_keys, retire_platform_key, rotate_platform_key
 
 
-router = APIRouter(prefix="/admin/keys", tags=["security"], responses=DEFAULT_ERROR_RESPONSES)
+router = APIRouter(prefix="/admin/keyring", tags=["security"], responses=DEFAULT_ERROR_RESPONSES)
 
 
-class PlatformKeyResponse(BaseModel):
+class KeyringItemResponse(BaseModel):
     key_id: str
     purpose: str
     status: str
@@ -25,14 +23,14 @@ class PlatformKeyResponse(BaseModel):
     retired_at: str | None
 
 
-class RotateKeyResponse(BaseModel):
-    key: PlatformKeyResponse
+class KeyringRotateResponse(BaseModel):
+    key: KeyringItemResponse
     secret: str
     replaced_key_id: str | None
 
 
-def _to_payload(row) -> PlatformKeyResponse:
-    return PlatformKeyResponse(
+def _to_payload(row) -> KeyringItemResponse:
+    return KeyringItemResponse(
         key_id=row.key_id,
         purpose=row.purpose,
         status=row.status,
@@ -42,19 +40,16 @@ def _to_payload(row) -> PlatformKeyResponse:
     )
 
 
-@router.get(
-    "",
-    response_model=SuccessEnvelope[list[PlatformKeyResponse]] | list[PlatformKeyResponse],
-)
-async def list_keys(
+@router.get("", response_model=SuccessEnvelope[list[KeyringItemResponse]] | list[KeyringItemResponse])
+async def list_keyring(
     request: Request,
     purpose: str | None = Query(default=None),
-    status: Literal["active", "retiring", "retired", "revoked"] | None = Query(default=None),
+    status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=200),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> list[PlatformKeyResponse]:
-    # Limit key management to tenant admins and expose metadata only (never plaintext secrets).
+) -> list[KeyringItemResponse]:
+    # Return metadata-only keyring rows so operators can validate lifecycle state without seeing secrets.
     _ = principal
     rows = await list_platform_keys(db, purpose=purpose, status=status, limit=limit)
     return success_response(request=request, data=[_to_payload(row) for row in rows])
@@ -62,15 +57,15 @@ async def list_keys(
 
 @router.post(
     "/rotate",
-    response_model=SuccessEnvelope[RotateKeyResponse] | RotateKeyResponse,
+    response_model=SuccessEnvelope[KeyringRotateResponse] | KeyringRotateResponse,
 )
-async def rotate_key(
+async def rotate_keyring_key(
     request: Request,
     purpose: str = Query(...),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> RotateKeyResponse:
-    # Rotate platform keys with a single active key invariant per purpose.
+) -> KeyringRotateResponse:
+    # Keep rotation atomic so each purpose has exactly one active key after the transaction.
     row, raw_secret, replaced_key_id = await rotate_platform_key(db, purpose=purpose)
     request_ctx = get_request_context(request)
     await record_event(
@@ -90,21 +85,21 @@ async def rotate_key(
     )
     return success_response(
         request=request,
-        data=RotateKeyResponse(key=_to_payload(row), secret=raw_secret, replaced_key_id=replaced_key_id),
+        data=KeyringRotateResponse(key=_to_payload(row), secret=raw_secret, replaced_key_id=replaced_key_id),
     )
 
 
 @router.post(
     "/{key_id}/retire",
-    response_model=SuccessEnvelope[PlatformKeyResponse] | PlatformKeyResponse,
+    response_model=SuccessEnvelope[KeyringItemResponse] | KeyringItemResponse,
 )
-async def retire_key(
+async def retire_keyring_key(
     key_id: str,
     request: Request,
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> PlatformKeyResponse:
-    # Keep retire idempotent and auditable for manual key lifecycle workflows.
+) -> KeyringItemResponse:
+    # Retire is idempotent and leaves lifecycle evidence intact for compliance exports.
     row = await retire_platform_key(db, key_id=key_id)
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Key not found"})

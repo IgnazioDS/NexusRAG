@@ -31,6 +31,7 @@ from nexusrag.apps.api.routes.governance_admin import router as governance_admin
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
 from nexusrag.apps.api.routes.health import router as health_router
 from nexusrag.apps.api.routes.identity_admin import router as identity_admin_router
+from nexusrag.apps.api.routes.keyring_admin import router as keyring_admin_router
 from nexusrag.apps.api.routes.keys_admin import router as keys_admin_router
 from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.operability_admin import router as operability_admin_router
@@ -166,6 +167,7 @@ def create_app() -> FastAPI:
     app.include_router(costs_self_serve_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(identity_admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(keyring_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(keys_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(operability_admin_router, prefix=f"/{API_VERSION}")
     # Expose ABAC policy and document ACL management for admins.
@@ -200,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(costs_self_serve_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
     app.include_router(identity_admin_router, include_in_schema=False)
+    app.include_router(keyring_admin_router, include_in_schema=False)
     app.include_router(keys_admin_router, include_in_schema=False)
     app.include_router(operability_admin_router, include_in_schema=False)
     # Retain authz admin routes for legacy compatibility aliases.
