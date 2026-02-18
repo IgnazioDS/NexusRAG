@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.9.0 - 2026-02-18
+
+- Added admin API key lifecycle management endpoints (`/v1/admin/api-keys`) with expiration/reactivation/revocation controls and deterministic inactivity reporting.
+- Added keyring contract endpoints (`/v1/admin/keyring`) with expanded purpose support and activation lifecycle metadata.
+- Added compliance snapshot contract aliases (`POST /v1/admin/compliance/snapshots`, `GET /v1/admin/compliance/snapshots/{id}/download`) and persisted evidence bundles under `var/evidence`.
+- Added bundle evidence coverage for latest perf report summary and 24h audit-derived ops metrics summary.
+- Added governance retention-proof APIs (`POST /v1/admin/governance/retention/run?task=prune_all`, `GET /v1/admin/governance/retention/status`).
+- Added security tooling aliases (`make lint`, `make typecheck`, `make secrets-scan`, `make sca`) and updated runbooks for key rotation/evidence/retention proof operations.
+
 ## 2.8.2 - 2026-02-18
 
 - Added tenant-scoped notification destination routing APIs with global fallback support.
