@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.9.3 - 2026-02-18
+
+- Added notification delivery contract hardening with deterministic webhook headers, optional HMAC signatures, and attempt-level `payload_sha256` persistence.
+- Added destination secret/header support with encrypted secret storage, redacted admin responses, and destination lifecycle audit events.
+- Tightened notification job state transitions (`queued/retrying -> delivering -> delivered|retrying|dlq`) with CAS claims, max-age expiry to DLQ, and explicit claim/delivery/retry/DLQ audit events.
+- Added admin notification attempts endpoint, `retry-now` job control, and expanded ops visibility (`/v1/ops/operability`, `/v1/ops/notifications`) including 15m attempt/failure aggregates.
+- Added deterministic tests for signature behavior, state-machine transitions, max-age DLQ handling, concurrency-safe claiming, and tenant-scoped admin access.
+
 ## 2.9.2 - 2026-02-18
 
 - Added tenant-scoped notification routing policies (`notification_routes`) with deterministic matching across `event_type`, `severity`, `source`, and `category`.
