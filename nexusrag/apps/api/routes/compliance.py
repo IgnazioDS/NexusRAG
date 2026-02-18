@@ -86,6 +86,19 @@ async def create_snapshot(
     return success_response(request=request, data=_to_payload(row))
 
 
+@router.post(
+    "/snapshots",
+    response_model=SuccessEnvelope[ComplianceSnapshotResponse] | ComplianceSnapshotResponse,
+)
+async def create_snapshot_plural(
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> ComplianceSnapshotResponse:
+    # Keep plural snapshot contract as an alias for client compatibility during rollout updates.
+    return await create_snapshot(request=request, principal=principal, db=db)
+
+
 @router.get(
     "/snapshots",
     response_model=SuccessEnvelope[list[ComplianceSnapshotResponse]] | list[ComplianceSnapshotResponse],
@@ -132,7 +145,7 @@ async def get_snapshot_bundle(
     row = await get_compliance_snapshot(db, tenant_id=principal.tenant_id, snapshot_id=snapshot_id)
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Snapshot not found"})
-    archive = build_bundle_archive(row)
+    archive = await build_bundle_archive(db, row)
     request_ctx = get_request_context(request)
     await record_event(
         session=db,
@@ -151,3 +164,14 @@ async def get_snapshot_bundle(
     )
     headers = {"Content-Disposition": f'attachment; filename="compliance-bundle-{snapshot_id}.zip"'}
     return Response(content=archive, media_type="application/zip", headers=headers)
+
+
+@router.get("/snapshots/{snapshot_id}/download")
+async def download_snapshot_bundle(
+    snapshot_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    # Keep REST-style download path support while preserving the zip filename contract.
+    return await get_snapshot_bundle(snapshot_id=snapshot_id, request=request, principal=principal, db=db)

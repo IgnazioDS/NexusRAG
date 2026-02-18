@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 import json
 from pathlib import Path
 from uuid import uuid4
 import zipfile
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import ComplianceSnapshot
+from nexusrag.domain.models import AuditEvent, ComplianceSnapshot
 from nexusrag.services.audit import sanitize_metadata
 from nexusrag.services.compliance.controls import evaluate_controls
 
@@ -24,6 +24,8 @@ _REQUIRED_BUNDLE_FILES = (
     "changelog_excerpt.md",
     "capacity_model_excerpt.md",
     "perf_gates_excerpt.json",
+    "perf_report_summary.md",
+    "ops_metrics_24h_summary.json",
 )
 
 
@@ -37,6 +39,17 @@ def _read_excerpt(path: str, *, max_lines: int = 80) -> str:
         return ""
     lines = file_path.read_text(encoding="utf-8").splitlines()
     return "\n".join(lines[:max_lines]).strip()
+
+
+def _latest_perf_report_summary() -> str:
+    # Export the latest deterministic perf report so compliance bundles include performance evidence.
+    report_dir = Path(get_settings().perf_report_dir)
+    if not report_dir.exists():
+        return ""
+    candidates = sorted(report_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not candidates:
+        return ""
+    return _read_excerpt(str(candidates[0]), max_lines=120)
 
 
 def sanitize_config_snapshot() -> dict[str, object]:
@@ -78,6 +91,43 @@ def _runbooks_index() -> list[str]:
     if not runbook_dir.exists():
         return []
     return [str(path) for path in sorted(runbook_dir.glob("*.md"))]
+
+
+async def _ops_metrics_summary_24h(session: AsyncSession, *, tenant_id: str | None) -> dict[str, object]:
+    # Build a compact 24h audit-derived ops summary without storing sensitive request payloads.
+    window_end = _utc_now()
+    window_start = window_end - timedelta(hours=24)
+
+    filters = [AuditEvent.occurred_at >= window_start, AuditEvent.occurred_at <= window_end]
+    if tenant_id is not None:
+        filters.append(AuditEvent.tenant_id == tenant_id)
+    totals = (
+        await session.execute(
+            select(
+                func.count(AuditEvent.id),
+                func.sum(case((AuditEvent.outcome == "failure", 1), else_=0)),
+            ).where(*filters)
+        )
+    ).one()
+    by_event_rows = (
+        await session.execute(
+            select(AuditEvent.event_type, func.count(AuditEvent.id))
+            .where(*filters)
+            .group_by(AuditEvent.event_type)
+            .order_by(func.count(AuditEvent.id).desc())
+            .limit(10)
+        )
+    ).all()
+    total_events = int(totals[0] or 0)
+    failure_events = int(totals[1] or 0)
+    return {
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "total_events": total_events,
+        "failure_events": failure_events,
+        "failure_rate": round((failure_events / total_events), 6) if total_events else 0.0,
+        "top_event_types": [{"event_type": row[0], "count": int(row[1])} for row in by_event_rows],
+    }
 
 
 async def create_compliance_snapshot(
@@ -141,8 +191,8 @@ async def get_compliance_snapshot(
     return row
 
 
-def build_bundle_archive(snapshot: ComplianceSnapshot) -> bytes:
-    # Build an in-memory zip so compliance bundles are deterministic and easy to export.
+async def build_bundle_archive(session: AsyncSession, snapshot: ComplianceSnapshot) -> bytes:
+    # Build and persist evidence bundles so operators can export/re-check artifacts deterministically.
     payload_snapshot = {
         "id": snapshot.id,
         "tenant_id": snapshot.tenant_id,
@@ -154,6 +204,8 @@ def build_bundle_archive(snapshot: ComplianceSnapshot) -> bytes:
     controls = snapshot.controls_json or []
     config_sanitized = sanitize_config_snapshot()
     runbooks = _runbooks_index()
+    ops_metrics = await _ops_metrics_summary_24h(session, tenant_id=snapshot.tenant_id)
+    perf_report_summary = _latest_perf_report_summary()
     perf_excerpt = {
         "perf_run_target_p95_ms": get_settings().perf_run_target_p95_ms,
         "perf_max_error_rate": get_settings().perf_max_error_rate,
@@ -170,7 +222,14 @@ def build_bundle_archive(snapshot: ComplianceSnapshot) -> bytes:
         archive.writestr("changelog_excerpt.md", _read_excerpt("CHANGELOG.md"))
         archive.writestr("capacity_model_excerpt.md", _read_excerpt("docs/capacity-model.md"))
         archive.writestr("perf_gates_excerpt.json", json.dumps(perf_excerpt, indent=2, sort_keys=True))
-    return buffer.getvalue()
+        archive.writestr("perf_report_summary.md", perf_report_summary)
+        archive.writestr("ops_metrics_24h_summary.json", json.dumps(ops_metrics, indent=2, sort_keys=True))
+    payload = buffer.getvalue()
+    evidence_dir = Path("var/evidence")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    # Persist generated bundles under var/evidence for deterministic operator retrieval.
+    (evidence_dir / f"{snapshot.id}.zip").write_bytes(payload)
+    return payload
 
 
 def required_bundle_files() -> tuple[str, ...]:
