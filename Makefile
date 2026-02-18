@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag lint typecheck secrets-scan sca
+.PHONY: up migrate seed test notify-e2e perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag lint typecheck secrets-scan sca
 
 up:
 	# Bring up docker compose services for local dev.
@@ -15,6 +15,10 @@ seed:
 test:
 	# Run the test suite inside the api container.
 	docker compose exec api pytest -q
+
+notify-e2e:
+	# Run deterministic sender↔receiver notification contract scenarios.
+	docker compose exec api pytest -q nexusrag/tests/integration/test_notification_receiver_e2e.py
 
 perf-test:
 	# Run deterministic performance gates and emit JSON diagnostics.

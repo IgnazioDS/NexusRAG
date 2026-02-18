@@ -1515,9 +1515,10 @@ Key settings:
 Worker services:
 
 ```bash
-docker compose up -d operability_worker notification_worker
+docker compose up -d operability_worker notification_worker notify_receiver
 docker compose logs --tail=200 operability_worker
 docker compose logs --tail=200 notification_worker
+docker compose logs --tail=200 notify_receiver
 ```
 
 List and tune alert rules:
@@ -1600,6 +1601,21 @@ Notification delivery contract:
 - Payloads are serialized deterministically and each attempt stores `payload_sha256` for forensic verification.
 - Retry semantics: exponential backoff + deterministic jitter, capped by `NOTIFY_MAX_ATTEMPTS`.
 - Max age policy: jobs older than `NOTIFY_MAX_AGE_SECONDS` move to DLQ with reason `expired`.
+
+Receiver contract + E2E:
+
+- Use `docs/runbooks/notification-receiver-contract.md` as the receiver implementation baseline.
+- Reference receiver service runs at `http://localhost:9001`.
+- Receiver knobs:
+  - `RECEIVER_SHARED_SECRET`
+  - `RECEIVER_REQUIRE_SIGNATURE`
+  - `RECEIVER_FAIL_MODE=never|always|first_n`
+  - `RECEIVER_FAIL_N`
+- Run deterministic sender↔receiver validation:
+
+```bash
+docker compose exec api make notify-e2e
+```
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
