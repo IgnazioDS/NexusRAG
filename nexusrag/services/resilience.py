@@ -322,3 +322,12 @@ async def get_circuit_breaker_state(name: str) -> str:
     if not raw:
         return "closed"
     return raw.get("state", "closed")
+
+
+async def reset_circuit_breaker(name: str) -> None:
+    # Allow operator workflows to clear breaker state before controlled retries.
+    redis = await get_resilience_redis()
+    if redis is None:
+        return
+    await redis.delete(f"{get_settings().cb_redis_prefix}:{name}")
+    set_gauge(f"circuit_breaker_state.{name}", 0.0)

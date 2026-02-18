@@ -58,6 +58,7 @@ from nexusrag.services.entitlements import (
     get_effective_entitlements,
     require_feature,
 )
+from nexusrag.services.operability import get_forced_shed, get_forced_tts_disabled, trigger_runtime_alert
 from nexusrag.services.resilience import deterministic_canary, get_run_bulkhead
 from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_switch
 from nexusrag.services.sla.evaluator import evaluate_tenant_sla
@@ -198,6 +199,86 @@ def _sla_headers(*, policy_id: str | None, status_value: str, decision: str, rou
         "X-SLA-Route-Class": route_class,
         "X-SLA-Window-End": window_end.isoformat() if window_end else "",
     }
+
+
+async def _build_shed_stream_response(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    request_id: str,
+    session_id: str,
+    run_started: float,
+    lease,
+    policy_id: str | None,
+    status_value: str,
+    window_end: datetime | None,
+    error_code: str,
+    error_message: str,
+    sla_headers: dict[str, str],
+) -> StreamingResponse:
+    # Reuse one shed response path for SLA- and operator-forced load shedding.
+    async def shed_stream() -> AsyncGenerator[str, None]:
+        seq = 0
+
+        def next_seq() -> int:
+            nonlocal seq
+            seq += 1
+            return seq
+
+        accepted_payload = _wrap_payload(
+            "request.accepted",
+            request_id,
+            session_id,
+            {"accepted_at": datetime.now(timezone.utc).isoformat()},
+        )
+        accepted_payload["seq"] = next_seq()
+        yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
+
+        shed_payload = _wrap_payload(
+            "sla.shed",
+            request_id,
+            session_id,
+            {
+                "status": status_value,
+                "policy_id": policy_id,
+                "window_end": window_end.isoformat() if window_end else None,
+            },
+        )
+        shed_payload["seq"] = next_seq()
+        yield _sse_message(shed_payload, event_name="sla.shed", event_id=shed_payload["seq"])
+
+        error_payload = _wrap_payload(
+            "error",
+            request_id,
+            session_id,
+            {"code": error_code, "message": error_message},
+        )
+        error_payload["seq"] = next_seq()
+        yield _sse_message(error_payload, event_id=error_payload["seq"])
+
+        done_payload = _wrap_payload("done", request_id, session_id, {})
+        done_payload["seq"] = next_seq()
+        yield _sse_message(done_payload, event_id=done_payload["seq"])
+
+    await _record_sla_observation_safe(
+        session=session,
+        tenant_id=tenant_id,
+        route_class="run",
+        latency_ms=(time.monotonic() - run_started) * 1000.0,
+        status_code=503,
+    )
+    return StreamingResponse(
+        shed_stream(),
+        headers={
+            **sla_headers,
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+            "Connection": "keep-alive",
+        },
+        media_type="text/event-stream",
+        status_code=503,
+        background=BackgroundTask(lease.release),
+    )
 
 
 async def _record_sla_observation_safe(
@@ -398,6 +479,57 @@ async def run(
         # Ensure bulkhead capacity is released on early request failures.
         lease.release()
         raise exc
+    # Allow operators to force run shedding for incident mitigation workflows.
+    if await get_forced_shed(tenant_id=principal.tenant_id, route_class="run"):
+        increment_counter("sla_shed_total")
+        await record_event(
+            session=db,
+            tenant_id=principal.tenant_id,
+            actor_type="api_key",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            event_type="sla.enforcement.shed",
+            outcome="failure",
+            resource_type="run",
+            resource_id=request_id,
+            request_id=request_id,
+            metadata={"policy_id": None, "status": "breached", "forced": True},
+            commit=True,
+            best_effort=True,
+        )
+        await trigger_runtime_alert(
+            session=db,
+            tenant_id=principal.tenant_id,
+            source="sla.shed.count",
+            severity="critical",
+            title="Forced run shedding enabled",
+            summary="Operator-forced load shedding blocked /run traffic",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request_id,
+            details_json={"route_class": "run", "forced": True},
+        )
+        sla_headers = _sla_headers(
+            policy_id=None,
+            status_value="breached",
+            decision="shed",
+            route_class="run",
+            window_end=None,
+        )
+        return await _build_shed_stream_response(
+            session=db,
+            tenant_id=principal.tenant_id,
+            request_id=request_id,
+            session_id=payload.session_id,
+            run_started=run_started,
+            lease=lease,
+            policy_id=None,
+            status_value="breached",
+            window_end=None,
+            error_code="SLA_SHED_LOAD",
+            error_message="Request shed by operator control",
+            sla_headers=sla_headers,
+        )
     # Enforce ABAC policies for corpus-scoped run access.
     try:
         await authorize_corpus_action(
@@ -479,71 +611,34 @@ async def run(
             commit=True,
             best_effort=True,
         )
-
-        async def shed_stream() -> AsyncGenerator[str, None]:
-            seq = 0
-
-            def next_seq() -> int:
-                nonlocal seq
-                seq += 1
-                return seq
-
-            accepted_payload = _wrap_payload(
-                "request.accepted",
-                request_id,
-                payload.session_id,
-                {"accepted_at": datetime.now(timezone.utc).isoformat()},
-            )
-            accepted_payload["seq"] = next_seq()
-            yield _sse_message(accepted_payload, event_id=accepted_payload["seq"])
-
-            shed_payload = _wrap_payload(
-                "sla.shed",
-                request_id,
-                payload.session_id,
-                {
-                    "status": sla_decision.status,
-                    "policy_id": sla_decision.policy_id,
-                    "window_end": sla_decision.window_end.isoformat() if sla_decision.window_end else None,
-                },
-            )
-            shed_payload["seq"] = next_seq()
-            yield _sse_message(shed_payload, event_name="sla.shed", event_id=shed_payload["seq"])
-
-            error_payload = _wrap_payload(
-                "error",
-                request_id,
-                payload.session_id,
-                {
-                    "code": "SLA_SHED_LOAD",
-                    "message": "Request shed due to sustained SLA breach",
-                },
-            )
-            error_payload["seq"] = next_seq()
-            yield _sse_message(error_payload, event_id=error_payload["seq"])
-
-            done_payload = _wrap_payload("done", request_id, payload.session_id, {})
-            done_payload["seq"] = next_seq()
-            yield _sse_message(done_payload, event_id=done_payload["seq"])
-
-        await _record_sla_observation_safe(
+        await trigger_runtime_alert(
             session=db,
             tenant_id=principal.tenant_id,
-            route_class="run",
-            latency_ms=(time.monotonic() - run_started) * 1000.0,
-            status_code=503,
-        )
-        return StreamingResponse(
-            shed_stream(),
-            headers={
-                **sla_response_headers,
-                "Cache-Control": "no-cache",
-                "Content-Type": "text/event-stream",
-                "Connection": "keep-alive",
+            source="sla.shed.count",
+            severity="critical",
+            title="Sustained SLA shedding",
+            summary="Runtime shed decision triggered from SLA enforcement",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request_id,
+            details_json={
+                "policy_id": sla_decision.policy_id,
+                "window_end": sla_decision.window_end.isoformat() if sla_decision.window_end else None,
             },
-            media_type="text/event-stream",
-            status_code=503,
-            background=BackgroundTask(lease.release),
+        )
+        return await _build_shed_stream_response(
+            session=db,
+            tenant_id=principal.tenant_id,
+            request_id=request_id,
+            session_id=payload.session_id,
+            run_started=run_started,
+            lease=lease,
+            policy_id=sla_decision.policy_id,
+            status_value=sla_decision.status,
+            window_end=sla_decision.window_end,
+            error_code="SLA_SHED_LOAD",
+            error_message="Request shed due to sustained SLA breach",
+            sla_headers=sla_response_headers,
         )
 
     budget_decision = None
@@ -551,6 +646,9 @@ async def run(
     effective_audio = payload.audio
     max_output_tokens = None
     effective_retrieval_provider = resolved_provider
+    if await get_forced_tts_disabled(tenant_id=principal.tenant_id):
+        # Honor operator-level TTS disable overrides before any budget/SLA mitigation.
+        effective_audio = False
     if sla_decision.enforcement_decision == "degrade" and sla_decision.degrade_actions is not None:
         increment_counter("sla_degrade_total")
         # Apply SLA-driven mitigation controls before budget enforcement and graph execution.
