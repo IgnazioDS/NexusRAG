@@ -1572,6 +1572,43 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   "http://localhost:8000/v1/admin/notifications/destinations?tenant_id=t1"
 ```
 
+Notification routing policies:
+
+- Route matching fields: `event_type`, `severity`, optional `source`, optional `category`.
+- Matching supports exact values, arrays, and wildcard `*` for `event_type`.
+- Matching routes are evaluated by `priority` (lower value first), then route destination order.
+- If no route matches: fallback is tenant enabled destinations, then `NOTIFY_WEBHOOK_URLS_JSON`.
+- Delivery is at-least-once; receivers should dedupe using `X-Notification-Id`.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/notifications/routes \
+  -d '{
+    "tenant_id":"t1",
+    "name":"critical-incidents",
+    "enabled":true,
+    "priority":10,
+    "match_json":{"event_type":["incident.opened"],"severity":["high","critical"]},
+    "destinations_json":[{"destination_id":"DESTINATION_ID_1"},{"destination_id":"DESTINATION_ID_2"}]
+  }'
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/routes?tenant_id=t1"
+```
+
+DLQ and replay:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/jobs?tenant_id=t1&status=dead_lettered"
+
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/dlq?tenant_id=t1"
+
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/notifications/dlq/$DLQ_ID/replay
+```
+
 Operability summary:
 
 ```bash
