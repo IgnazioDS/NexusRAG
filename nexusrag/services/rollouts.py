@@ -15,6 +15,7 @@ KILL_SWITCH_KEYS = {
     "kill.ingest": "kill_ingest",
     "kill.tts": "kill_tts",
     "kill.external_retrieval": "kill_external_retrieval",
+    "kill.notifications": "kill_notifications",
 }
 
 CANARY_KEYS = {

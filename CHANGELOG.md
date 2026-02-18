@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.9.2 - 2026-02-18
+
+- Added tenant-scoped notification routing policies (`notification_routes`) with deterministic matching across `event_type`, `severity`, `source`, and `category`.
+- Added notification DLQ persistence (`notification_dead_letters`), terminal `dead_lettered` job handling, and admin replay APIs.
+- Added `kill.notifications` rollout kill switch to pause notification enqueue/retry flows during delivery storms.
+- Added admin DLQ inspection endpoints and route CRUD coverage with tenant-scoping tests.
+- Updated operability docs with route matching, destination ordering, and DLQ replay workflows.
+
 ## 2.9.1 - 2026-02-18
 
 - Enforced keyring required-only mode with explicit `KEYRING_MASTER_KEY_REQUIRED` behavior and deterministic `KEYRING_NOT_CONFIGURED` / `KEYRING_DISABLED` failures.

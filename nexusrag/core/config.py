@@ -240,6 +240,8 @@ class Settings(BaseSettings):
     kill_ingest: bool = False
     kill_tts: bool = False
     kill_external_retrieval: bool = False
+    # Pause notification enqueue/delivery when incident response needs to stop outbound storms.
+    kill_notifications: bool = False
     # Percentage rollouts for gated features (0-100).
     rollout_tts_pct: int = 100
     rollout_external_retrieval_pct: int = 100

@@ -619,6 +619,29 @@ class NotificationDestination(Base):
     )
 
 
+class NotificationRoute(Base):
+    __tablename__ = "notification_routes"
+    __table_args__ = (
+        Index("ix_notification_routes_tenant_enabled_priority", "tenant_id", "enabled", "priority"),
+    )
+
+    # Keep tenant-scoped routing policy rows so destination fan-out can be driven by stable rule metadata.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Lower priority values win to keep route ordering deterministic and explicit.
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    # Persist route matching filters (event_type/severity/source/category) as JSONB for additive evolution.
+    match_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # Store ordered destination references and per-destination overrides for deterministic fan-out.
+    destinations_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class NotificationAttempt(Base):
     __tablename__ = "notification_attempts"
     __table_args__ = (
@@ -634,6 +657,23 @@ class NotificationAttempt(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     outcome: Mapped[str] = mapped_column(String, index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NotificationDeadLetter(Base):
+    __tablename__ = "notification_dead_letters"
+    __table_args__ = (
+        Index("ix_notification_dead_letters_tenant_created", "tenant_id", text("created_at DESC")),
+    )
+
+    # Persist terminal notification failures for deterministic replay and post-incident forensics.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("notification_jobs.id"), unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Keep payload redacted and reproducible so replay paths never require original raw secrets.
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class AutoscalingProfile(Base):

@@ -19,8 +19,10 @@ from nexusrag.domain.models import (
     IdempotencyRecord,
     IncidentTimelineEvent,
     NotificationAttempt,
+    NotificationDeadLetter,
     NotificationDestination,
     NotificationJob,
+    NotificationRoute,
     OperatorAction,
     OpsIncident,
     TenantPlanAssignment,
@@ -64,6 +66,8 @@ async def _cleanup_tenant(tenant_id: str) -> None:
                 )
             )
         )
+        await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
+        await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
         await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
         await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
         await session.execute(delete(AlertEvent).where(AlertEvent.tenant_id == tenant_id))
@@ -432,6 +436,73 @@ async def test_notification_destinations_are_tenant_scoped(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_notification_routes_crud_is_tenant_scoped(monkeypatch) -> None:
+    tenant_id = f"t-operability-routes-{uuid4().hex}"
+    other_tenant_id = f"{tenant_id}-other"
+    _apply_env(monkeypatch)
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    _raw_other, other_headers, _other_user, _other_key = await create_test_api_key(
+        tenant_id=other_tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            destination = await client.post(
+                "/v1/admin/notifications/destinations",
+                headers=headers,
+                json={"tenant_id": tenant_id, "url": "noop://route-crud-destination"},
+            )
+            assert destination.status_code == 200
+            destination_id = destination.json()["data"]["id"]
+
+            create_route = await client.post(
+                "/v1/admin/notifications/routes",
+                headers=headers,
+                json={
+                    "tenant_id": tenant_id,
+                    "name": "critical-route",
+                    "enabled": True,
+                    "priority": 5,
+                    "match_json": {"event_type": "incident.opened", "severity": ["high"]},
+                    "destinations_json": [{"destination_id": destination_id}],
+                },
+            )
+            assert create_route.status_code == 200
+            route_id = create_route.json()["data"]["id"]
+
+            list_route = await client.get(f"/v1/admin/notifications/routes?tenant_id={tenant_id}", headers=headers)
+            assert list_route.status_code == 200
+            assert any(item["id"] == route_id for item in list_route.json()["data"]["items"])
+
+            patch_route = await client.patch(
+                f"/v1/admin/notifications/routes/{route_id}",
+                headers=headers,
+                json={"enabled": False, "priority": 8},
+            )
+            assert patch_route.status_code == 200
+            assert patch_route.json()["data"]["enabled"] is False
+            assert patch_route.json()["data"]["priority"] == 8
+
+            cross_tenant = await client.get(f"/v1/admin/notifications/routes?tenant_id={tenant_id}", headers=other_headers)
+            assert cross_tenant.status_code == 403
+
+            delete_route = await client.delete(f"/v1/admin/notifications/routes/{route_id}", headers=headers)
+            assert delete_route.status_code == 200
+            assert delete_route.json()["data"]["deleted"] is True
+    finally:
+        await _cleanup_tenant(tenant_id)
+        await _cleanup_tenant(other_tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_incident_notifications_use_tenant_destinations(monkeypatch) -> None:
     tenant_id = f"t-operability-routing-{uuid4().hex}"
     _apply_env(monkeypatch)
@@ -486,4 +557,189 @@ async def test_incident_notifications_use_tenant_destinations(monkeypatch) -> No
             assert {job.destination for job in jobs} == {"noop://tenant-override"}
     finally:
         await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_routes_control_destination_order(monkeypatch) -> None:
+    tenant_id = f"t-operability-route-order-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    get_settings.cache_clear()
+    await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+    try:
+        async with SessionLocal() as session:
+            destination_one = NotificationDestination(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                destination_url="noop://route-specific",
+                enabled=True,
+            )
+            destination_two = NotificationDestination(
+                id=uuid4().hex,
+                tenant_id=tenant_id,
+                destination_url="noop://route-wildcard",
+                enabled=True,
+            )
+            session.add_all([destination_one, destination_two])
+            await session.commit()
+            session.add_all(
+                [
+                    NotificationRoute(
+                        id=uuid4().hex,
+                        tenant_id=tenant_id,
+                        name="specific-high",
+                        enabled=True,
+                        priority=10,
+                        match_json={"event_type": "incident.opened", "severity": ["high"]},
+                        destinations_json=[{"destination_id": destination_one.id}],
+                    ),
+                    NotificationRoute(
+                        id=uuid4().hex,
+                        tenant_id=tenant_id,
+                        name="wildcard-high",
+                        enabled=True,
+                        priority=20,
+                        match_json={"event_type": "*", "severity": ["high", "critical"]},
+                        destinations_json=[{"destination_id": destination_two.id}],
+                    ),
+                ]
+            )
+            await session.commit()
+            incident, created = await open_incident_for_alert(
+                session=session,
+                tenant_id=tenant_id,
+                category="queue.depth",
+                rule_id=None,
+                severity="high",
+                title="Queue depth high",
+                summary="queue depth threshold exceeded",
+                details_json={"queue_depth": 999},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-route-order",
+            )
+            assert created is True
+            assert incident.id
+
+        async with SessionLocal() as session:
+            jobs = (
+                await session.execute(
+                    select(NotificationJob)
+                    .where(NotificationJob.tenant_id == tenant_id)
+                    .order_by(NotificationJob.created_at.asc(), NotificationJob.id.asc())
+                )
+            ).scalars().all()
+            assert [job.destination for job in jobs] == ["noop://route-specific", "noop://route-wildcard"]
+    finally:
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notification_dlq_and_replay_are_tenant_scoped(monkeypatch) -> None:
+    tenant_id = f"t-operability-dlq-{uuid4().hex}"
+    other_tenant_id = f"{tenant_id}-other"
+    _apply_env(monkeypatch)
+    monkeypatch.setenv("NOTIFY_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URLS_JSON", "[\"noop://dlq-test\"]")
+    get_settings.cache_clear()
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    _other_raw, other_headers, _other_user, _other_key = await create_test_api_key(
+        tenant_id=other_tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+
+    from nexusrag.services.operability import notifications as notifications_module
+    from nexusrag.services.operability.incidents import open_incident_for_alert
+
+    async def _always_fail(*, destination, body, notification_id):  # type: ignore[override]
+        raise RuntimeError("forced dlq failure")
+
+    async def _enqueue_stub(*, job_id: str, defer_ms: int = 0) -> bool:
+        return True
+
+    monkeypatch.setattr(notifications_module, "_deliver", _always_fail)
+    monkeypatch.setattr(notifications_module, "enqueue_notification_job", _enqueue_stub)
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    try:
+        async with SessionLocal() as session:
+            incident, _created = await open_incident_for_alert(
+                session=session,
+                tenant_id=tenant_id,
+                category="worker.heartbeat.age_s",
+                rule_id=None,
+                severity="high",
+                title="Worker stale",
+                summary="heartbeat stale",
+                details_json={"worker_heartbeat_age_s": 999},
+                actor_id="tester",
+                actor_role="admin",
+                request_id="req-dlq",
+            )
+            assert incident.id
+
+        async with SessionLocal() as session:
+            job = (
+                await session.execute(
+                    select(NotificationJob).where(NotificationJob.tenant_id == tenant_id).limit(1)
+                )
+            ).scalar_one()
+            processed = await process_notification_job(session=session, job_id=job.id)
+            assert processed is not None
+            assert processed.status == "dead_lettered"
+
+        async with SessionLocal() as session:
+            dead_letter = (
+                await session.execute(
+                    select(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id).limit(1)
+                )
+            ).scalar_one()
+            assert dead_letter.job_id
+            dead_letter_id = dead_letter.id
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listing = await client.get(f"/v1/admin/notifications/dlq?tenant_id={tenant_id}", headers=headers)
+            assert listing.status_code == 200
+            items = listing.json()["data"]["items"]
+            assert any(item["id"] == dead_letter_id for item in items)
+
+            cross_tenant = await client.get(f"/v1/admin/notifications/dlq/{dead_letter_id}", headers=other_headers)
+            assert cross_tenant.status_code == 404
+
+            replay = await client.post(f"/v1/admin/notifications/dlq/{dead_letter_id}/replay", headers=headers)
+            assert replay.status_code == 200
+            replay_payload = replay.json()["data"]
+            assert replay_payload["dead_letter_id"] == dead_letter_id
+            assert replay_payload["created_job_ids"]
+
+        async with SessionLocal() as session:
+            replayed_jobs = (
+                await session.execute(
+                    select(NotificationJob)
+                    .where(NotificationJob.tenant_id == tenant_id)
+                    .order_by(NotificationJob.created_at.asc(), NotificationJob.id.asc())
+                )
+            ).scalars().all()
+            assert len(replayed_jobs) == 2
+    finally:
+        await _cleanup_tenant(tenant_id)
+        await _cleanup_tenant(other_tenant_id)
         get_settings.cache_clear()

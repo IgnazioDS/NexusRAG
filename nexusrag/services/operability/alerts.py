@@ -252,6 +252,23 @@ def _evaluate_single_rule(rule: AlertRule, metrics: dict[str, float | int]) -> t
     return triggered, actual, threshold, reason
 
 
+def _evaluate_snapshot_rule(
+    *,
+    source: str,
+    expression_json: dict[str, Any] | None,
+    thresholds_json: dict[str, Any] | None,
+    metrics: dict[str, float | int],
+) -> tuple[bool, float, float, str]:
+    # Evaluate plain snapshot payloads so alert loops do not depend on ORM state after commits.
+    metric_key = str((expression_json or {}).get("metric") or source)
+    operator = str((expression_json or {}).get("operator") or "gte").lower()
+    threshold = float((thresholds_json or {}).get("value", 0.0))
+    actual = float(metrics.get(metric_key, 0.0))
+    triggered = _compare(operator=operator, actual=actual, threshold=threshold)
+    reason = f"{metric_key} {operator} {threshold} (actual={actual})"
+    return triggered, actual, threshold, reason
+
+
 async def evaluate_alert_rules(
     *,
     session: AsyncSession,
@@ -275,22 +292,46 @@ async def evaluate_alert_rules(
             )
         )
     ).scalars().all()
+    rule_snapshots = [
+        {
+            "rule_id": row.rule_id,
+            "name": row.name,
+            "source": row.source,
+            "severity": row.severity,
+            "expression_json": row.expression_json,
+            "thresholds_json": row.thresholds_json,
+        }
+        for row in rules
+    ]
 
     triggered_rows: list[dict[str, Any]] = []
     minimum_incident_severity = _severity_rank(settings.incident_auto_open_min_severity)
-    for rule in rules:
-        triggered, actual, threshold, reason = _evaluate_single_rule(rule, metrics)
+    for rule in rule_snapshots:
+        # Read only from immutable snapshots so per-iteration commits cannot expire evaluator inputs.
+        rule_id = str(rule["rule_id"])
+        rule_name = str(rule["name"])
+        rule_source = str(rule["source"])
+        rule_severity = str(rule["severity"])
+        triggered, actual, threshold, reason = _evaluate_snapshot_rule(
+            source=rule_source,
+            expression_json=rule.get("expression_json") if isinstance(rule.get("expression_json"), dict) else None,
+            thresholds_json=rule.get("thresholds_json") if isinstance(rule.get("thresholds_json"), dict) else None,
+            metrics=metrics,
+        )
+        occurred_at = _utc_now()
+        event_id = uuid4().hex
+        event_metrics = {"actual": actual, "threshold": threshold, "window": window}
         event = AlertEvent(
-            id=uuid4().hex,
+            id=event_id,
             tenant_id=tenant_id,
-            rule_id=rule.rule_id,
-            severity=rule.severity,
+            rule_id=rule_id,
+            severity=rule_severity,
             status="triggered" if triggered else "suppressed",
-            source=rule.source,
+            source=rule_source,
             triggered=triggered,
-            metrics_json={"actual": actual, "threshold": threshold, "window": window},
+            metrics_json=event_metrics,
             reason=reason,
-            occurred_at=_utc_now(),
+            occurred_at=occurred_at,
         )
         session.add(event)
         await session.commit()
@@ -305,9 +346,9 @@ async def evaluate_alert_rules(
             event_type=event_name,
             outcome="failure" if triggered else "success",
             resource_type="alert_rule",
-            resource_id=rule.rule_id,
+            resource_id=rule_id,
             request_id=request_id,
-            metadata={"source": rule.source, "reason": reason},
+            metadata={"source": rule_source, "reason": reason},
             commit=True,
             best_effort=True,
         )
@@ -315,16 +356,17 @@ async def evaluate_alert_rules(
             continue
 
         incident_id: str | None = None
-        if settings.incident_automation_enabled and _severity_rank(rule.severity) >= minimum_incident_severity:
+        if settings.incident_automation_enabled and _severity_rank(rule_severity) >= minimum_incident_severity:
             incident, _created = await open_incident_for_alert(
                 session=session,
                 tenant_id=tenant_id,
-                category=rule.source,
-                rule_id=rule.rule_id,
-                severity=rule.severity,
-                title=rule.name,
+                category=rule_source,
+                rule_id=rule_id,
+                severity=rule_severity,
+                title=rule_name,
                 summary=reason,
-                details_json={"metrics": event.metrics_json, "window": window},
+                # Reuse immutable local payload to avoid ORM refreshes after subsequent commits.
+                details_json={"metrics": event_metrics, "window": window},
                 actor_id=actor_id,
                 actor_role=actor_role,
                 request_id=request_id,
@@ -335,10 +377,10 @@ async def evaluate_alert_rules(
             tenant_id=tenant_id,
             event_type="alert.triggered",
             payload={
-                "alert_event_id": event.id,
+                "alert_event_id": event_id,
                 "incident_id": incident_id,
-                "rule_id": rule.rule_id,
-                "severity": rule.severity,
+                "rule_id": rule_id,
+                "severity": rule_severity,
                 "reason": reason,
             },
             actor_id=actor_id,
@@ -347,17 +389,17 @@ async def evaluate_alert_rules(
         )
         triggered_rows.append(
             {
-                "event_id": event.id,
-                "rule_id": rule.rule_id,
-                "name": rule.name,
-                "severity": rule.severity,
-                "source": rule.source,
-                "status": event.status,
+                "event_id": event_id,
+                "rule_id": rule_id,
+                "name": rule_name,
+                "severity": rule_severity,
+                "source": rule_source,
+                "status": "triggered",
                 "reason": reason,
                 "actual": actual,
                 "threshold": threshold,
                 "incident_id": incident_id,
-                "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+                "occurred_at": occurred_at.isoformat(),
             }
         )
     return triggered_rows
