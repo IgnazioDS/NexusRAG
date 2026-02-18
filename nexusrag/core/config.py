@@ -184,12 +184,14 @@ class Settings(BaseSettings):
     ops_notification_webhook_url: str | None = None
     # JSON list of webhook destinations for incident/alert notifications.
     notify_webhook_urls_json: str = "[]"
-    # Max notification delivery attempts before jobs are marked gave_up.
+    # Max notification delivery attempts before jobs transition to DLQ.
     notify_max_attempts: int = 5
     # Base retry backoff in milliseconds for notification jobs.
     notify_backoff_ms: int = 500
     # Upper cap for notification retry backoff in milliseconds.
     notify_backoff_max_ms: int = 15_000
+    # Maximum total job age before stale notifications are dead-lettered instead of retried.
+    notify_max_age_seconds: int = 86_400
     # Dedupe interval window in seconds for incident notification fan-out.
     notify_dedupe_window_s: int = 300
     # ARQ queue name for durable notification delivery jobs.

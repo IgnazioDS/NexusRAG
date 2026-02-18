@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -25,11 +27,19 @@ from nexusrag.services.audit import record_event, sanitize_metadata
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, get_effective_entitlements
 from nexusrag.services.notifications.routing import resolve_destinations
 from nexusrag.services.rollouts import resolve_kill_switch
+from nexusrag.services.security.keyring import decrypt_keyring_secret, encrypt_keyring_secret
 
 _READY_STATUSES = ("queued", "retrying")
 _notification_queue_pool = None
 _notification_queue_pool_loop = None
 _notification_queue_lock = asyncio.Lock()
+_RESERVED_NOTIFICATION_HEADERS = {
+    "x-notification-id",
+    "x-notification-attempt",
+    "x-notification-event-type",
+    "x-notification-tenant-id",
+    "x-notification-signature",
+}
 
 
 def _utc_now() -> datetime:
@@ -43,6 +53,40 @@ def _validate_destination_url(destination_url: str) -> str:
     if normalized.startswith(("http://", "https://", "noop://")):
         return normalized
     raise ValueError("destination_url must start with http://, https://, or noop://")
+
+
+def _normalize_destination_headers(headers_json: dict[str, Any] | None) -> dict[str, str]:
+    # Normalize destination headers and block reserved notification contract headers from being overridden.
+    if headers_json is None:
+        return {}
+    if not isinstance(headers_json, dict):
+        raise ValueError("headers_json must be an object")
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in headers_json.items():
+        key = str(raw_key).strip()
+        value = str(raw_value).strip()
+        if not key:
+            raise ValueError("headers_json keys must be non-empty")
+        if key.lower() in _RESERVED_NOTIFICATION_HEADERS:
+            raise ValueError(f"headers_json key '{key}' is reserved")
+        normalized[key] = value
+    return normalized
+
+
+def _serialize_payload(payload_json: dict[str, Any]) -> bytes:
+    # Serialize payloads deterministically so hashing/signing and receiver verification stay stable across retries.
+    return json.dumps(payload_json, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _payload_sha256(payload_bytes: bytes) -> str:
+    # Persist attempt-level hashes so operators can prove exactly which bytes were sent to receivers.
+    return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def _sign_payload(*, secret: str, payload_bytes: bytes) -> str:
+    # Sign payload bytes with HMAC-SHA256 for receiver-side authenticity checks.
+    digest = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
 
 
 async def resolve_notification_destinations(*, session: AsyncSession, tenant_id: str) -> list[str]:
@@ -77,12 +121,17 @@ async def create_notification_destination(
     session: AsyncSession,
     tenant_id: str,
     destination_url: str,
+    headers_json: dict[str, Any] | None = None,
+    secret: str | None = None,
 ) -> NotificationDestination:
     # Enforce canonical URL validation and uniqueness for deterministic destination routing.
+    normalized_headers = _normalize_destination_headers(headers_json)
     row = NotificationDestination(
         id=uuid4().hex,
         tenant_id=tenant_id,
         destination_url=_validate_destination_url(destination_url),
+        secret_encrypted=encrypt_keyring_secret(secret) if secret else None,
+        headers_json=normalized_headers,
         enabled=True,
     )
     session.add(row)
@@ -108,13 +157,21 @@ async def patch_notification_destination(
     session: AsyncSession,
     tenant_id: str,
     destination_id: str,
-    enabled: bool,
+    enabled: bool | None,
+    headers_json: dict[str, Any] | None = None,
+    secret: str | None = None,
 ) -> NotificationDestination | None:
     # Apply enable/disable toggles in place so destination identifiers remain stable for operators.
     row = await session.get(NotificationDestination, destination_id)
     if row is None or row.tenant_id != tenant_id:
         return None
-    row.enabled = bool(enabled)
+    if enabled is not None:
+        row.enabled = bool(enabled)
+    if headers_json is not None:
+        row.headers_json = _normalize_destination_headers(headers_json)
+    if secret is not None:
+        # Replace destination secret atomically so rotation can happen without secret reads.
+        row.secret_encrypted = encrypt_keyring_secret(secret)
     await session.commit()
     await session.refresh(row)
     return row
@@ -598,7 +655,30 @@ async def enqueue_due_notification_jobs(*, session: AsyncSession, limit: int = 5
     return count
 
 
-async def _deliver(*, destination: str, body: dict[str, Any], notification_id: str) -> None:
+async def _resolve_destination_delivery_contract(
+    *,
+    session: AsyncSession,
+    job: NotificationJob,
+) -> tuple[dict[str, str], str | None]:
+    # Resolve destination headers and secret lazily so replay/retry always uses the latest destination configuration.
+    payload_json = job.payload_json if isinstance(job.payload_json, dict) else {}
+    destination_id = payload_json.get("destination_id")
+    if not isinstance(destination_id, str) or not destination_id:
+        return {}, None
+    row = await session.get(NotificationDestination, destination_id)
+    if row is None or row.tenant_id != job.tenant_id:
+        return {}, None
+    headers_json = row.headers_json if isinstance(row.headers_json, dict) else {}
+    headers = _normalize_destination_headers(headers_json)
+    if not row.secret_encrypted:
+        return headers, None
+    try:
+        return headers, decrypt_keyring_secret(row.secret_encrypted)
+    except Exception:  # noqa: BLE001 - treat undecryptable secrets as unavailable and continue unsigned delivery.
+        return headers, None
+
+
+async def _deliver(*, destination: str, payload_bytes: bytes, headers: dict[str, str]) -> None:
     # Keep delivery adapters small and deterministic: noop for local/dev, webhook for live integrations.
     if destination.startswith("noop://"):
         return
@@ -606,28 +686,34 @@ async def _deliver(*, destination: str, body: dict[str, Any], notification_id: s
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         response = await client.post(
             destination,
-            json=body,
-            headers={"X-Notification-Id": notification_id},
+            content=payload_bytes,
+            headers=headers,
         )
         response.raise_for_status()
 
 
 async def _claim_notification_job(*, session: AsyncSession, job_id: str) -> NotificationJob | None:
-    # Transition queued/retrying rows to sending with compare-and-set semantics to prevent duplicate processing.
+    # Claim with row-level locking so only one worker can transition a ready job into delivering at a time.
     now = _utc_now()
-    updated = await session.execute(
-        update(NotificationJob)
-        .where(
-            NotificationJob.id == job_id,
-            NotificationJob.status.in_(_READY_STATUSES),
-            NotificationJob.next_attempt_at <= now,
+    row = (
+        await session.execute(
+            select(NotificationJob)
+            .where(
+                NotificationJob.id == job_id,
+                NotificationJob.status.in_(_READY_STATUSES),
+                NotificationJob.next_attempt_at <= now,
+            )
+            .with_for_update(skip_locked=True)
         )
-        .values(status="sending", updated_at=now)
-    )
-    await session.commit()
-    if int(updated.rowcount or 0) == 0:
+    ).scalar_one_or_none()
+    if row is None:
+        await session.rollback()
         return None
-    return await session.get(NotificationJob, job_id)
+    row.status = "delivering"
+    row.updated_at = now
+    await session.commit()
+    await session.refresh(row)
+    return row
 
 
 async def process_notification_job(*, session: AsyncSession, job_id: str) -> NotificationJob | None:
@@ -638,21 +724,85 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
     job = await _claim_notification_job(session=session, job_id=job_id)
     if job is None:
         return None
+    await record_event(
+        session=session,
+        tenant_id=job.tenant_id,
+        actor_type="system",
+        actor_id=None,
+        actor_role=None,
+        event_type="notification.job.claimed",
+        outcome="success",
+        resource_type="notification_job",
+        resource_id=job.id,
+        request_id=None,
+        metadata={"status": job.status},
+        commit=True,
+        best_effort=True,
+    )
     now = _utc_now()
+    max_age_seconds = max(1, int(get_settings().notify_max_age_seconds))
+    if (now - job.created_at).total_seconds() > max_age_seconds:
+        # Expire stale jobs deterministically to prevent infinite retries on old incidents.
+        job.status = "dlq"
+        job.next_attempt_at = now
+        job.last_error = "expired"
+        await _dead_letter_job(
+            session=session,
+            job=job,
+            reason="expired",
+            last_error="Notification exceeded max age before delivery",
+        )
+        await session.commit()
+        await session.refresh(job)
+        await record_event(
+            session=session,
+            tenant_id=job.tenant_id,
+            actor_type="system",
+            actor_id=None,
+            actor_role=None,
+            event_type="notification.job.dlq",
+            outcome="failure",
+            resource_type="notification_job",
+            resource_id=job.id,
+            request_id=None,
+            metadata={"reason": "expired", "max_age_seconds": max_age_seconds},
+            commit=True,
+            best_effort=True,
+        )
+        return job
+    payload_json = job.payload_json if isinstance(job.payload_json, dict) else {}
+    payload_bytes = _serialize_payload(payload_json)
+    payload_sha = _payload_sha256(payload_bytes)
+    event_type = str(payload_json.get("event_type") or "unknown")
+    destination_headers, signing_secret = await _resolve_destination_delivery_contract(session=session, job=job)
     attempt_no = int(job.attempt_count) + 1
     attempt = NotificationAttempt(
         job_id=job.id,
         attempt_no=attempt_no,
         started_at=now,
         finished_at=None,
+        payload_sha256=payload_sha,
         outcome="running",
         error=None,
     )
     session.add(attempt)
     await session.flush()
+    request_headers = dict(destination_headers)
+    request_headers.update(
+        {
+            "Content-Type": "application/json",
+            "X-Notification-Id": job.id,
+            "X-Notification-Attempt": str(attempt_no),
+            "X-Notification-Event-Type": event_type,
+            "X-Notification-Tenant-Id": job.tenant_id,
+        }
+    )
+    signature_missing = signing_secret is None
+    if signing_secret:
+        request_headers["X-Notification-Signature"] = _sign_payload(secret=signing_secret, payload_bytes=payload_bytes)
 
     try:
-        await _deliver(destination=job.destination, body=job.payload_json or {}, notification_id=job.id)
+        await _deliver(destination=job.destination, payload_bytes=payload_bytes, headers=request_headers)
     except Exception as exc:  # noqa: BLE001 - delivery failures are isolated to job state updates.
         attempt.finished_at = _utc_now()
         attempt.outcome = "failure"
@@ -662,7 +812,7 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
         max_attempts = max(1, int(get_settings().notify_max_attempts))
         non_retriable, reason = _is_non_retriable_delivery_error(exc)
         if non_retriable or attempt_no >= max_attempts:
-            job.status = "dead_lettered"
+            job.status = "dlq"
             job.next_attempt_at = attempt.finished_at
             await _dead_letter_job(
                 session=session,
@@ -670,12 +820,12 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
                 reason=reason if non_retriable else "max_attempts_exceeded",
                 last_error=str(exc),
             )
-            event_type = "notification.job.gave_up"
+            event_type = "notification.job.dlq"
         else:
             delay_ms = retry_backoff_ms(job_id=job.id, attempt_no=attempt_no)
             job.status = "retrying"
             job.next_attempt_at = attempt.finished_at + timedelta(milliseconds=delay_ms)
-            event_type = "notification.job.failed"
+            event_type = "notification.job.retry_scheduled"
         await session.commit()
         await session.refresh(job)
         if job.status == "retrying":
@@ -691,18 +841,39 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
             resource_type="notification_job",
             resource_id=job.id,
             request_id=None,
-            metadata={"attempt_no": attempt_no, "destination": job.destination, "status": job.status},
+            metadata={
+                "attempt_no": attempt_no,
+                "destination": job.destination,
+                "status": job.status,
+                "payload_sha256": payload_sha,
+            },
             commit=True,
             best_effort=True,
         )
-        if job.status == "dead_lettered":
+        if signature_missing:
             await record_event(
                 session=session,
                 tenant_id=job.tenant_id,
                 actor_type="system",
                 actor_id=None,
                 actor_role=None,
-                event_type="notification.job.dead_lettered",
+                event_type="notification.signature.missing",
+                outcome="failure",
+                resource_type="notification_job",
+                resource_id=job.id,
+                request_id=None,
+                metadata={"attempt_no": attempt_no, "destination": job.destination},
+                commit=True,
+                best_effort=True,
+            )
+        if job.status == "dlq":
+            await record_event(
+                session=session,
+                tenant_id=job.tenant_id,
+                actor_type="system",
+                actor_id=None,
+                actor_role=None,
+                event_type="notification.job.dlq",
                 outcome="failure",
                 resource_type="notification_job",
                 resource_id=job.id,
@@ -717,7 +888,7 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
     attempt.outcome = "success"
     job.attempt_count = attempt_no
     job.last_error = None
-    job.status = "succeeded"
+    job.status = "delivered"
     job.next_attempt_at = attempt.finished_at
     await session.commit()
     await session.refresh(job)
@@ -727,15 +898,31 @@ async def process_notification_job(*, session: AsyncSession, job_id: str) -> Not
         actor_type="system",
         actor_id=None,
         actor_role=None,
-        event_type="notification.job.succeeded",
+        event_type="notification.job.delivered",
         outcome="success",
         resource_type="notification_job",
         resource_id=job.id,
         request_id=None,
-        metadata={"attempt_no": attempt_no, "destination": job.destination},
+        metadata={"attempt_no": attempt_no, "destination": job.destination, "payload_sha256": payload_sha},
         commit=True,
         best_effort=True,
     )
+    if signature_missing:
+        await record_event(
+            session=session,
+            tenant_id=job.tenant_id,
+            actor_type="system",
+            actor_id=None,
+            actor_role=None,
+            event_type="notification.signature.missing",
+            outcome="failure",
+            resource_type="notification_job",
+            resource_id=job.id,
+            request_id=None,
+            metadata={"attempt_no": attempt_no, "destination": job.destination},
+            commit=True,
+            best_effort=True,
+        )
     return job
 
 
@@ -769,6 +956,26 @@ async def get_notification_job(
     if row is None or row.tenant_id != tenant_id:
         return None
     return row
+
+
+async def list_notification_attempts(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    job_id: str,
+) -> list[NotificationAttempt] | None:
+    # Return immutable attempt history only for tenant-owned jobs to preserve isolation boundaries.
+    job = await session.get(NotificationJob, job_id)
+    if job is None or job.tenant_id != tenant_id:
+        return None
+    rows = (
+        await session.execute(
+            select(NotificationAttempt)
+            .where(NotificationAttempt.job_id == job_id)
+            .order_by(NotificationAttempt.attempt_no.asc(), NotificationAttempt.started_at.asc())
+        )
+    ).scalars().all()
+    return list(rows)
 
 
 async def list_notification_dead_letters(
@@ -887,7 +1094,15 @@ async def retry_notification_job_now(
     row = await get_notification_job(session=session, tenant_id=tenant_id, job_id=job_id)
     if row is None:
         return None
-    row.status = "retrying"
+    if row.status == "delivered":
+        return row
+    if row.status == "dlq":
+        raise ValueError("Notification job is dead-lettered; replay the DLQ item instead")
+    if row.status == "delivering":
+        raise ValueError("Notification job is currently delivering")
+    if row.status not in _READY_STATUSES:
+        raise ValueError(f"Notification job state '{row.status}' cannot be retried now")
+    row.status = "queued"
     row.next_attempt_at = _utc_now()
     await session.commit()
     await session.refresh(row)
@@ -895,35 +1110,95 @@ async def retry_notification_job_now(
     return row
 
 
-async def notification_queue_summary(*, session: AsyncSession, tenant_id: str) -> dict[str, int]:
-    # Expose compact queue counters for /ops surfaces without returning full job payloads.
-    queued = await session.scalar(
+async def notification_queue_summary(*, session: AsyncSession, tenant_id: str) -> dict[str, Any]:
+    # Expose compact queue and attempt counters for /ops surfaces without returning full payload content.
+    jobs_queued = await session.scalar(
         select(func.count())
         .select_from(NotificationJob)
         .where(
             NotificationJob.tenant_id == tenant_id,
-            NotificationJob.status.in_(["queued", "retrying", "sending"]),
+            NotificationJob.status == "queued",
         )
     )
-    failed_last_hour = await session.scalar(
+    jobs_delivering = await session.scalar(
         select(func.count())
         .select_from(NotificationJob)
         .where(
             NotificationJob.tenant_id == tenant_id,
-            NotificationJob.status.in_(["dead_lettered", "failed", "gave_up"]),
+            NotificationJob.status == "delivering",
+        )
+    )
+    jobs_retrying = await session.scalar(
+        select(func.count())
+        .select_from(NotificationJob)
+        .where(
+            NotificationJob.tenant_id == tenant_id,
+            NotificationJob.status == "retrying",
+        )
+    )
+    jobs_dlq = await session.scalar(
+        select(func.count())
+        .select_from(NotificationJob)
+        .where(
+            NotificationJob.tenant_id == tenant_id,
+            NotificationJob.status == "dlq",
+        )
+    )
+    fifteen_minutes_ago = _utc_now() - timedelta(minutes=15)
+    attempts_last_15m = await session.scalar(
+        select(func.count())
+        .select_from(NotificationAttempt)
+        .join(NotificationJob, NotificationAttempt.job_id == NotificationJob.id)
+        .where(
+            NotificationJob.tenant_id == tenant_id,
+            NotificationAttempt.started_at >= fifteen_minutes_ago,
+        )
+    )
+    failures_last_15m = await session.scalar(
+        select(func.count())
+        .select_from(NotificationAttempt)
+        .join(NotificationJob, NotificationAttempt.job_id == NotificationJob.id)
+        .where(
+            NotificationJob.tenant_id == tenant_id,
+            NotificationAttempt.started_at >= fifteen_minutes_ago,
+            NotificationAttempt.outcome == "failure",
+        )
+    )
+    jobs_failed_last_hour = await session.scalar(
+        select(func.count())
+        .select_from(NotificationJob)
+        .where(
+            NotificationJob.tenant_id == tenant_id,
+            NotificationJob.status == "dlq",
             NotificationJob.updated_at >= (_utc_now() - timedelta(hours=1)),
         )
     )
-    dead_lettered = await session.scalar(
-        select(func.count())
-        .select_from(NotificationJob)
-        .where(
-            NotificationJob.tenant_id == tenant_id,
-            NotificationJob.status == "dead_lettered",
+    top_failure_rows = (
+        await session.execute(
+            select(NotificationAttempt.error, func.count(NotificationAttempt.id).label("count"))
+            .select_from(NotificationAttempt)
+            .join(NotificationJob, NotificationAttempt.job_id == NotificationJob.id)
+            .where(
+                NotificationJob.tenant_id == tenant_id,
+                NotificationAttempt.started_at >= fifteen_minutes_ago,
+                NotificationAttempt.outcome == "failure",
+            )
+            .group_by(NotificationAttempt.error)
+            .order_by(func.count(NotificationAttempt.id).desc())
+            .limit(5)
         )
-    )
+    ).all()
+    top_failure_reasons = [
+        {"reason": str(reason or "unknown"), "count": int(count or 0)}
+        for reason, count in top_failure_rows
+    ]
     return {
-        "queued": int(queued or 0),
-        "failed_last_hour": int(failed_last_hour or 0),
-        "dead_lettered": int(dead_lettered or 0),
+        "jobs_queued": int(jobs_queued or 0),
+        "jobs_delivering": int(jobs_delivering or 0),
+        "jobs_retrying": int(jobs_retrying or 0),
+        "jobs_dlq": int(jobs_dlq or 0),
+        "jobs_failed_last_hour": int(jobs_failed_last_hour or 0),
+        "attempts_last_15m": int(attempts_last_15m or 0),
+        "failures_last_15m": int(failures_last_15m or 0),
+        "top_failure_reasons": top_failure_reasons,
     }

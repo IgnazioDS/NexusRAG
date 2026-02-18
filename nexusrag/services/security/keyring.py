@@ -69,6 +69,23 @@ def _encrypt_secret(secret: str) -> str:
     return str(token.decode("utf-8"))
 
 
+def encrypt_keyring_secret(secret: str) -> str:
+    # Provide shared envelope helpers so other services can persist secrets with keyring-compatible semantics.
+    normalized = secret.strip()
+    if not normalized:
+        raise ValueError("Secret must not be empty")
+    return _encrypt_secret(normalized)
+
+
+def decrypt_keyring_secret(ciphertext: str) -> str:
+    # Decrypt keyring-compatible ciphertext for runtime usage without exposing persistence internals to callers.
+    token = ciphertext.strip()
+    if not token:
+        raise ValueError("Ciphertext must not be empty")
+    plaintext = _build_fernet().decrypt(token.encode("utf-8"))
+    return plaintext.decode("utf-8")
+
+
 def _new_key_id(purpose: str) -> str:
     prefix_map = {
         "signing": "sig",
