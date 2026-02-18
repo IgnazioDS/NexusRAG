@@ -429,11 +429,11 @@ async def _is_notification_delivery_paused() -> bool:
 
 
 def _is_non_retriable_delivery_error(exc: Exception) -> tuple[bool, str]:
-    # Treat selected HTTP 4xx responses as poison events and dead-letter immediately.
+    # Treat receiver-side 4xx responses as terminal rejections to avoid retry storms on invalid requests.
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = int(exc.response.status_code)
-        if status_code in {404, 410}:
-            return True, f"http_{status_code}_non_retriable"
+        if 400 <= status_code < 500:
+            return True, "receiver_rejected"
     return False, "retryable_failure"
 
 
