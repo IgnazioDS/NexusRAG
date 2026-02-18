@@ -1763,7 +1763,39 @@ make test
 make perf-test
 make perf-report
 make sdk-generate
+make security-audit
+make security-lint
+make security-secrets-scan
+make compliance-snapshot
 ```
+
+## Security & Compliance
+
+Security/compliance checks and evidence automation are available locally and in CI:
+
+```
+make security-audit
+make security-lint
+make security-secrets-scan
+make compliance-snapshot TENANT_ID=t1 ACTOR_ID=admin
+```
+
+Compliance snapshot/bundle APIs:
+
+- `POST /v1/admin/compliance/snapshot`
+- `GET /v1/admin/compliance/snapshots?limit=20`
+- `GET /v1/admin/compliance/snapshots/{id}`
+- `GET /v1/admin/compliance/bundle/{snapshot_id}.zip`
+
+Bundle contents:
+
+- `snapshot.json`
+- `controls.json`
+- `config_sanitized.json` (secrets redacted)
+- `runbooks_index.json`
+- `changelog_excerpt.md`
+- `capacity_model_excerpt.md`
+- `perf_gates_excerpt.json`
 
 ## Release process
 

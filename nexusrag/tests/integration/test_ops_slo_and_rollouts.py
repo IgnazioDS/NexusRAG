@@ -90,3 +90,11 @@ async def test_admin_maintenance_task_validation() -> None:
         assert response.status_code == 200
         payload = response.json()["data"]
         assert payload["task"] == "prune_idempotency"
+        response = await client.post("/v1/admin/maintenance/run?task=prune_retention_all", headers=headers)
+        assert response.status_code == 200
+        assert response.json()["data"]["task"] == "prune_retention_all"
+        status = await client.get("/v1/admin/retention/status", headers=headers)
+        assert status.status_code == 200
+        status_payload = status.json()["data"]
+        assert status_payload["next_schedule"] == "manual"
+        assert "prune_retention_all" in status_payload["last_run_by_task"]

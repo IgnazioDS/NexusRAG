@@ -508,11 +508,12 @@ async def revoke_api_key(
 )
 async def inactive_api_key_report(
     request: Request,
-    inactive_days: int = Query(default=90, ge=1, le=3650),
+    inactive_days: int | None = Query(default=None, ge=1, le=3650),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyInactiveReportResponse:
     # Report stale API keys to support periodic credential hygiene workflows.
+    resolved_inactive_days = inactive_days or get_settings().auth_api_key_inactive_days
     try:
         result = await db.execute(
             select(ApiKey, User)
@@ -524,7 +525,7 @@ async def inactive_api_key_report(
         raise HTTPException(status_code=500, detail="Database error while building inactive key report") from exc
 
     now = _utc_now()
-    threshold = timedelta(days=inactive_days)
+    threshold = timedelta(days=resolved_inactive_days)
     items: list[ApiKeyInactiveItem] = []
     for api_key, user in result.all():
         activity_anchor = api_key.last_used_at or api_key.created_at
@@ -552,9 +553,9 @@ async def inactive_api_key_report(
         request=request,
         event_type="selfserve.api_key.inactive_reported",
         outcome="success",
-        metadata={"inactive_days": inactive_days, "count": len(items)},
+        metadata={"inactive_days": resolved_inactive_days, "count": len(items)},
     )
-    return ApiKeyInactiveReportResponse(inactive_days_threshold=inactive_days, items=items)
+    return ApiKeyInactiveReportResponse(inactive_days_threshold=resolved_inactive_days, items=items)
 
 
 @router.get(

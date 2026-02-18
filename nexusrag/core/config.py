@@ -215,6 +215,8 @@ class Settings(BaseSettings):
     usage_counter_retention_days: int = 120
     # Limit the number of active self-serve API keys per tenant.
     self_serve_max_active_keys: int = 20
+    # Default inactivity threshold used by API key hygiene reports.
+    auth_api_key_inactive_days: int = 90
     # Enable idempotency key support for write endpoints.
     idempotency_enabled: bool = True
     # Control TTL for stored idempotency responses.
@@ -263,6 +265,8 @@ class Settings(BaseSettings):
     compliance_signature_required: bool = True
     # Local filesystem directory for evidence bundle artifacts.
     compliance_evidence_dir: str = "./evidence"
+    # Master key used to encrypt platform keyring material at rest.
+    keyring_master_key: str | None = None
     # Enable envelope encryption for sensitive artifacts at rest.
     crypto_enabled: bool = True
     # Select the KMS backend used for tenant key operations.

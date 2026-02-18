@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import io
+import json
 from pathlib import Path
 from uuid import uuid4
+import zipfile
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -103,3 +106,36 @@ async def test_compliance_ops_status() -> None:
         data = resp.json()["data"]
         assert "controls_passed" in data
         assert "status" in data
+
+
+@pytest.mark.asyncio
+async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "super-secret-value")
+    get_settings.cache_clear()
+    tenant_id = f"t-compliance-snapshot-{uuid4().hex}"
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id=tenant_id, role="admin")
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/v1/admin/compliance/snapshot", headers=headers)
+        assert created.status_code == 200
+        snapshot_id = created.json()["data"]["id"]
+
+        listed = await client.get("/v1/admin/compliance/snapshots?limit=5", headers=headers)
+        assert listed.status_code == 200
+        assert any(row["id"] == snapshot_id for row in listed.json()["data"])
+
+        bundle = await client.get(f"/v1/admin/compliance/bundle/{snapshot_id}.zip", headers=headers)
+        assert bundle.status_code == 200
+        assert bundle.headers["content-type"] == "application/zip"
+
+    archive = zipfile.ZipFile(io.BytesIO(bundle.content))
+    names = set(archive.namelist())
+    assert "snapshot.json" in names
+    assert "controls.json" in names
+    assert "config_sanitized.json" in names
+    config_payload = json.loads(archive.read("config_sanitized.json").decode("utf-8"))
+    assert config_payload["openai_api_key"] == "[REDACTED]"
+
+    get_settings.cache_clear()

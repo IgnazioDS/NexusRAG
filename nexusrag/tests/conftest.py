@@ -14,12 +14,15 @@ from nexusrag.domain.models import (
     FailoverEvent,
     FailoverToken,
     GovernanceRetentionRun,
+    ComplianceSnapshot,
     ControlEvaluation,
     EvidenceBundle,
     KeyRotationJob,
     LegalHold,
+    PlatformKey,
     PolicyRule,
     RegionStatus,
+    RetentionRun,
     RetentionPolicy,
     TenantKey,
 )
@@ -54,8 +57,11 @@ async def reset_failover_tables_between_tests() -> None:
             await session.execute(delete(RetentionPolicy))
             await session.execute(delete(EncryptedBlob))
             await session.execute(delete(ComplianceArtifact))
+            await session.execute(delete(ComplianceSnapshot))
             await session.execute(delete(ControlEvaluation))
             await session.execute(delete(EvidenceBundle))
+            await session.execute(delete(RetentionRun))
+            await session.execute(delete(PlatformKey))
             await session.execute(delete(KeyRotationJob))
             await session.execute(delete(TenantKey))
             await session.execute(delete(FailoverEvent))

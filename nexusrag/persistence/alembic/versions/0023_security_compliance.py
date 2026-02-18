@@ -1,7 +1,7 @@
 """add security hardening and compliance snapshot tables
 
-Revision ID: 0022_security_compliance_hardening
-Revises: 0021_sla_policy_autoscale
+Revision ID: 0023_security_compliance
+Revises: 0022_perf_index_tuning
 Create Date: 2026-02-18
 """
 
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "0022_security_compliance_hardening"
-down_revision = "0021_sla_policy_autoscale"
+revision = "0023_security_compliance"
+down_revision = "0022_perf_index_tuning"
 branch_labels = None
 depends_on = None
 

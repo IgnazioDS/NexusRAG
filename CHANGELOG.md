@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.7.0 - 2026-02-18
+
+- Added compliance control catalog snapshots and in-memory evidence bundle exports with redacted config payloads.
+- Added API key lifecycle hardening (optional expiration, expiry enforcement, inactive reporting, rotation helper script).
+- Added platform keyring lifecycle APIs (`/v1/admin/keys`) with encrypted-at-rest key material and auditable rotate/retire flow.
+- Added unified retention proofing with `prune_retention_all`, persisted `retention_runs`, and `/v1/admin/retention/status`.
+- Added deterministic security gate targets (`make security-audit`, `make security-lint`, `make security-secrets-scan`) and compliance snapshot CLI.
+
 ## 2.6.0 - 2026-02-17
 
 - Added reproducible load/soak harness, deterministic perf scenarios, and CI perf gates.

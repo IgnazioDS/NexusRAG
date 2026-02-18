@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -21,6 +22,7 @@ from nexusrag.domain.models import (
     User,
 )
 from nexusrag.persistence.db import SessionLocal
+from nexusrag.services.auth.api_keys import generate_api_key
 from nexusrag.services.entitlements import reset_entitlements_cache
 from nexusrag.tests.utils.auth import create_test_api_key
 
@@ -238,6 +240,94 @@ async def test_billing_webhook_test_gated_and_configured(monkeypatch) -> None:
         response = await client.post("/self-serve/billing/webhook-test", headers=free_headers)
         assert response.status_code == 403
         assert response.json()["detail"]["code"] == "FEATURE_NOT_ENABLED"
+
+    await _cleanup_tenant(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_expired_key_is_rejected_and_audited(monkeypatch) -> None:
+    tenant_id = f"t-selfserve-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    expired_at = datetime.now(timezone.utc) - timedelta(days=1)
+    _raw_key, headers, _user_id, key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+        key_expires_at=expired_at,
+    )
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/self-serve/plan", headers=headers)
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.tenant_id == tenant_id,
+                    AuditEvent.actor_id == key_id,
+                    AuditEvent.event_type == "auth.api_key.expired",
+                )
+            )
+        ).scalars().all()
+        assert rows
+
+    await _cleanup_tenant(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_inactive_report_returns_stale_and_expired_keys(monkeypatch) -> None:
+    tenant_id = f"t-selfserve-{uuid4().hex}"
+    _apply_env(monkeypatch)
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(
+        tenant_id=tenant_id,
+        role="admin",
+        plan_id="enterprise",
+    )
+    old_now = datetime.now(timezone.utc) - timedelta(days=120)
+
+    async with SessionLocal() as session:
+        stale_user = User(id=uuid4().hex, tenant_id=tenant_id, email=None, role="reader", is_active=True)
+        stale_key_id, _raw_stale, stale_prefix, stale_hash = generate_api_key()
+        stale_key = ApiKey(
+            id=stale_key_id,
+            user_id=stale_user.id,
+            tenant_id=tenant_id,
+            key_prefix=stale_prefix,
+            key_hash=stale_hash,
+            name="stale",
+            last_used_at=old_now,
+        )
+        expired_user = User(id=uuid4().hex, tenant_id=tenant_id, email=None, role="reader", is_active=True)
+        expired_key_id, _raw_expired, expired_prefix, expired_hash = generate_api_key()
+        expired_key = ApiKey(
+            id=expired_key_id,
+            user_id=expired_user.id,
+            tenant_id=tenant_id,
+            key_prefix=expired_prefix,
+            key_hash=expired_hash,
+            name="expired",
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        session.add_all([stale_user, expired_user])
+        # Flush user rows before API keys to satisfy FK ordering deterministically.
+        await session.flush()
+        session.add_all([stale_key, expired_key])
+        await session.commit()
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/self-serve/api-keys/inactive-report?inactive_days=30", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        payload = body["data"] if "data" in body else body
+        ids = {item["key_id"] for item in payload["items"]}
+        assert stale_key_id in ids
+        assert expired_key_id in ids
 
     await _cleanup_tenant(tenant_id)
 

@@ -15,9 +15,9 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import ComplianceArtifact, ControlCatalog, ControlEvaluation, EvidenceBundle
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.compliance import (
+    evaluate_controls,
     evaluate_all_controls,
     generate_evidence_bundle,
-    get_latest_control_statuses,
     verify_evidence_bundle,
 )
 
@@ -28,8 +28,13 @@ router = APIRouter(prefix="/admin/compliance", tags=["compliance"], responses=DE
 class ControlStatusResponse(BaseModel):
     control_id: str
     title: str
-    trust_criteria: str
-    severity: str
+    trust_criteria: str | None = None
+    severity: str | None = None
+    description: str | None = None
+    evidence_sources: list[str] | None = None
+    check_method: str | None = None
+    pass_criteria: str | None = None
+    detail: dict[str, Any] | None = None
     status: str
     evaluated_at: str | None
 
@@ -116,11 +121,24 @@ async def list_controls(
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> list[ControlStatusResponse]:
-    # Return control catalog entries with latest status for admins.
+    # Return deterministic control status checks used for compliance posture snapshots.
     _ = principal
     _ensure_compliance_enabled()
-    statuses = await get_latest_control_statuses(db, tenant_scope=None)
-    payload = [ControlStatusResponse(**row) for row in statuses]
+    _overall_status, statuses = await evaluate_controls(db)
+    payload = [
+        ControlStatusResponse(
+            control_id=row["control_id"],
+            title=row["title"],
+            description=row.get("description"),
+            evidence_sources=row.get("evidence_sources"),
+            check_method=row.get("check_method"),
+            pass_criteria=row.get("pass_criteria"),
+            status=row["status"],
+            evaluated_at=row.get("last_evaluated_at"),
+            detail=row.get("detail"),
+        )
+        for row in statuses
+    ]
     return success_response(request=request, data=payload)
 
 

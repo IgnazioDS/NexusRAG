@@ -25,10 +25,11 @@ from nexusrag.domain.models import (
     BackupJob,
     IdempotencyRecord,
     LegalHold,
+    RetentionRun,
     UiAction,
     UsageCounter,
 )
-from nexusrag.services.governance import LEGAL_HOLD_SCOPE_BACKUP_SET
+from nexusrag.services.governance import LEGAL_HOLD_SCOPE_BACKUP_SET, run_retention_for_tenant
 
 
 MaintenanceTask = Literal[
@@ -36,6 +37,7 @@ MaintenanceTask = Literal[
     "prune_audit",
     "cleanup_actions",
     "prune_usage",
+    "prune_retention_all",
     "backup_create_scheduled",
     "backup_prune_retention",
     "restore_drill_scheduled",
@@ -152,3 +154,50 @@ async def restore_drill_scheduled(session: AsyncSession) -> int:
         request_id=None,
     )
     return 0
+
+
+async def prune_retention_all(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    actor_id: str | None,
+    actor_role: str | None,
+    request_id: str | None,
+) -> dict[str, int]:
+    # Run all retention-oriented tasks in one transaction to produce a single auditable result.
+    audit_deleted = await prune_audit_events(session)
+    usage_deleted = await prune_usage_counters(session)
+    actions_deleted = await cleanup_ui_actions(session)
+    governance_run = await run_retention_for_tenant(
+        session=session,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        request_id=request_id,
+    )
+    return {
+        "prune_audit": audit_deleted,
+        "prune_usage": usage_deleted,
+        "cleanup_actions": actions_deleted,
+        "governance_items": int((governance_run.report_json or {}).get("summary", {}).get("counts", {}).get("deleted", 0)),
+    }
+
+
+async def record_retention_run(
+    session: AsyncSession,
+    *,
+    tenant_id: str | None,
+    task: str,
+    outcome: str,
+    details_json: dict[str, object] | None,
+) -> RetentionRun:
+    # Persist retention maintenance execution metadata for compliance status reporting.
+    row = RetentionRun(
+        tenant_id=tenant_id,
+        task=task,
+        outcome=outcome,
+        details_json=details_json,
+    )
+    session.add(row)
+    await session.flush()
+    return row

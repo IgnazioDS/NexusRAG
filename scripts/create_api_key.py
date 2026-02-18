@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timedelta, timezone
 import sys
 from uuid import uuid4
 
@@ -19,6 +20,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name", required=True, help="Key label for auditing")
     parser.add_argument("--user-id", default=None, help="Existing user id to attach")
     parser.add_argument("--email", default=None, help="Optional user email")
+    parser.add_argument(
+        "--expires-in-days",
+        type=int,
+        default=None,
+        help="Optional key lifetime in days",
+    )
     return parser
 
 
@@ -26,6 +33,7 @@ async def _create_key(args: argparse.Namespace) -> int:
     # Normalize role before writing it to the database.
     role = normalize_role(args.role)
     user_id = args.user_id or uuid4().hex
+    expires_in_days = getattr(args, "expires_in_days", None)
     key_id, raw_key, key_prefix, key_hash = generate_api_key()
 
     async with SessionLocal() as session:
@@ -57,6 +65,11 @@ async def _create_key(args: argparse.Namespace) -> int:
             key_prefix=key_prefix,
             key_hash=key_hash,
             name=args.name,
+            expires_at=(
+                datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+                if expires_in_days
+                else None
+            ),
         )
         session.add(api_key)
         await session.commit()
@@ -76,6 +89,7 @@ async def _create_key(args: argparse.Namespace) -> int:
                 "user_id": user.id,
                 "key_prefix": key_prefix,
                 "key_name": args.name,
+                "expires_in_days": expires_in_days,
             },
             commit=True,
             best_effort=False,
@@ -84,6 +98,7 @@ async def _create_key(args: argparse.Namespace) -> int:
     print("API key created:")
     print(f"  key_id: {key_id}")
     print(f"  key_prefix: {key_prefix}")
+    print(f"  expires_at: {api_key.expires_at.isoformat() if api_key.expires_at else 'never'}")
     print("  api_key: ")
     print(f"    {raw_key}")
     return 0

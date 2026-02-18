@@ -1497,6 +1497,29 @@ async def delete_document(
             logger.warning("Failed to remove document storage %s", storage_path)
 
     # Record deletions after the document and chunks are removed successfully.
+    deleted_at = datetime.now(timezone.utc)
+    await record_event(
+        session=db,
+        tenant_id=tenant_id,
+        actor_type="api_key",
+        actor_id=principal.api_key_id,
+        actor_role=principal.role,
+        event_type="document.deleted",
+        outcome="success",
+        resource_type="document",
+        resource_id=document_id,
+        request_id=request_ctx["request_id"],
+        ip_address=request_ctx["ip_address"],
+        user_agent=request_ctx["user_agent"],
+        metadata={
+            "doc_id": document_id,
+            "corpus_id": doc.corpus_id,
+            "tenant_id": tenant_id,
+            "deleted_at": deleted_at.isoformat(),
+        },
+        commit=False,
+        best_effort=True,
+    )
     await record_event(
         session=db,
         tenant_id=tenant_id,

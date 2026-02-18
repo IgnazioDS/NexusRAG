@@ -13,10 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import Principal, get_db, idempotency_key_header, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
+from nexusrag.core.config import get_settings
 from nexusrag.domain.models import (
     Plan,
     PlanFeature,
     PlanLimit,
+    RetentionRun,
     TenantFeatureOverride,
     TenantPlanAssignment,
     UsageCounter,
@@ -57,8 +59,10 @@ from nexusrag.services.maintenance import (
     compliance_evaluate_scheduled,
     compliance_bundle_periodic,
     compliance_prune_old_evidence,
+    prune_retention_all,
+    record_retention_run,
 )
-from nexusrag.services.governance import enforce_policy
+from nexusrag.services.governance import enforce_policy, get_or_create_retention_policy
 
 
 router = APIRouter(prefix="/admin", tags=["admin"], responses=DEFAULT_ERROR_RESPONSES)
@@ -176,6 +180,14 @@ class MaintenanceRunResponse(BaseModel):
     task: str
     status: str
     deleted_rows: int
+
+
+class RetentionStatusResponse(BaseModel):
+    # Report configured retention windows and recent maintenance execution proofs.
+    tenant_id: str
+    configured_days: dict[str, int | None]
+    last_run_by_task: dict[str, str | None]
+    next_schedule: str
 
 
 def _ensure_same_tenant(principal: Principal, tenant_id: str) -> None:
@@ -622,7 +634,7 @@ async def run_maintenance_task(
     request: Request,
     task: str = Query(
         ...,
-        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage|backup_create_scheduled|backup_prune_retention|restore_drill_scheduled|compliance_evaluate_scheduled|compliance_bundle_periodic|compliance_prune_old_evidence)$",
+        pattern="^(prune_idempotency|prune_audit|cleanup_actions|prune_usage|prune_retention_all|backup_create_scheduled|backup_prune_retention|restore_drill_scheduled|compliance_evaluate_scheduled|compliance_bundle_periodic|compliance_prune_old_evidence)$",
     ),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
@@ -634,6 +646,7 @@ async def run_maintenance_task(
         "prune_audit": prune_audit_events,
         "cleanup_actions": cleanup_ui_actions,
         "prune_usage": prune_usage_counters,
+        "prune_retention_all": None,
         "backup_create_scheduled": backup_create_scheduled,
         "backup_prune_retention": backup_prune_retention,
         "restore_drill_scheduled": restore_drill_scheduled,
@@ -642,7 +655,7 @@ async def run_maintenance_task(
         "compliance_prune_old_evidence": compliance_prune_old_evidence,
     }
     runner = task_map.get(task)
-    if runner is None:
+    if runner is None and task != "prune_retention_all":
         raise HTTPException(status_code=422, detail="Unknown maintenance task")
     if task in {"backup_prune_retention"}:
         # Apply governance policy checks before destructive backup pruning.
@@ -661,7 +674,69 @@ async def run_maintenance_task(
             },
             request_id=request.headers.get("X-Request-Id"),
         )
-    deleted = await runner(db)
+    retention_details: dict[str, object] | None = None
+    if task == "prune_retention_all":
+        # Run all retention paths together to provide a single governance-proof artifact.
+        counters = await prune_retention_all(
+            db,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+        )
+        deleted = sum(int(value) for value in counters.values())
+        retention_details = {"counters": counters, "deleted_rows": deleted}
+    else:
+        deleted = await runner(db)
+        if task in {"prune_audit", "cleanup_actions", "prune_usage"}:
+            retention_details = {"deleted_rows": deleted}
+    if retention_details is not None:
+        await record_retention_run(
+            session=db,
+            tenant_id=principal.tenant_id,
+            task=task,
+            outcome="success",
+            details_json=retention_details,
+        )
     await db.commit()
     payload = MaintenanceRunResponse(task=task, status="completed", deleted_rows=deleted)
+    return success_response(request=request, data=payload)
+
+
+@router.get(
+    "/retention/status",
+    response_model=SuccessEnvelope[RetentionStatusResponse] | RetentionStatusResponse,
+)
+async def get_retention_status(
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> RetentionStatusResponse:
+    # Provide retention configuration and last-run timestamps as compliance proof points.
+    policy = await get_or_create_retention_policy(db, principal.tenant_id)
+    rows = (
+        await db.execute(
+            select(RetentionRun)
+            .where(RetentionRun.tenant_id == principal.tenant_id)
+            .order_by(RetentionRun.last_run_at.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+    last_run_by_task: dict[str, str | None] = {}
+    for row in rows:
+        if row.task in last_run_by_task:
+            continue
+        last_run_by_task[row.task] = row.last_run_at.isoformat() if row.last_run_at else None
+    payload = RetentionStatusResponse(
+        tenant_id=principal.tenant_id,
+        configured_days={
+            "audit": get_settings().audit_retention_days,
+            "usage": get_settings().usage_counter_retention_days,
+            "ui_actions": get_settings().ui_action_retention_days,
+            "documents": policy.documents_ttl_days,
+            "backups": policy.backups_ttl_days,
+        },
+        last_run_by_task=last_run_by_task,
+        next_schedule="manual",
+    )
     return success_response(request=request, data=payload)

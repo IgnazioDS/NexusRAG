@@ -23,6 +23,7 @@ async def create_test_api_key(
     name: str = "test-key",
     user_active: bool = True,
     key_revoked: bool = False,
+    key_expires_at: datetime | None = None,
     plan_id: str | None = "enterprise",
     seed_authz_policies: bool = True,
 ) -> tuple[str, dict[str, str], str, str]:
@@ -46,6 +47,7 @@ async def create_test_api_key(
             key_prefix=key_prefix,
             key_hash=key_hash,
             name=name,
+            expires_at=key_expires_at,
             revoked_at=_utc_now() if key_revoked else None,
         )
         session.add(user)

@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test perf-test perf-report sdk-generate frontend-sdk-build frontend-sdk-test
+.PHONY: up migrate seed test perf-test perf-report sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot
 
 up:
 	# Bring up docker compose services for local dev.
@@ -23,6 +23,25 @@ perf-test:
 perf-report:
 	# Build a markdown summary from latest perf artifacts.
 	python tests/perf/report_summary.py
+
+security-audit:
+	# Run dependency vulnerability audit and emit machine-readable artifacts.
+	mkdir -p var/security
+	pip-audit --progress-spinner off --format json --output var/security/pip-audit.json
+	pip-audit --progress-spinner off > var/security/pip-audit.txt
+
+security-lint:
+	# Run deterministic static checks for security-sensitive modules.
+	python -m ruff check nexusrag/services/compliance nexusrag/services/security nexusrag/apps/api/routes/compliance.py nexusrag/apps/api/routes/keys_admin.py scripts/compliance_snapshot.py scripts/security_secrets_scan.py scripts/rotate_api_key.py --select E9,F63,F7,F82,F401
+	python -m mypy --ignore-missing-imports --follow-imports=skip nexusrag/services/security/keyring.py nexusrag/services/compliance/evidence.py nexusrag/services/compliance/controls.py
+
+security-secrets-scan:
+	# Scan tracked files for high-risk secret patterns.
+	python scripts/security_secrets_scan.py
+
+compliance-snapshot:
+	# Persist a compliance snapshot directly from the service layer.
+	python scripts/compliance_snapshot.py --tenant "$${TENANT_ID:-t1}" --actor "$${ACTOR_ID:-system}"
 
 sdk-generate:
 	# Generate TypeScript and Python SDKs from the OpenAPI schema.

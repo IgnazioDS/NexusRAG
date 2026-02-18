@@ -21,6 +21,7 @@ from nexusrag.apps.api.routes.authz_admin import router as authz_admin_router
 from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.documents import router as documents_router
 from nexusrag.apps.api.routes.compliance_admin import router as compliance_admin_router
+from nexusrag.apps.api.routes.compliance import router as compliance_router
 from nexusrag.apps.api.routes.compliance_ops import router as compliance_ops_router
 from nexusrag.apps.api.routes.costs_admin import router as costs_admin_router
 from nexusrag.apps.api.routes.costs_self_serve import router as costs_self_serve_router
@@ -29,6 +30,7 @@ from nexusrag.apps.api.routes.governance_admin import router as governance_admin
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
 from nexusrag.apps.api.routes.health import router as health_router
 from nexusrag.apps.api.routes.identity_admin import router as identity_admin_router
+from nexusrag.apps.api.routes.keys_admin import router as keys_admin_router
 from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.run import router as run_router
 from nexusrag.apps.api.routes.scim import router as scim_router
@@ -155,11 +157,13 @@ def create_app() -> FastAPI:
     app.include_router(admin_router, prefix=f"/{API_VERSION}")
     app.include_router(crypto_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(compliance_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_ops_router, prefix=f"/{API_VERSION}")
     app.include_router(costs_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(costs_self_serve_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(identity_admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(keys_admin_router, prefix=f"/{API_VERSION}")
     # Expose ABAC policy and document ACL management for admins.
     app.include_router(authz_admin_router, prefix=f"/{API_VERSION}")
     # Expose admin-only audit endpoints for security investigations.
@@ -185,11 +189,13 @@ def create_app() -> FastAPI:
     app.include_router(admin_router, include_in_schema=False)
     app.include_router(crypto_admin_router, include_in_schema=False)
     app.include_router(compliance_admin_router, include_in_schema=False)
+    app.include_router(compliance_router, include_in_schema=False)
     app.include_router(compliance_ops_router, include_in_schema=False)
     app.include_router(costs_admin_router, include_in_schema=False)
     app.include_router(costs_self_serve_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
     app.include_router(identity_admin_router, include_in_schema=False)
+    app.include_router(keys_admin_router, include_in_schema=False)
     # Retain authz admin routes for legacy compatibility aliases.
     app.include_router(authz_admin_router, include_in_schema=False)
     app.include_router(audit_router, include_in_schema=False)
