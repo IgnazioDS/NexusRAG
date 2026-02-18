@@ -1498,10 +1498,24 @@ Phase 37 adds deterministic alert-rule evaluation, incident automation, and oper
 Key settings:
 
 - `ALERTING_ENABLED=true`
+- `OPERABILITY_BACKGROUND_EVALUATOR_ENABLED=true`
+- `OPERABILITY_EVAL_INTERVAL_S=30`
 - `INCIDENT_AUTOMATION_ENABLED=true`
 - `INCIDENT_AUTO_OPEN_MIN_SEVERITY=high`
-- `OPS_NOTIFICATION_ADAPTER=noop|webhook`
-- `OPS_NOTIFICATION_WEBHOOK_URL=...`
+- `NOTIFY_WEBHOOK_URLS_JSON=["https://.../hook"]`
+- `NOTIFY_MAX_ATTEMPTS=5`
+- `NOTIFY_BACKOFF_MS=500`
+- `NOTIFY_BACKOFF_MAX_MS=15000`
+- `NOTIFY_DEDUPE_WINDOW_S=300`
+- `OPS_FORCED_FLAG_TTL_S=900`
+
+Worker services:
+
+```bash
+docker compose up -d operability_worker notification_worker
+docker compose logs --tail=200 operability_worker
+docker compose logs --tail=200 notification_worker
+```
 
 List and tune alert rules:
 
@@ -1533,6 +1547,23 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: appl
 
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
   http://localhost:8000/v1/admin/incidents/$INCIDENT_ID/timeline
+```
+
+Notification queue triage:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/notifications/jobs?status=retrying"
+
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/admin/notifications/jobs/$JOB_ID/retry
+```
+
+Operability summary:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
+  http://localhost:8000/v1/ops/operability
 ```
 
 Operator actions (`Idempotency-Key` required):
