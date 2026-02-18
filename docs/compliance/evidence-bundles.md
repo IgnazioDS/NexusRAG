@@ -2,8 +2,9 @@
 
 Compliance bundles are generated from persisted snapshots using:
 
-- `POST /v1/admin/compliance/snapshot`
+- `POST /v1/admin/compliance/snapshots`
 - `GET /v1/admin/compliance/bundle/{snapshot_id}.zip`
+- `GET /v1/admin/compliance/snapshots/{snapshot_id}/download`
 
 ## Bundle Contents
 
@@ -14,6 +15,8 @@ Compliance bundles are generated from persisted snapshots using:
 - `changelog_excerpt.md`
 - `capacity_model_excerpt.md`
 - `perf_gates_excerpt.json`
+- `perf_report_summary.md`
+- `ops_metrics_24h_summary.json`
 
 ## Redaction Rules
 
@@ -26,3 +29,4 @@ Compliance bundles are generated from persisted snapshots using:
 - Snapshots are tenant-scoped.
 - Bundle endpoint enforces admin authentication and tenant isolation.
 - Snapshot/bundle actions are auditable events.
+- Bundle archives are persisted to `var/evidence/<snapshot_id>.zip` for deterministic export workflows.

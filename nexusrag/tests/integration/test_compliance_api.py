@@ -118,7 +118,7 @@ async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> Non
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        created = await client.post("/v1/admin/compliance/snapshot", headers=headers)
+        created = await client.post("/v1/admin/compliance/snapshots", headers=headers)
         assert created.status_code == 200
         snapshot_id = created.json()["data"]["id"]
 
@@ -126,7 +126,7 @@ async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> Non
         assert listed.status_code == 200
         assert any(row["id"] == snapshot_id for row in listed.json()["data"])
 
-        bundle = await client.get(f"/v1/admin/compliance/bundle/{snapshot_id}.zip", headers=headers)
+        bundle = await client.get(f"/v1/admin/compliance/snapshots/{snapshot_id}/download", headers=headers)
         assert bundle.status_code == 200
         assert bundle.headers["content-type"] == "application/zip"
 
@@ -135,6 +135,8 @@ async def test_compliance_snapshot_and_bundle_redacts_config(monkeypatch) -> Non
     assert "snapshot.json" in names
     assert "controls.json" in names
     assert "config_sanitized.json" in names
+    assert "perf_report_summary.md" in names
+    assert "ops_metrics_24h_summary.json" in names
     config_payload = json.loads(archive.read("config_sanitized.json").decode("utf-8"))
     assert config_payload["openai_api_key"] == "[REDACTED]"
 

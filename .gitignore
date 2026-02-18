@@ -23,6 +23,7 @@ var/audio/
 # Local document storage artifacts
 var/documents/
 var/ops/
+var/evidence/
 governance_artifacts/
 tests/perf/reports/*
 !tests/perf/reports/.gitkeep

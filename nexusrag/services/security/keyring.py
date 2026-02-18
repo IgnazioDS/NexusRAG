@@ -15,8 +15,14 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PlatformKey
 
 
-_ALLOWED_PURPOSES = {"signing", "encryption"}
-_ALLOWED_STATUSES = {"active", "retired", "revoked"}
+_ALLOWED_PURPOSES = {
+    "signing",
+    "encryption",
+    "backup_signing",
+    "backup_encryption",
+    "webhook_signing",
+}
+_ALLOWED_STATUSES = {"active", "retiring", "retired", "revoked"}
 
 
 @dataclass(frozen=True)
@@ -25,6 +31,7 @@ class PlatformKeyView:
     purpose: str
     status: str
     created_at: datetime
+    activated_at: datetime | None
     retired_at: datetime | None
 
 
@@ -47,7 +54,14 @@ def _encrypt_secret(secret: str) -> str:
 
 
 def _new_key_id(purpose: str) -> str:
-    prefix = "sig" if purpose == "signing" else "enc"
+    prefix_map = {
+        "signing": "sig",
+        "encryption": "enc",
+        "backup_signing": "bksig",
+        "backup_encryption": "bkenc",
+        "webhook_signing": "whsig",
+    }
+    prefix = prefix_map.get(purpose, "key")
     return f"{prefix}_{uuid4().hex}"
 
 
@@ -57,6 +71,7 @@ def _to_view(row: PlatformKey) -> PlatformKeyView:
         purpose=row.purpose,
         status=row.status,
         created_at=row.created_at,
+        activated_at=row.activated_at,
         retired_at=row.retired_at,
     )
 
@@ -108,7 +123,8 @@ async def rotate_platform_key(
         )
     ).scalar_one_or_none()
     if existing_active is not None:
-        existing_active.status = "retired"
+        # Use retiring as an intermediate lifecycle marker for explicit retirement workflows.
+        existing_active.status = "retiring"
         existing_active.retired_at = _utc_now()
 
     raw_secret = secrets.token_urlsafe(48)
@@ -117,6 +133,7 @@ async def rotate_platform_key(
         purpose=resolved_purpose,
         status="active",
         secret_ciphertext=_encrypt_secret(raw_secret),
+        activated_at=_utc_now(),
     )
     session.add(new_key)
     await session.commit()
@@ -133,7 +150,7 @@ async def retire_platform_key(
     row = await session.get(PlatformKey, key_id)
     if row is None:
         return None
-    if row.status == "active":
+    if row.status in {"active", "retiring"}:
         row.status = "retired"
         row.retired_at = _utc_now()
         await session.commit()

@@ -25,6 +25,8 @@ from nexusrag.domain.models import (
     BackupJob,
     IdempotencyRecord,
     LegalHold,
+    NotificationAttempt,
+    NotificationJob,
     RetentionRun,
     UiAction,
     UsageCounter,
@@ -77,6 +79,27 @@ async def prune_usage_counters(session: AsyncSession) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.usage_counter_retention_days)
     result = await session.execute(delete(UsageCounter).where(UsageCounter.period_start < cutoff))
     return result.rowcount or 0
+
+
+async def prune_notification_history(session: AsyncSession) -> int:
+    # Delete only terminal notification rows after retention to preserve active delivery state.
+    settings = get_settings()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.ui_action_retention_days)
+    terminal_statuses = ("succeeded", "gave_up", "failed")
+    job_ids = (
+        await session.execute(
+            select(NotificationJob.id).where(
+                NotificationJob.status.in_(terminal_statuses),
+                NotificationJob.updated_at < cutoff,
+            )
+        )
+    ).scalars().all()
+    if not job_ids:
+        return 0
+    # Remove immutable attempts first to satisfy FK constraints without requiring ON DELETE CASCADE.
+    attempts_deleted = await session.execute(delete(NotificationAttempt).where(NotificationAttempt.job_id.in_(job_ids)))
+    jobs_deleted = await session.execute(delete(NotificationJob).where(NotificationJob.id.in_(job_ids)))
+    return int(attempts_deleted.rowcount or 0) + int(jobs_deleted.rowcount or 0)
 
 
 async def backup_create_scheduled(session: AsyncSession) -> int:
@@ -165,9 +188,11 @@ async def prune_retention_all(
     request_id: str | None,
 ) -> dict[str, int]:
     # Run all retention-oriented tasks in one transaction to produce a single auditable result.
+    idempotency_deleted = await prune_idempotency(session)
     audit_deleted = await prune_audit_events(session)
     usage_deleted = await prune_usage_counters(session)
     actions_deleted = await cleanup_ui_actions(session)
+    notifications_deleted = await prune_notification_history(session)
     governance_run = await run_retention_for_tenant(
         session=session,
         tenant_id=tenant_id,
@@ -176,9 +201,11 @@ async def prune_retention_all(
         request_id=request_id,
     )
     return {
+        "prune_idempotency": idempotency_deleted,
         "prune_audit": audit_deleted,
         "prune_usage": usage_deleted,
         "cleanup_actions": actions_deleted,
+        "cleanup_notifications": notifications_deleted,
         "governance_items": int((governance_run.report_json or {}).get("summary", {}).get("counts", {}).get("deleted", 0)),
     }
 

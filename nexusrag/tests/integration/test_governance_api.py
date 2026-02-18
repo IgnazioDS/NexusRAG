@@ -271,3 +271,25 @@ async def test_backup_prune_respects_backup_set_hold(monkeypatch, tmp_path) -> N
     assert manifest_dir.exists()
 
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_retention_proof_endpoints() -> None:
+    tenant_id = f"t-gov-ret-proof-{uuid4().hex}"
+    _raw_key, headers, _user_id, _key_id = await create_test_api_key(tenant_id=tenant_id, role="admin")
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        run_resp = await client.post("/v1/admin/governance/retention/run?task=prune_all", headers=headers)
+        assert run_resp.status_code == 200
+        run_data = run_resp.json()["data"]
+        assert run_data["task"] == "prune_all"
+        assert "items_pruned_by_table" in run_data
+        assert "prune_idempotency" in run_data["items_pruned_by_table"]
+        assert "cleanup_notifications" in run_data["items_pruned_by_table"]
+
+        status_resp = await client.get("/v1/admin/governance/retention/status", headers=headers)
+        assert status_resp.status_code == 200
+        status_data = status_resp.json()["data"]
+        assert status_data["tenant_id"] == tenant_id
+        assert "configured_retention_days" in status_data

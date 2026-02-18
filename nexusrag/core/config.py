@@ -306,7 +306,7 @@ class Settings(BaseSettings):
     # Require signatures for evidence bundles by default.
     compliance_signature_required: bool = True
     # Local filesystem directory for evidence bundle artifacts.
-    compliance_evidence_dir: str = "./evidence"
+    compliance_evidence_dir: str = "var/evidence"
     # Master key used to encrypt platform keyring material at rest.
     keyring_master_key: str | None = None
     # Enable envelope encryption for sensitive artifacts at rest.

@@ -1063,6 +1063,8 @@ class PlatformKey(Base):
     # Store encrypted key material to avoid plaintext secrets at rest.
     secret_ciphertext: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Track activation separately from creation to support staged key promotions.
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

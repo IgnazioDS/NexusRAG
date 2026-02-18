@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
-from nexusrag.domain.models import DsarRequest, EncryptedBlob, GovernanceRetentionRun, LegalHold, PolicyRule
+from nexusrag.core.config import get_settings
+from nexusrag.domain.models import DsarRequest, EncryptedBlob, GovernanceRetentionRun, LegalHold, PolicyRule, RetentionRun
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.crypto import decrypt_blob
 from nexusrag.services.governance import (
@@ -29,6 +30,7 @@ from nexusrag.services.governance import (
     run_retention_for_tenant,
     submit_dsar_request,
 )
+from nexusrag.services.maintenance import prune_retention_all, record_retention_run
 
 
 router = APIRouter(prefix="/admin/governance", tags=["governance"], responses=DEFAULT_ERROR_RESPONSES)
@@ -202,6 +204,17 @@ def _dsar_response(row: DsarRequest) -> DsarResponse:
     )
 
 
+class RetentionProofResponse(BaseModel):
+    # Surface retention proof details for regulated buyer evidence requests.
+    tenant_id: str
+    task: str
+    last_run_at: str
+    outcome: str
+    items_pruned_by_table: dict[str, int]
+    configured_retention_days: dict[str, int | None]
+    next_scheduled_run: str
+
+
 @router.get(
     "/retention/policy",
     response_model=SuccessEnvelope[RetentionPolicyResponse] | RetentionPolicyResponse,
@@ -249,17 +262,52 @@ async def patch_retention_policy(
 
 @router.post(
     "/retention/run",
-    response_model=SuccessEnvelope[RetentionRunResponse] | RetentionRunResponse,
+    response_model=SuccessEnvelope[RetentionRunResponse | RetentionProofResponse] | RetentionRunResponse | RetentionProofResponse,
 )
 async def run_retention(
     request: Request,
     tenant_id: str | None = Query(default=None),
+    task: str | None = Query(default=None),
     principal: Principal = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
-) -> RetentionRunResponse:
+) -> RetentionRunResponse | RetentionProofResponse:
     # Allow tenant admins to trigger bounded retention runs on demand.
     effective_tenant = tenant_id or principal.tenant_id
     _ensure_same_tenant(principal, effective_tenant)
+    if task == "prune_all":
+        # Use the unified maintenance path when operators request broad retention proof generation.
+        counters = await prune_retention_all(
+            db,
+            tenant_id=effective_tenant,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+        )
+        await record_retention_run(
+            session=db,
+            tenant_id=effective_tenant,
+            task="prune_retention_all",
+            outcome="success",
+            details_json={"counters": counters, "deleted_rows": sum(int(value) for value in counters.values())},
+        )
+        await db.commit()
+        policy = await get_or_create_retention_policy(db, effective_tenant)
+        payload = RetentionProofResponse(
+            tenant_id=effective_tenant,
+            task="prune_all",
+            last_run_at=datetime.now(timezone.utc).isoformat(),
+            outcome="success",
+            items_pruned_by_table={key: int(value) for key, value in counters.items()},
+            configured_retention_days={
+                "audit": get_settings().audit_retention_days,
+                "usage": get_settings().usage_counter_retention_days,
+                "ui_actions": get_settings().ui_action_retention_days,
+                "documents": policy.documents_ttl_days,
+                "backups": policy.backups_ttl_days,
+            },
+            next_scheduled_run="manual",
+        )
+        return success_response(request=request, data=payload)
     request_ctx = get_request_context(request)
     run = await run_retention_for_tenant(
         session=db,
@@ -269,6 +317,44 @@ async def run_retention(
         request_id=request_ctx["request_id"],
     )
     return success_response(request=request, data=_retention_response(run))
+
+
+@router.get(
+    "/retention/status",
+    response_model=SuccessEnvelope[RetentionProofResponse] | RetentionProofResponse,
+)
+async def get_retention_status(
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> RetentionProofResponse:
+    # Provide a tenant-scoped retention proof payload for compliance evidence bundles.
+    policy = await get_or_create_retention_policy(db, principal.tenant_id)
+    run = (
+        await db.execute(
+            select(RetentionRun)
+            .where(RetentionRun.tenant_id == principal.tenant_id, RetentionRun.task == "prune_retention_all")
+            .order_by(RetentionRun.last_run_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    counters = run.details_json.get("counters", {}) if run and run.details_json else {}
+    payload = RetentionProofResponse(
+        tenant_id=principal.tenant_id,
+        task="prune_all",
+        last_run_at=run.last_run_at.isoformat() if run and run.last_run_at else "",
+        outcome=run.outcome if run else "unknown",
+        items_pruned_by_table={str(key): int(value) for key, value in counters.items()},
+        configured_retention_days={
+            "audit": get_settings().audit_retention_days,
+            "usage": get_settings().usage_counter_retention_days,
+            "ui_actions": get_settings().ui_action_retention_days,
+            "documents": policy.documents_ttl_days,
+            "backups": policy.backups_ttl_days,
+        },
+        next_scheduled_run="manual",
+    )
+    return success_response(request=request, data=payload)
 
 
 @router.get(

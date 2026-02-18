@@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
 from nexusrag.apps.api.routes.audio import router as audio_router
 from nexusrag.apps.api.routes.admin import router as admin_router
 from nexusrag.apps.api.routes.audit import router as audit_router
+from nexusrag.apps.api.routes.api_keys_admin import router as api_keys_admin_router
 from nexusrag.apps.api.routes.authz_admin import router as authz_admin_router
 from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.documents import router as documents_router
@@ -30,6 +31,7 @@ from nexusrag.apps.api.routes.governance_admin import router as governance_admin
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
 from nexusrag.apps.api.routes.health import router as health_router
 from nexusrag.apps.api.routes.identity_admin import router as identity_admin_router
+from nexusrag.apps.api.routes.keyring_admin import router as keyring_admin_router
 from nexusrag.apps.api.routes.keys_admin import router as keys_admin_router
 from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.operability_admin import router as operability_admin_router
@@ -156,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(audio_router, prefix=f"/{API_VERSION}")
     # Expose admin endpoints for tenant quota management.
     app.include_router(admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(api_keys_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(crypto_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(compliance_router, prefix=f"/{API_VERSION}")
@@ -164,6 +167,7 @@ def create_app() -> FastAPI:
     app.include_router(costs_self_serve_router, prefix=f"/{API_VERSION}")
     app.include_router(governance_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(identity_admin_router, prefix=f"/{API_VERSION}")
+    app.include_router(keyring_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(keys_admin_router, prefix=f"/{API_VERSION}")
     app.include_router(operability_admin_router, prefix=f"/{API_VERSION}")
     # Expose ABAC policy and document ACL management for admins.
@@ -189,6 +193,7 @@ def create_app() -> FastAPI:
     # Retain unversioned legacy routes as deprecated compatibility aliases.
     app.include_router(audio_router, include_in_schema=False)
     app.include_router(admin_router, include_in_schema=False)
+    app.include_router(api_keys_admin_router, include_in_schema=False)
     app.include_router(crypto_admin_router, include_in_schema=False)
     app.include_router(compliance_admin_router, include_in_schema=False)
     app.include_router(compliance_router, include_in_schema=False)
@@ -197,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(costs_self_serve_router, include_in_schema=False)
     app.include_router(governance_admin_router, include_in_schema=False)
     app.include_router(identity_admin_router, include_in_schema=False)
+    app.include_router(keyring_admin_router, include_in_schema=False)
     app.include_router(keys_admin_router, include_in_schema=False)
     app.include_router(operability_admin_router, include_in_schema=False)
     # Retain authz admin routes for legacy compatibility aliases.
