@@ -38,6 +38,7 @@ from nexusrag.services.failover import (
     set_write_freeze,
 )
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
+from nexusrag.services.operability import trigger_runtime_alert
 from nexusrag.services.resilience import get_circuit_breaker_state
 from nexusrag.services.telemetry import (
     availability,
@@ -252,6 +253,20 @@ async def ops_health(
     heartbeat_stale = heartbeat_age_s is None or heartbeat_age_s > stale_threshold
 
     status = "ok" if db_ok and redis_ok and not heartbeat_stale else "degraded"
+    if heartbeat_stale:
+        # Emit a runtime alert when worker heartbeat is stale so incident automation can dedupe/escalate.
+        await trigger_runtime_alert(
+            session=db,
+            tenant_id=principal.tenant_id,
+            source="worker.heartbeat.age_s",
+            severity="high",
+            title="Worker heartbeat stale",
+            summary="Ingestion worker heartbeat is missing or stale",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+            details_json={"worker_heartbeat_age_s": heartbeat_age_s, "stale_after_s": stale_threshold},
+        )
 
     payload = {
         "status": status,
@@ -528,6 +543,21 @@ async def ops_metrics(
         "tts.openai": await get_circuit_breaker_state("tts.openai"),
         "billing.webhook": await get_circuit_breaker_state("billing.webhook"),
     }
+    open_breakers = [name for name, breaker_state in payload["circuit_breaker_state"].items() if breaker_state == "open"]
+    if open_breakers:
+        # Trigger alert automation for sustained breaker-open conditions observed by operators.
+        await trigger_runtime_alert(
+            session=db,
+            tenant_id=principal.tenant_id,
+            source="breaker.open.count",
+            severity="high",
+            title="Circuit breaker open",
+            summary="One or more integration circuit breakers are open",
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+            details_json={"open_breakers": open_breakers, "open_count": len(open_breakers)},
+        )
     request_ctx = get_request_context(request)
     # Record ops views for administrative investigations.
     await record_event(
