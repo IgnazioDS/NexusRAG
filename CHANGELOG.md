@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.8.0 - 2026-02-18
+
+- Added alert rules registry and deterministic alert evaluation APIs (`/v1/admin/alerts/*`).
+- Added incident automation lifecycle APIs with timeline support (`/v1/admin/incidents/*`).
+- Added operator action endpoints with idempotency and persisted action records (`/v1/admin/ops/actions/*`).
+- Added deploy preflight and GA checklist automation (`make preflight`, `make ga-checklist`).
+
 ## 2.7.0 - 2026-02-18
 
 - Added compliance control catalog snapshots and in-memory evidence bundle exports with redacted config payloads.
