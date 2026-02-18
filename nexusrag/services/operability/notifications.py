@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -26,6 +25,10 @@ from nexusrag.domain.models import (
 from nexusrag.services.audit import record_event, sanitize_metadata
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, get_effective_entitlements
 from nexusrag.services.notifications.routing import resolve_destinations
+from nexusrag.services.notifications.receiver_contract import (
+    compute_hmac_sha256_hex,
+    compute_payload_sha256_hex,
+)
 from nexusrag.services.rollouts import resolve_kill_switch
 from nexusrag.services.security.keyring import decrypt_keyring_secret, encrypt_keyring_secret
 
@@ -80,12 +83,12 @@ def _serialize_payload(payload_json: dict[str, Any]) -> bytes:
 
 def _payload_sha256(payload_bytes: bytes) -> str:
     # Persist attempt-level hashes so operators can prove exactly which bytes were sent to receivers.
-    return hashlib.sha256(payload_bytes).hexdigest()
+    return compute_payload_sha256_hex(payload_bytes)
 
 
 def _sign_payload(*, secret: str, payload_bytes: bytes) -> str:
     # Sign payload bytes with HMAC-SHA256 for receiver-side authenticity checks.
-    digest = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+    digest = compute_hmac_sha256_hex(secret, payload_bytes)
     return f"sha256={digest}"
 
 
