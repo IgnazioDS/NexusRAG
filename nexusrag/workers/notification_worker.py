@@ -9,16 +9,16 @@ from nexusrag.core.config import get_settings
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.operability.notifications import (
     enqueue_due_notification_jobs,
-    process_notification_job,
+    process_notification_delivery,
 )
 
 logger = logging.getLogger(__name__)
 
 
-async def deliver_notification_job(ctx, job_id: str) -> str:
-    # Consume queued notification job ids and process one durable DB-backed delivery attempt.
+async def deliver_notification_delivery(ctx, delivery_id: str) -> str:
+    # Consume queued delivery ids and process one destination-scoped delivery attempt.
     async with SessionLocal() as session:
-        row = await process_notification_job(session=session, job_id=job_id)
+        row = await process_notification_delivery(session=session, delivery_id=delivery_id)
     return "processed" if row is not None else "skipped"
 
 
@@ -54,6 +54,6 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     queue_name = settings.notify_queue_name
     max_tries = max(1, int(settings.notify_max_attempts))
-    functions = [deliver_notification_job]
+    functions = [deliver_notification_delivery]
     on_startup = _startup
     on_shutdown = _shutdown

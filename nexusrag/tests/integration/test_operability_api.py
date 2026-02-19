@@ -24,6 +24,7 @@ from nexusrag.domain.models import (
     IncidentTimelineEvent,
     NotificationAttempt,
     NotificationDeadLetter,
+    NotificationDelivery,
     NotificationDestination,
     NotificationJob,
     NotificationRoute,
@@ -75,6 +76,7 @@ async def _cleanup_tenant(tenant_id: str) -> None:
                     )
                 )
                 await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
+                await session.execute(delete(NotificationDelivery).where(NotificationDelivery.tenant_id == tenant_id))
                 await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
                 await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
                 await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
@@ -363,11 +365,39 @@ async def test_notification_jobs_retry_and_admin_endpoints(monkeypatch) -> None:
             assert attempts.status_code == 200
             assert attempts.json()["data"]["items"]
 
+            deliveries = await client.get(
+                f"/v1/admin/notifications/jobs/{job_id}/deliveries",
+                headers=headers,
+            )
+            assert deliveries.status_code == 200
+            delivery_items = deliveries.json()["data"]["items"]
+            assert delivery_items
+            delivery_id = delivery_items[0]["id"]
+
+            delivery_detail = await client.get(
+                f"/v1/admin/notifications/deliveries/{delivery_id}",
+                headers=headers,
+            )
+            assert delivery_detail.status_code == 200
+            assert delivery_detail.json()["data"]["id"] == delivery_id
+
+            delivery_attempts = await client.get(
+                f"/v1/admin/notifications/deliveries/{delivery_id}/attempts",
+                headers=headers,
+            )
+            assert delivery_attempts.status_code == 200
+            assert delivery_attempts.json()["data"]["items"]
+
             cross_tenant_attempts = await client.get(
                 f"/v1/admin/notifications/jobs/{job_id}/attempts",
                 headers=other_headers,
             )
             assert cross_tenant_attempts.status_code == 404
+            cross_tenant_delivery = await client.get(
+                f"/v1/admin/notifications/deliveries/{delivery_id}",
+                headers=other_headers,
+            )
+            assert cross_tenant_delivery.status_code == 404
     finally:
         await _cleanup_tenant(tenant_id)
         await _cleanup_tenant(f"{tenant_id}-other")
@@ -869,7 +899,15 @@ async def test_notification_routes_control_destination_order(monkeypatch) -> Non
                     .order_by(NotificationJob.created_at.asc(), NotificationJob.id.asc())
                 )
             ).scalars().all()
-            assert [job.destination for job in jobs] == ["noop://route-specific", "noop://route-wildcard"]
+            assert len(jobs) == 1
+            deliveries = (
+                await session.execute(
+                    select(NotificationDelivery)
+                    .where(NotificationDelivery.tenant_id == tenant_id)
+                    .order_by(NotificationDelivery.created_at.asc(), NotificationDelivery.id.asc())
+                )
+            ).scalars().all()
+            assert [row.destination for row in deliveries] == ["noop://route-specific", "noop://route-wildcard"]
     finally:
         await _cleanup_tenant(tenant_id)
         get_settings.cache_clear()

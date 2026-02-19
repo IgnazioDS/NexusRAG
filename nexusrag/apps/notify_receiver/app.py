@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -64,14 +66,18 @@ class ReceiverWebhookResponse(BaseModel):
 class ReceiptItem(BaseModel):
     id: int
     notification_id: str
+    delivery_id: str | None = None
+    destination_id: str | None = None
     attempt: int
     tenant_id: str
     event_type: str
     received_at: str
     payload_sha256: str
+    header_payload_sha256: str | None = None
     signature_present: int
     signature_valid: int
     response_status: int
+    receipt_token: str | None = None
     failure_reason: str | None = None
     duplicate: int
 
@@ -180,20 +186,36 @@ class ReceiverStore:
                 CREATE TABLE IF NOT EXISTS receiver_receipts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     notification_id TEXT NOT NULL,
+                    delivery_id TEXT,
+                    destination_id TEXT,
                     attempt INTEGER NOT NULL,
                     tenant_id TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     received_at TEXT NOT NULL,
                     payload_sha256 TEXT NOT NULL,
+                    header_payload_sha256 TEXT,
                     raw_body TEXT,
                     signature_present INTEGER NOT NULL,
                     signature_valid INTEGER NOT NULL,
                     response_status INTEGER NOT NULL,
+                    receipt_token TEXT,
                     failure_reason TEXT,
                     duplicate INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            # Keep schema additive for existing local sqlite stores across receiver upgrades.
+            for ddl in (
+                "ALTER TABLE receiver_receipts ADD COLUMN delivery_id TEXT",
+                "ALTER TABLE receiver_receipts ADD COLUMN destination_id TEXT",
+                "ALTER TABLE receiver_receipts ADD COLUMN header_payload_sha256 TEXT",
+                "ALTER TABLE receiver_receipts ADD COLUMN receipt_token TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    # Column already exists on upgraded stores; continue to keep startup idempotent.
+                    pass
             # Persist parse-level rejections that may not have a valid notification id for postmortem analysis.
             conn.execute(
                 """
@@ -250,6 +272,7 @@ class ReceiverStore:
         signature_present: bool,
         signature_valid: bool,
         response_status: int,
+        receipt_token: str | None,
         failure_reason: str | None,
         duplicate: bool,
     ) -> None:
@@ -258,30 +281,38 @@ class ReceiverStore:
                 """
                 INSERT INTO receiver_receipts(
                     notification_id,
+                    delivery_id,
+                    destination_id,
                     attempt,
                     tenant_id,
                     event_type,
                     received_at,
                     payload_sha256,
+                    header_payload_sha256,
                     raw_body,
                     signature_present,
                     signature_valid,
                     response_status,
+                    receipt_token,
                     failure_reason,
                     duplicate
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     headers.notification_id,
+                    headers.delivery_id,
+                    headers.destination_id,
                     headers.attempt,
                     headers.tenant_id,
                     headers.event_type,
                     _utc_now_iso(),
                     payload_digest,
+                    headers.payload_sha256,
                     raw_body,
                     int(signature_present),
                     int(signature_valid),
                     response_status,
+                    receipt_token,
                     failure_reason,
                     int(duplicate),
                 ),
@@ -320,14 +351,18 @@ class ReceiverStore:
                 SELECT
                     id,
                     notification_id,
+                    delivery_id,
+                    destination_id,
                     attempt,
                     tenant_id,
                     event_type,
                     received_at,
                     payload_sha256,
+                    header_payload_sha256,
                     signature_present,
                     signature_valid,
                     response_status,
+                    receipt_token,
                     failure_reason,
                     duplicate
                 FROM receiver_receipts
@@ -403,6 +438,22 @@ def _status_for_reason(reason: str) -> int:
     if reason in {"secret_missing"}:
         return 500
     return 400
+
+
+def _build_receipt_token(
+    *,
+    notification_id: str,
+    delivery_id: str | None,
+    payload_sha256_hex: str,
+    shared_secret: str | None,
+) -> str:
+    # Emit deterministic receipt tokens so sender-side receipt persistence can prove receiver acceptance.
+    material = f"{notification_id}:{delivery_id or 'none'}:{payload_sha256_hex}".encode("utf-8")
+    if shared_secret:
+        digest = hmac.new(shared_secret.encode("utf-8"), material, hashlib.sha256).hexdigest()
+    else:
+        digest = hashlib.sha256(material).hexdigest()
+    return digest
 
 
 def _extract_maybe_header(request: Request, header_name: str) -> str | None:
@@ -489,6 +540,7 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
                 signature_present=parsed_headers.signature is not None,
                 signature_valid=False,
                 response_status=400,
+                receipt_token=None,
                 failure_reason=reason,
                 duplicate=False,
             )
@@ -519,6 +571,7 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
                     signature_present=parsed_headers.signature is not None,
                     signature_valid=False,
                     response_status=status_code,
+                    receipt_token=None,
                     failure_reason=verification.reason,
                     duplicate=False,
                 )
@@ -539,6 +592,7 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
                 signature_present=parsed_headers.signature is not None,
                 signature_valid=bool(verification.ok if verification else False),
                 response_status=500,
+                receipt_token=None,
                 failure_reason="forced_failure",
                 duplicate=False,
             )
@@ -559,6 +613,7 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
                     signature_present=parsed_headers.signature is not None,
                     signature_valid=bool(verification.ok if verification else False),
                     response_status=500,
+                    receipt_token=None,
                     failure_reason="forced_failure",
                     duplicate=False,
                 )
@@ -570,7 +625,18 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
                 )
                 return JSONResponse(status_code=500, content=ReceiverError(reason="forced_failure").model_dump())
 
-        is_first_seen = store.mark_seen(parsed_headers.notification_id)
+        dedupe_key = (
+            f"{parsed_headers.notification_id}:{parsed_headers.delivery_id}"
+            if parsed_headers.delivery_id
+            else parsed_headers.notification_id
+        )
+        receipt_token = _build_receipt_token(
+            notification_id=parsed_headers.notification_id,
+            delivery_id=parsed_headers.delivery_id,
+            payload_sha256_hex=payload_digest,
+            shared_secret=resolved.shared_secret,
+        )
+        is_first_seen = store.mark_seen(dedupe_key)
         if not is_first_seen:
             # Preserve idempotent semantics for redeliveries with the same notification id.
             store.record_receipt(
@@ -580,6 +646,7 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
                 signature_present=parsed_headers.signature is not None,
                 signature_valid=bool(verification.ok if verification else False),
                 response_status=200,
+                receipt_token=receipt_token,
                 failure_reason=None,
                 duplicate=True,
             )
@@ -590,6 +657,10 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
             )
             return JSONResponse(
                 status_code=200,
+                headers={
+                    "X-Notification-Id": parsed_headers.notification_id,
+                    "X-Notification-Receipt": receipt_token,
+                },
                 content=ReceiverWebhookResponse(
                     accepted=True,
                     duplicate=True,
@@ -605,6 +676,7 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
             signature_present=parsed_headers.signature is not None,
             signature_valid=bool(verification.ok if verification else False),
             response_status=200,
+            receipt_token=receipt_token,
             failure_reason=None,
             duplicate=False,
         )
@@ -616,6 +688,10 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
         )
         return JSONResponse(
             status_code=200,
+            headers={
+                "X-Notification-Id": parsed_headers.notification_id,
+                "X-Notification-Receipt": receipt_token,
+            },
             content=ReceiverWebhookResponse(
                 accepted=True,
                 duplicate=False,
@@ -625,4 +701,3 @@ def create_app(settings: ReceiverSettings | None = None) -> FastAPI:
         )
 
     return app
-

@@ -200,6 +200,14 @@ class Settings(BaseSettings):
     notify_worker_poll_interval_s: int = 2
     # Batch size for due notification job requeue scans.
     notify_requeue_batch_size: int = 100
+    # Treat receiver 4xx failures (except 408/429) as terminal delivery errors when enabled.
+    notify_terminal_4xx: bool = True
+    # Treat signature-related receiver rejections as terminal delivery errors when enabled.
+    notify_terminal_invalid_signature: bool = True
+    # Treat sender/receiver signature misconfiguration failures as terminal when enabled.
+    notify_terminal_misconfig: bool = True
+    # Guardrail for maximum fanout rows created per logical notification job.
+    notify_delivery_fanout_max: int = 20
     # Default TTL for forced operator control flags to avoid stale cross-region state.
     ops_forced_flag_ttl_s: int = 900
     # Lease TTL for forced-control writers so only one region writer process updates flags at a time.

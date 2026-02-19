@@ -623,6 +623,39 @@ class NotificationDestination(Base):
     )
 
 
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        # Keep queue scans fast by tenant/status/next_attempt for worker claim loops.
+        Index("ix_notification_deliveries_tenant_status_next", "tenant_id", "status", "next_attempt_at"),
+        # Preserve lookup speed for per-job fanout inspection in admin APIs.
+        Index("ix_notification_deliveries_job_created", "job_id", text("created_at DESC")),
+        # Ensure a job has at most one active delivery row per destination snapshot.
+        UniqueConstraint("job_id", "destination_id", name="uq_notification_deliveries_job_destination"),
+    )
+
+    # Track destination-specific delivery state so fanout retries are isolated and effectively-once per endpoint.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("notification_jobs.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    # Destination id comes from routing resolution; keep as string snapshot so deleted destination rows do not break history.
+    destination_id: Mapped[str] = mapped_column(String, index=True)
+    destination: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Persist receipt metadata (status/headers/body summary) for effectively-once proofs and replay triage.
+    receipt_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # Keep per-destination idempotency keys explicit for receiver and forensic interoperability.
+    delivery_key: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class NotificationRoute(Base):
     __tablename__ = "notification_routes"
     __table_args__ = (
@@ -650,12 +683,15 @@ class NotificationAttempt(Base):
     __tablename__ = "notification_attempts"
     __table_args__ = (
         Index("ix_notification_attempts_job_started", "job_id", text("started_at DESC")),
+        Index("ix_notification_attempts_delivery_started", "delivery_id", text("started_at DESC")),
         UniqueConstraint("job_id", "attempt_no", name="uq_notification_attempts_job_attempt"),
     )
 
     # Keep immutable attempt rows for delivery forensics and retry tuning.
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(String, ForeignKey("notification_jobs.id"), index=True)
+    # Persist destination delivery ownership for per-endpoint retry and observability APIs.
+    delivery_id: Mapped[str | None] = mapped_column(String, ForeignKey("notification_deliveries.id"), index=True, nullable=True)
     attempt_no: Mapped[int] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -669,12 +705,16 @@ class NotificationDeadLetter(Base):
     __tablename__ = "notification_dead_letters"
     __table_args__ = (
         Index("ix_notification_dead_letters_tenant_created", "tenant_id", text("created_at DESC")),
+        Index("ix_notification_dead_letters_delivery_id", "delivery_id"),
+        UniqueConstraint("delivery_id", name="uq_notification_dead_letters_delivery"),
     )
 
     # Persist terminal notification failures for deterministic replay and post-incident forensics.
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String, index=True)
-    job_id: Mapped[str] = mapped_column(String, ForeignKey("notification_jobs.id"), unique=True, index=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("notification_jobs.id"), index=True)
+    # Track which destination delivery failed terminally so replay can target one endpoint without cloning whole fanout.
+    delivery_id: Mapped[str | None] = mapped_column(String, ForeignKey("notification_deliveries.id"), nullable=True)
     reason: Mapped[str] = mapped_column(String)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Keep payload redacted and reproducible so replay paths never require original raw secrets.

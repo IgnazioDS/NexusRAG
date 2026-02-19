@@ -15,6 +15,7 @@ from nexusrag.domain.models import (
     IncidentTimelineEvent,
     NotificationAttempt,
     NotificationDeadLetter,
+    NotificationDelivery,
     NotificationDestination,
     NotificationJob,
     NotificationRoute,
@@ -80,6 +81,7 @@ async def _cleanup_tenant(tenant_id: str) -> None:
             )
         )
         await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
+        await session.execute(delete(NotificationDelivery).where(NotificationDelivery.tenant_id == tenant_id))
         await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
         await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
         await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
@@ -372,6 +374,22 @@ async def test_notification_job_cas_prevents_reprocessing(monkeypatch) -> None:
                     last_error=None,
                 )
             )
+            session.add(
+                NotificationDelivery(
+                    id=uuid4().hex,
+                    job_id=job_id,
+                    tenant_id=tenant_id,
+                    destination_id="test-cas",
+                    destination="noop://cas",
+                    status="queued",
+                    attempt_count=0,
+                    next_attempt_at=fixed_now,
+                    last_error=None,
+                    delivered_at=None,
+                    receipt_json=None,
+                    delivery_key=f"delivery:{job_id[:12]}",
+                )
+            )
             await session.commit()
 
         async with SessionLocal() as session:
@@ -421,6 +439,22 @@ async def test_notification_job_claim_is_single_owner_under_concurrency(monkeypa
                     last_error=None,
                 )
             )
+            session.add(
+                NotificationDelivery(
+                    id=uuid4().hex,
+                    job_id=job_id,
+                    tenant_id=tenant_id,
+                    destination_id="test-concurrency",
+                    destination="noop://concurrency",
+                    status="queued",
+                    attempt_count=0,
+                    next_attempt_at=fixed_now,
+                    last_error=None,
+                    delivered_at=None,
+                    receipt_json=None,
+                    delivery_key=f"delivery:{job_id[:12]}",
+                )
+            )
             await session.commit()
 
         async def _run_once() -> str | None:
@@ -468,6 +502,25 @@ async def test_notification_job_max_age_transitions_to_dlq(monkeypatch) -> None:
                     last_error=None,
                     created_at=datetime(2026, 2, 18, 11, 0, 0, tzinfo=timezone.utc),
                     updated_at=datetime(2026, 2, 18, 11, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            job_id = (
+                await session.execute(select(NotificationJob.id).where(NotificationJob.tenant_id == tenant_id).limit(1))
+            ).scalar_one()
+            session.add(
+                NotificationDelivery(
+                    id=uuid4().hex,
+                    job_id=job_id,
+                    tenant_id=tenant_id,
+                    destination_id="test-expired",
+                    destination="noop://expired",
+                    status="queued",
+                    attempt_count=0,
+                    next_attempt_at=fixed_now,
+                    last_error=None,
+                    delivered_at=None,
+                    receipt_json=None,
+                    delivery_key=f"delivery:{job_id[:12]}",
                 )
             )
             await session.commit()

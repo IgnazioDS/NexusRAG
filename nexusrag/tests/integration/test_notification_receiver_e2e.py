@@ -19,6 +19,7 @@ from nexusrag.domain.models import (
     IncidentTimelineEvent,
     NotificationAttempt,
     NotificationDeadLetter,
+    NotificationDelivery,
     NotificationDestination,
     NotificationJob,
     NotificationRoute,
@@ -52,6 +53,7 @@ async def _cleanup_tenant(tenant_id: str) -> None:
             )
         )
         await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
+        await session.execute(delete(NotificationDelivery).where(NotificationDelivery.tenant_id == tenant_id))
         await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
         await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
         await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
@@ -213,10 +215,20 @@ async def test_notify_e2e_delivered_happy_path(tmp_path: Path, monkeypatch) -> N
         job = await _get_latest_job(tenant_id)
         final_job = await _drive_job_to_terminal(job.id)
         assert final_job.status == "delivered"
+        async with SessionLocal() as session:
+            delivery = (
+                await session.execute(
+                    select(NotificationDelivery).where(NotificationDelivery.job_id == final_job.id).limit(1)
+                )
+            ).scalar_one()
+            assert delivery.receipt_json is not None
+            assert delivery.receipt_json.get("headers", {}).get("x-notification-receipt")
+            assert delivery.receipt_json.get("headers", {}).get("x-notification-id") == final_job.id
         receipts = await _list_receiver_receipts(receiver_app)
         assert receipts
         latest = receipts[0]
         assert latest["notification_id"] == final_job.id
+        assert latest["delivery_id"] is not None
         assert latest["tenant_id"] == tenant_id
         assert latest["event_type"] == "incident.opened"
         assert latest["signature_present"] == 1
@@ -275,7 +287,7 @@ async def test_notify_e2e_invalid_signature_rejected(tmp_path: Path, monkeypatch
                     select(NotificationDeadLetter).where(NotificationDeadLetter.job_id == final_job.id)
                 )
             ).scalar_one()
-            assert dead_letter.reason == "receiver_rejected"
+            assert dead_letter.reason == "invalid_signature"
     finally:
         notifications_module._deliver = original_deliver  # type: ignore[assignment]
         await _cleanup_tenant(tenant_id)
@@ -304,7 +316,7 @@ async def test_notify_e2e_signature_present_but_receiver_secret_missing(tmp_path
                     select(NotificationDeadLetter).where(NotificationDeadLetter.job_id == final_job.id)
                 )
             ).scalar_one()
-            assert dead_letter.reason == "max_attempts_exceeded"
+            assert dead_letter.reason == "misconfiguration"
         stats = await _receiver_stats(receiver_app)
         assert stats["signature_misconfig_count"] >= 1
     finally:
@@ -335,7 +347,7 @@ async def test_notify_e2e_missing_signature_rejected_when_required(tmp_path: Pat
                     select(NotificationDeadLetter).where(NotificationDeadLetter.job_id == final_job.id)
                 )
             ).scalar_one()
-            assert dead_letter.reason == "receiver_rejected"
+            assert dead_letter.reason == "invalid_signature"
     finally:
         notifications_module._deliver = original_deliver  # type: ignore[assignment]
         await _cleanup_tenant(tenant_id)
@@ -354,10 +366,11 @@ async def test_notify_e2e_max_age_expired_to_dlq(tmp_path: Path, monkeypatch) ->
     _install_receiver_delivery_adapter(receiver_app)
     try:
         old_created_at = _utc_now() - timedelta(hours=2)
+        job_id = uuid4().hex
         async with SessionLocal() as session:
             session.add(
                 NotificationJob(
-                    id=uuid4().hex,
+                    id=job_id,
                     tenant_id=tenant_id,
                     incident_id=None,
                     alert_event_id=None,
@@ -369,6 +382,24 @@ async def test_notify_e2e_max_age_expired_to_dlq(tmp_path: Path, monkeypatch) ->
                     next_attempt_at=old_created_at,
                     attempt_count=0,
                     last_error=None,
+                    created_at=old_created_at,
+                    updated_at=old_created_at,
+                )
+            )
+            session.add(
+                NotificationDelivery(
+                    id=uuid4().hex,
+                    job_id=job_id,
+                    tenant_id=tenant_id,
+                    destination_id="compose-receiver",
+                    destination="http://notify_receiver:9001/webhook",
+                    status="queued",
+                    attempt_count=0,
+                    next_attempt_at=old_created_at,
+                    last_error=None,
+                    delivered_at=None,
+                    receipt_json=None,
+                    delivery_key=f"delivery:{job_id[:12]}",
                     created_at=old_created_at,
                     updated_at=old_created_at,
                 )

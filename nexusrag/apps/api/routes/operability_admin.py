@@ -33,9 +33,12 @@ from nexusrag.services.operability.notifications import (
     create_notification_destination,
     delete_notification_route,
     delete_notification_destination,
+    get_notification_delivery,
     get_notification_dead_letter,
     get_notification_job,
     list_notification_dead_letters,
+    list_notification_deliveries,
+    list_notification_delivery_attempts,
     list_notification_attempts,
     list_notification_routes,
     list_notification_destinations,
@@ -43,6 +46,8 @@ from nexusrag.services.operability.notifications import (
     patch_notification_route,
     patch_notification_destination,
     replay_dead_letter,
+    replay_notification_delivery,
+    retry_notification_delivery_now,
     retry_notification_job_now,
 )
 from nexusrag.services.audit import record_event
@@ -197,6 +202,7 @@ def _notification_dead_letter_payload(row: Any) -> dict[str, Any]:
         "id": row.id,
         "tenant_id": row.tenant_id,
         "job_id": row.job_id,
+        "delivery_id": getattr(row, "delivery_id", None),
         "reason": row.reason,
         "last_error": row.last_error,
         "payload_json": row.payload_json,
@@ -208,12 +214,32 @@ def _notification_attempt_payload(row: Any) -> dict[str, Any]:
     return {
         "id": row.id,
         "job_id": row.job_id,
+        "delivery_id": getattr(row, "delivery_id", None),
         "attempt_no": row.attempt_no,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "finished_at": row.finished_at.isoformat() if row.finished_at else None,
         "payload_sha256": row.payload_sha256,
         "outcome": row.outcome,
         "error": row.error,
+    }
+
+
+def _notification_delivery_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "tenant_id": row.tenant_id,
+        "destination_id": row.destination_id,
+        "destination": row.destination,
+        "status": row.status,
+        "attempt_count": row.attempt_count,
+        "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else None,
+        "last_error": row.last_error,
+        "delivered_at": row.delivered_at.isoformat() if row.delivered_at else None,
+        "receipt_json": row.receipt_json,
+        "delivery_key": row.delivery_key,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
@@ -463,6 +489,146 @@ async def get_notification_job_attempts(
     if rows is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
     return success_response(request=request, data={"items": [_notification_attempt_payload(row) for row in rows]})
+
+
+@router.get(
+    "/notifications/jobs/{job_id}/deliveries",
+    response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]],
+)
+async def get_notification_job_deliveries(
+    job_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Return per-destination fanout rows for one tenant-owned job.
+    await _enforce_ops_admin(session=db, principal=principal)
+    row = await get_notification_job(session=db, tenant_id=principal.tenant_id, job_id=job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification job not found"})
+    deliveries = await list_notification_deliveries(
+        session=db,
+        tenant_id=principal.tenant_id,
+        job_id=job_id,
+        limit=500,
+    )
+    return success_response(request=request, data={"items": [_notification_delivery_payload(item) for item in deliveries]})
+
+
+@router.get(
+    "/notifications/deliveries",
+    response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]],
+)
+async def get_notification_deliveries(
+    request: Request,
+    status_filter: str | None = Query(default=None, alias="status"),
+    tenant_id: str | None = Query(default=None),
+    job_id: str | None = Query(default=None),
+    destination_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Expose tenant-scoped delivery rows for fanout state triage and replay workflows.
+    await _enforce_ops_admin(session=db, principal=principal)
+    scoped_tenant = _scope_tenant(principal, tenant_id)
+    rows = await list_notification_deliveries(
+        session=db,
+        tenant_id=scoped_tenant,
+        status_filter=status_filter,
+        job_id=job_id,
+        destination_id=destination_id,
+        limit=limit,
+    )
+    return success_response(request=request, data={"items": [_notification_delivery_payload(row) for row in rows]})
+
+
+@router.get("/notifications/deliveries/{delivery_id}", response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any])
+async def get_notification_delivery_by_id(
+    delivery_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Return one destination delivery row while enforcing tenant isolation.
+    await _enforce_ops_admin(session=db, principal=principal)
+    row = await get_notification_delivery(session=db, tenant_id=principal.tenant_id, delivery_id=delivery_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification delivery not found"})
+    return success_response(request=request, data=_notification_delivery_payload(row))
+
+
+@router.get(
+    "/notifications/deliveries/{delivery_id}/attempts",
+    response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]],
+)
+async def get_notification_delivery_attempts_handler(
+    delivery_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    # Expose immutable attempt rows for one delivery so retries can be debugged independently.
+    await _enforce_ops_admin(session=db, principal=principal)
+    rows = await list_notification_delivery_attempts(session=db, tenant_id=principal.tenant_id, delivery_id=delivery_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification delivery not found"})
+    return success_response(request=request, data={"items": [_notification_attempt_payload(row) for row in rows]})
+
+
+@router.post(
+    "/notifications/deliveries/{delivery_id}/retry-now",
+    response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any],
+)
+async def retry_notification_delivery(
+    delivery_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Force immediate retry for one delivery without mutating sibling fanout outcomes.
+    await _enforce_ops_admin(session=db, principal=principal)
+    try:
+        row = await retry_notification_delivery_now(
+            session=db,
+            tenant_id=principal.tenant_id,
+            delivery_id=delivery_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "NOTIFICATION_DELIVERY_STATE_INVALID", "message": str(exc)}) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail={"code": "SERVICE_BUSY", "message": str(exc)}) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification delivery not found"})
+    return success_response(request=request, data=_notification_delivery_payload(row))
+
+
+@router.post(
+    "/notifications/deliveries/{delivery_id}/dlq/replay",
+    response_model=SuccessEnvelope[dict[str, Any]] | dict[str, Any],
+)
+async def replay_notification_delivery_handler(
+    delivery_id: str,
+    request: Request,
+    principal: Principal = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    # Replay one dead-lettered destination delivery as a new delivery row for effectively-once operations.
+    await _enforce_ops_admin(session=db, principal=principal)
+    try:
+        payload = await replay_notification_delivery(
+            session=db,
+            tenant_id=principal.tenant_id,
+            delivery_id=delivery_id,
+            actor_id=principal.api_key_id,
+            actor_role=principal.role,
+            request_id=request.headers.get("X-Request-Id"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "NOTIFICATION_DELIVERY_STATE_INVALID", "message": str(exc)}) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Notification delivery not found"})
+    return success_response(request=request, data=payload)
 
 
 @router.get("/notifications/destinations", response_model=SuccessEnvelope[dict[str, list[dict[str, Any]]]] | dict[str, list[dict[str, Any]]])

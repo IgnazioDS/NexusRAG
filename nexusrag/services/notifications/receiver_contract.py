@@ -11,10 +11,13 @@ from typing import Mapping, Protocol
 
 
 _HEADER_NOTIFICATION_ID = "x-notification-id"
+_HEADER_NOTIFICATION_DELIVERY_ID = "x-notification-delivery-id"
+_HEADER_NOTIFICATION_DESTINATION_ID = "x-notification-destination-id"
 _HEADER_NOTIFICATION_ATTEMPT = "x-notification-attempt"
 _HEADER_NOTIFICATION_EVENT_TYPE = "x-notification-event-type"
 _HEADER_NOTIFICATION_TENANT_ID = "x-notification-tenant-id"
 _HEADER_NOTIFICATION_SIGNATURE = "x-notification-signature"
+_HEADER_NOTIFICATION_PAYLOAD_SHA256 = "x-notification-payload-sha256"
 _HEADER_NOTIFICATION_TIMESTAMP = "x-notification-timestamp"
 
 
@@ -29,10 +32,13 @@ class ParsedSignature:
 class ReceiverHeaders:
     # Capture the normalized transport headers required by the receiver contract.
     notification_id: str
+    delivery_id: str | None
+    destination_id: str | None
     attempt: int
     event_type: str
     tenant_id: str
     signature: str | None
+    payload_sha256: str | None
     timestamp: datetime | None
 
 
@@ -195,10 +201,13 @@ def parse_required_headers(headers: Mapping[str, str] | Mapping[str, object]) ->
             raise ValueError("invalid_timestamp_header") from exc
     return ReceiverHeaders(
         notification_id=normalized[_HEADER_NOTIFICATION_ID],
+        delivery_id=normalized.get(_HEADER_NOTIFICATION_DELIVERY_ID) or None,
+        destination_id=normalized.get(_HEADER_NOTIFICATION_DESTINATION_ID) or None,
         attempt=attempt,
         event_type=normalized[_HEADER_NOTIFICATION_EVENT_TYPE],
         tenant_id=normalized[_HEADER_NOTIFICATION_TENANT_ID],
         signature=normalized.get(_HEADER_NOTIFICATION_SIGNATURE) or None,
+        payload_sha256=normalized.get(_HEADER_NOTIFICATION_PAYLOAD_SHA256) or None,
         timestamp=parsed_timestamp,
     )
 
@@ -291,12 +300,14 @@ def verify_signature_legacy(secret: str, raw_body_bytes: bytes, header_value: st
     # Preserve old helper behavior for compatibility with existing tests/imports during v1 migration.
     headers = ReceiverHeaders(
         notification_id="legacy",
+        delivery_id=None,
+        destination_id=None,
         attempt=1,
         event_type="legacy",
         tenant_id="legacy",
         signature=header_value,
+        payload_sha256=None,
         timestamp=None,
     )
     result = verify_signature(headers, raw_body_bytes, secret)
     return result.ok, result.reason
-
