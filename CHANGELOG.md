@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - None.
 
+## 2.9.4 - 2026-02-18
+
+- Added receiver contract helpers for signature parsing/verification, payload hashing, and dedupe primitives.
+- Added a compose-ready reference webhook receiver (`notify_receiver`) with signature enforcement, deterministic fail modes, dedupe persistence, and receipt inspection endpoints.
+- Added deterministic sender↔receiver E2E notification tests covering happy path, retries, signature rejection, max-age expiration DLQ, and DLQ replay with new notification ids.
+- Added `make notify-e2e` plus receiver contract runbook and README guidance for local validation workflows.
+
 ## 2.9.3 - 2026-02-18
 
 - Added notification delivery contract hardening with deterministic webhook headers, optional HMAC signatures, and attempt-level `payload_sha256` persistence.
