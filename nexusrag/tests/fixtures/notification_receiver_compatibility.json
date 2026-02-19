@@ -1,0 +1,46 @@
+{
+  "profiles": [
+    {
+      "name": "strict_signed",
+      "description": "Receiver requires HMAC signatures and rejects unsigned traffic.",
+      "settings": {
+        "require_signature": true,
+        "shared_secret": "compat-secret",
+        "fail_mode": "never",
+        "fail_n": 0
+      },
+      "request": {
+        "signed": true
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "permissive_unsigned",
+      "description": "Receiver accepts unsigned traffic when signature enforcement is disabled.",
+      "settings": {
+        "require_signature": false,
+        "shared_secret": null,
+        "fail_mode": "never",
+        "fail_n": 0
+      },
+      "request": {
+        "signed": false
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "misconfigured_secret",
+      "description": "Receiver requires signatures but has no secret configured, surfacing operator misconfiguration.",
+      "settings": {
+        "require_signature": true,
+        "shared_secret": null,
+        "fail_mode": "never",
+        "fail_n": 0
+      },
+      "request": {
+        "signed": true
+      },
+      "expected_status": 500
+    }
+  ]
+}

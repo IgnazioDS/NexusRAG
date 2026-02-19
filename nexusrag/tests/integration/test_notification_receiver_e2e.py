@@ -71,6 +71,8 @@ def _receiver_settings(
     tmp_path: Path,
     require_signature: bool = True,
     shared_secret: str | None = "shared-secret",
+    require_timestamp: bool = False,
+    max_timestamp_skew_seconds: int = 300,
     fail_mode: str = "never",
     fail_n: int = 0,
 ) -> ReceiverSettings:
@@ -79,6 +81,8 @@ def _receiver_settings(
     return ReceiverSettings(
         shared_secret=shared_secret,
         require_signature=require_signature,
+        require_timestamp=require_timestamp,
+        max_timestamp_skew_seconds=max_timestamp_skew_seconds,
         fail_mode=fail_mode,
         fail_n=fail_n,
         port=9001,
@@ -168,6 +172,17 @@ async def _list_receiver_receipts(receiver_app, *, limit: int = 50) -> list[dict
         return list(response.json()["items"])
 
 
+async def _receiver_stats(receiver_app) -> dict:
+    # Read receiver stats to validate operational counters used by the contract kit troubleshooting flow.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=receiver_app),
+        base_url="http://notify-receiver.local",
+    ) as client:
+        response = await client.get("/stats")
+        assert response.status_code == 200
+        return dict(response.json())
+
+
 async def _ensure_destination(tenant_id: str, url: str, *, secret: str | None) -> None:
     async with SessionLocal() as session:
         session.add(
@@ -206,6 +221,9 @@ async def test_notify_e2e_delivered_happy_path(tmp_path: Path, monkeypatch) -> N
         assert latest["event_type"] == "incident.opened"
         assert latest["signature_present"] == 1
         assert latest["signature_valid"] == 1
+        stats = await _receiver_stats(receiver_app)
+        assert stats["accepted_count"] >= 1
+        assert stats["invalid_signature_count"] == 0
     finally:
         notifications_module._deliver = original_deliver  # type: ignore[assignment]
         await _cleanup_tenant(tenant_id)
@@ -258,6 +276,37 @@ async def test_notify_e2e_invalid_signature_rejected(tmp_path: Path, monkeypatch
                 )
             ).scalar_one()
             assert dead_letter.reason == "receiver_rejected"
+    finally:
+        notifications_module._deliver = original_deliver  # type: ignore[assignment]
+        await _cleanup_tenant(tenant_id)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notify_e2e_signature_present_but_receiver_secret_missing(tmp_path: Path, monkeypatch) -> None:
+    tenant_id = f"t-notify-e2e-secret-missing-{uuid4().hex}"
+    monkeypatch.setenv("KEYRING_MASTER_KEY", "receiver-e2e-key")
+    get_settings.cache_clear()
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    receiver_app = create_receiver_app(_receiver_settings(tmp_path=tmp_path, shared_secret=None, require_signature=True))
+    original_deliver = notifications_module._deliver
+    _install_receiver_delivery_adapter(receiver_app)
+    try:
+        # Configure sender secret so signed requests hit a receiver misconfigured without a verification secret.
+        await _ensure_destination(tenant_id, "http://notify_receiver:9001/webhook", secret="sender-secret")
+        await _open_incident_for_notification(tenant_id, "req-secret-missing")
+        job = await _get_latest_job(tenant_id)
+        final_job = await _drive_job_to_terminal(job.id)
+        assert final_job.status == "dlq"
+        async with SessionLocal() as session:
+            dead_letter = (
+                await session.execute(
+                    select(NotificationDeadLetter).where(NotificationDeadLetter.job_id == final_job.id)
+                )
+            ).scalar_one()
+            assert dead_letter.reason == "max_attempts_exceeded"
+        stats = await _receiver_stats(receiver_app)
+        assert stats["signature_misconfig_count"] >= 1
     finally:
         notifications_module._deliver = original_deliver  # type: ignore[assignment]
         await _cleanup_tenant(tenant_id)
@@ -427,4 +476,40 @@ async def test_notify_e2e_tenant_scoping_preserved_in_receiver_headers(tmp_path:
         notifications_module._deliver = original_deliver  # type: ignore[assignment]
         await _cleanup_tenant(tenant_a)
         await _cleanup_tenant(tenant_b)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notify_e2e_compose_receiver_delivery_path(monkeypatch) -> None:
+    tenant_id = f"t-notify-e2e-compose-{uuid4().hex}"
+    monkeypatch.setenv("KEYRING_MASTER_KEY", "receiver-e2e-key")
+    get_settings.cache_clear()
+    await create_test_api_key(tenant_id=tenant_id, role="admin", plan_id="enterprise")
+    try:
+        # Skip when compose receiver is not running so non-compose local test runs remain deterministic.
+        try:
+            async with httpx.AsyncClient(base_url="http://notify_receiver:9001", timeout=1.0) as client:
+                health = await client.get("/health")
+                if health.status_code != 200:
+                    pytest.skip("notify_receiver compose service is unavailable")
+        except httpx.HTTPError:
+            pytest.skip("notify_receiver compose service is unavailable")
+        # Exercise the real compose receiver endpoint so sender↔receiver contract is validated end-to-end.
+        await _ensure_destination(tenant_id, "http://notify_receiver:9001/webhook", secret=None)
+        await _open_incident_for_notification(tenant_id, "req-compose-receiver")
+        job = await _get_latest_job(tenant_id)
+        final_job = await _drive_job_to_terminal(job.id, max_cycles=16)
+        assert final_job.status == "delivered"
+        async with httpx.AsyncClient(base_url="http://notify_receiver:9001") as client:
+            received_response = await client.get("/received", params={"limit": 200})
+            assert received_response.status_code == 200
+            items = list(received_response.json()["items"])
+            matching = [item for item in items if item.get("notification_id") == final_job.id]
+            assert matching
+            assert matching[0]["tenant_id"] == tenant_id
+            stats_response = await client.get("/stats")
+            assert stats_response.status_code == 200
+            assert int(stats_response.json()["total_requests"]) >= 1
+    finally:
+        await _cleanup_tenant(tenant_id)
         get_settings.cache_clear()

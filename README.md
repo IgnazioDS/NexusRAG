@@ -1602,20 +1602,66 @@ Notification delivery contract:
 - Retry semantics: exponential backoff + deterministic jitter, capped by `NOTIFY_MAX_ATTEMPTS`.
 - Max age policy: jobs older than `NOTIFY_MAX_AGE_SECONDS` move to DLQ with reason `expired`.
 
-Receiver contract + E2E:
+Receiver Quickstart:
 
-- Use `docs/runbooks/notification-receiver-contract.md` as the receiver implementation baseline.
-- Reference receiver service runs at `http://localhost:9001`.
-- Receiver knobs:
-  - `RECEIVER_SHARED_SECRET`
-  - `RECEIVER_REQUIRE_SIGNATURE`
-  - `RECEIVER_FAIL_MODE=never|always|first_n`
-  - `RECEIVER_FAIL_N`
+- Contract spec: `docs/notification-receiver-contract.md` (v1.0).
+- Operations runbook: `docs/runbooks/notification-receiver-contract.md`.
+- Start receiver:
+
+```bash
+make receiver-up
+curl -s http://localhost:9001/health
+```
+
+- Configure a tenant destination pointing at local receiver:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  http://localhost:8000/v1/admin/notifications/destinations \
+  -d '{
+    "tenant_id":"t1",
+    "url":"http://notify_receiver:9001/webhook",
+    "headers_json":{"X-Receiver-Profile":"strict_signed"},
+    "secret":"receiver-shared-secret"
+  }'
+```
+
+- Trigger a notification through the normal incident path:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  "http://localhost:8000/v1/admin/alerts/evaluate?window=5m"
+```
+
+- Inspect receiver receipts and stats:
+
+```bash
+curl -s "http://localhost:9001/received?limit=50"
+make receiver-stats
+curl -s http://localhost:9001/ops
+```
+
 - Run deterministic sender↔receiver validation:
 
 ```bash
 docker compose exec api make notify-e2e
 ```
+
+Receiver env knobs:
+
+- `RECEIVER_SHARED_SECRET`
+- `RECEIVER_REQUIRE_SIGNATURE`
+- `RECEIVER_REQUIRE_TIMESTAMP`
+- `RECEIVER_MAX_TIMESTAMP_SKEW_SECONDS`
+- `RECEIVER_FAIL_MODE=never|always|first_n`
+- `RECEIVER_FAIL_N`
+- `RECEIVER_STORE_PATH`
+
+Compatibility notes:
+
+- Other language receivers must verify `sha256=<hex>` HMAC over **raw bytes**.
+- Use constant-time compare and dedupe by `X-Notification-Id`.
+- Fixture matrix for expected modes lives in `nexusrag/tests/fixtures/notification_receiver_compatibility.json`.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" -H "Content-Type: application/json" \

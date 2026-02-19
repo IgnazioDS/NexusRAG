@@ -4,7 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- None.
+- Hardened Notification Receiver Contract to v1.0 with typed header parsing, canonical signature helpers, timestamp skew support, and reusable sqlite dedupe primitives.
+- Upgraded reference `notify_receiver` service with strict verification paths, structured logs, and `/stats` + `/ops` operational aggregates.
+- Added compatibility profile fixtures and deterministic tests for signature modes, strict header edge cases, concurrency-safe dedupe, and compose-path sender↔receiver delivery validation.
+- Added receiver operator targets (`make receiver-up`, `make receiver-stats`) and refreshed receiver contract documentation.
 
 ## 2.9.4 - 2026-02-18
 
