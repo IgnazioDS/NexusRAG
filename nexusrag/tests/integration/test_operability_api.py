@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 
 from nexusrag.apps.api import rate_limit
 from nexusrag.apps.api.main import create_app
@@ -63,29 +64,37 @@ def _apply_env(monkeypatch) -> None:
 async def _cleanup_tenant(tenant_id: str) -> None:
     # Remove tenant-scoped rows touched by operability APIs for deterministic isolation.
     async with SessionLocal() as session:
-        await session.execute(
-            delete(NotificationAttempt).where(
-                NotificationAttempt.job_id.in_(
-                    select(NotificationJob.id).where(NotificationJob.tenant_id == tenant_id)
+        for _ in range(3):
+            try:
+                # Retry cleanup because worker threads can append attempts while teardown is running.
+                await session.execute(
+                    delete(NotificationAttempt).where(
+                        NotificationAttempt.job_id.in_(
+                            select(NotificationJob.id).where(NotificationJob.tenant_id == tenant_id)
+                        )
+                    )
                 )
-            )
-        )
-        await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
-        await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
-        await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
-        await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
-        await session.execute(delete(AlertEvent).where(AlertEvent.tenant_id == tenant_id))
-        await session.execute(delete(IncidentTimelineEvent).where(IncidentTimelineEvent.tenant_id == tenant_id))
-        await session.execute(delete(OpsIncident).where(OpsIncident.tenant_id == tenant_id))
-        await session.execute(delete(OperatorAction).where(OperatorAction.tenant_id == tenant_id))
-        await session.execute(delete(AlertRule).where(AlertRule.tenant_id == tenant_id))
-        await session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.tenant_id == tenant_id))
-        await session.execute(delete(AuditEvent).where(AuditEvent.tenant_id == tenant_id))
-        await session.execute(delete(TenantPlanAssignment).where(TenantPlanAssignment.tenant_id == tenant_id))
-        await session.execute(delete(AuthorizationPolicy).where(AuthorizationPolicy.tenant_id == tenant_id))
-        await session.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
-        await session.execute(delete(User).where(User.tenant_id == tenant_id))
-        await session.commit()
+                await session.execute(delete(NotificationDeadLetter).where(NotificationDeadLetter.tenant_id == tenant_id))
+                await session.execute(delete(NotificationRoute).where(NotificationRoute.tenant_id == tenant_id))
+                await session.execute(delete(NotificationDestination).where(NotificationDestination.tenant_id == tenant_id))
+                await session.execute(delete(NotificationJob).where(NotificationJob.tenant_id == tenant_id))
+                await session.execute(delete(AlertEvent).where(AlertEvent.tenant_id == tenant_id))
+                await session.execute(delete(IncidentTimelineEvent).where(IncidentTimelineEvent.tenant_id == tenant_id))
+                await session.execute(delete(OpsIncident).where(OpsIncident.tenant_id == tenant_id))
+                await session.execute(delete(OperatorAction).where(OperatorAction.tenant_id == tenant_id))
+                await session.execute(delete(AlertRule).where(AlertRule.tenant_id == tenant_id))
+                await session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.tenant_id == tenant_id))
+                await session.execute(delete(AuditEvent).where(AuditEvent.tenant_id == tenant_id))
+                await session.execute(delete(TenantPlanAssignment).where(TenantPlanAssignment.tenant_id == tenant_id))
+                await session.execute(delete(AuthorizationPolicy).where(AuthorizationPolicy.tenant_id == tenant_id))
+                await session.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
+                await session.execute(delete(User).where(User.tenant_id == tenant_id))
+                await session.commit()
+                break
+            except IntegrityError:
+                await session.rollback()
+        else:
+            raise RuntimeError("operability cleanup retries exhausted for notification teardown")
 
 
 @pytest.mark.asyncio
