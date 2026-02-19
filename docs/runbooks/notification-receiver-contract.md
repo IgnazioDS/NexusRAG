@@ -1,74 +1,45 @@
-# Notification Receiver Contract
+# Notification Receiver Operations
 
-This runbook defines the receiver-side contract for NexusRAG notification delivery.
+This runbook covers day-2 operations for the Notification Receiver Contract v1.0.
 
-## Required Headers
+Spec reference: `docs/notification-receiver-contract.md`.
 
-Receivers should parse these request headers on every webhook call:
+## Start Receiver Locally
 
-- `X-Notification-Id`
-- `X-Notification-Attempt` (1-based integer)
-- `X-Notification-Event-Type`
-- `X-Notification-Tenant-Id`
-- `X-Notification-Signature` (optional unless signature enforcement is enabled)
-
-## Signature Verification
-
-When a destination has a configured shared secret, sender signs the **raw request body bytes** with HMAC-SHA256.
-
-Header format:
-
-- `X-Notification-Signature: sha256=<hex_digest>`
-
-Verification pseudocode:
-
-```python
-expected = hmac_sha256(secret, raw_body_bytes).hexdigest()
-provided = parse_header("sha256=<hex>")
-if not compare_digest(expected, provided):
-    reject()
+```bash
+make receiver-up
+curl -s http://localhost:9001/health
 ```
 
-Failure reasons used by the reference receiver:
+## Inspect Delivery Data
 
-- `missing_signature`
-- `invalid_signature_format`
-- `signature_mismatch`
+```bash
+curl -s "http://localhost:9001/received?limit=50"
+make receiver-stats
+curl -s http://localhost:9001/ops
+```
 
-## Dedupe Semantics
+## Troubleshoot Signature Failures
 
-Delivery is at-least-once. Receivers must dedupe with `X-Notification-Id`.
+1. Confirm sender destination has a configured secret.
+2. Confirm receiver `RECEIVER_SHARED_SECRET` matches sender destination secret.
+3. Confirm receiver `RECEIVER_REQUIRE_SIGNATURE=true` only when secret is configured.
+4. Check `/stats` counters:
+   - `invalid_signature_count`
+   - `missing_signature_count`
+   - `signature_misconfig_count`
 
-- first receipt for id: process + mark seen
-- later duplicates for same id: return `200` (idempotent accept)
+## Retry + DLQ Expectations
 
-DLQ replay creates a **new** notification job id, so replayed deliveries use a new `X-Notification-Id`.
+- Receiver `5xx` responses trigger sender retries.
+- Receiver `4xx` responses are terminal and sender DLQs with `receiver_rejected`.
+- Replay from DLQ creates a new `X-Notification-Id`; dedupe applies to that new id only.
 
-## Receiver Response Semantics
-
-- `2xx`: accepted (sender marks delivered)
-- `5xx`: transient failure (sender retries with backoff)
-- `4xx`: terminal rejection (sender marks DLQ with `reason=receiver_rejected`)
-
-## Local Validation
-
-Start stack:
+## Deterministic Contract Validation
 
 ```bash
 docker compose up --build -d
 docker compose exec api alembic upgrade head
-```
-
-Run receiver E2E contract tests:
-
-```bash
 docker compose exec api make notify-e2e
-```
-
-Inspect reference receiver:
-
-```bash
-curl -s http://localhost:9001/health
-curl -s "http://localhost:9001/received?limit=50"
 ```
 

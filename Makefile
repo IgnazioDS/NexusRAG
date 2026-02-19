@@ -1,4 +1,4 @@
-.PHONY: up migrate seed test notify-e2e perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag lint typecheck secrets-scan sca
+.PHONY: up migrate seed test receiver-up receiver-stats notify-e2e perf-test perf-report preflight ga-checklist sdk-generate frontend-sdk-build frontend-sdk-test security-audit security-lint security-secrets-scan compliance-snapshot git-network-diag lint typecheck secrets-scan sca
 
 up:
 	# Bring up docker compose services for local dev.
@@ -15,6 +15,14 @@ seed:
 test:
 	# Run the test suite inside the api container.
 	docker compose exec api pytest -q
+
+receiver-up:
+	# Start the reference receiver service for local sender↔receiver contract validation.
+	docker compose up --build -d notify_receiver
+
+receiver-stats:
+	# Read receiver verification counters from the local reference receiver service.
+	curl -sS http://localhost:9001/stats
 
 notify-e2e:
 	# Keep one target usable from host and from within the api container.
