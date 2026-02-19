@@ -17,8 +17,12 @@ test:
 	docker compose exec api pytest -q
 
 notify-e2e:
-	# Run deterministic sender↔receiver notification contract scenarios.
-	docker compose exec api pytest -q nexusrag/tests/integration/test_notification_receiver_e2e.py
+	# Keep one target usable from host and from within the api container.
+	@if command -v docker >/dev/null 2>&1; then \
+		docker compose exec api pytest -q nexusrag/tests/integration/test_notification_receiver_e2e.py; \
+	else \
+		pytest -q nexusrag/tests/integration/test_notification_receiver_e2e.py; \
+	fi
 
 perf-test:
 	# Run deterministic performance gates and emit JSON diagnostics.
