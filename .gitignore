@@ -36,3 +36,4 @@ sdk/frontend/node_modules/
 sdk/frontend/dist/
 var/security/pip-audit.txt
 .gitignore
+.vercel

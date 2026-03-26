@@ -1,0 +1,17 @@
+.venv
+.git
+var
+backups
+governance_artifacts
+tests
+nexusrag/tests
+sdk
+docs
+*.md
+!requirements.txt
+Makefile
+Dockerfile
+docker-compose.yml
+.env
+.env.example
+scripts
