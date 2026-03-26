@@ -1,15 +1,15 @@
 {
   "version": 2,
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.py"
+    }
+  ],
   "builds": [
     {
       "src": "api/index.py",
       "use": "@vercel/python"
-    }
-  ],
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
     }
   ]
 }
