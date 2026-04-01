@@ -49,6 +49,11 @@ tests/perf/reports/*
 # Frontend SDK artifacts
 sdk/frontend/node_modules/
 sdk/frontend/dist/
+
+# Dashboard frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
 var/security/pip-audit.txt
 .gitignore
 .vercel
