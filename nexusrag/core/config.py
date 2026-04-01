@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -364,6 +365,7 @@ class Settings(BaseSettings):
     # Prefix for failover keys stored in Redis.
     failover_redis_prefix: str = "nexusrag:failover"
     # Sign UI cursor tokens to prevent tampering across pagination requests.
+    # Must be changed from the default in production (enforced by validator below).
     ui_cursor_secret: str = "dev-ui-cursor-secret"
     # Emit SSE heartbeat events every N seconds for long-running /run streams.
     run_sse_heartbeat_s: int = 10
@@ -385,6 +387,31 @@ class Settings(BaseSettings):
     openai_tts_voice: str = "alloy"
     # Base URL used to build audio URLs in SSE payloads.
     audio_base_url: str = "http://localhost:8000"
+
+
+    @model_validator(mode="after")
+    def _validate_production_secrets(self) -> "Settings":
+        # Skip checks when dev bypass is active (local development only).
+        if self.auth_dev_bypass:
+            return self
+        if self.ui_cursor_secret == "dev-ui-cursor-secret":
+            raise ValueError(
+                "UI_CURSOR_SECRET must be changed from the default value in production. "
+                "Set AUTH_DEV_BYPASS=true to suppress this check in development."
+            )
+        if self.billing_webhook_enabled and not self.billing_webhook_secret:
+            raise ValueError(
+                "BILLING_WEBHOOK_SECRET must be set when BILLING_WEBHOOK_ENABLED=true."
+            )
+        if self.backup_encryption_enabled and not self.backup_encryption_key:
+            raise ValueError(
+                "BACKUP_ENCRYPTION_KEY must be set when BACKUP_ENCRYPTION_ENABLED=true."
+            )
+        if self.backup_signing_enabled and not self.backup_signing_key:
+            raise ValueError(
+                "BACKUP_SIGNING_KEY must be set when BACKUP_SIGNING_ENABLED=true."
+            )
+        return self
 
 
 @lru_cache

@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feat/**", "fix/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  # ── Lint & type-check ─────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dev dependencies
+        run: pip install --no-cache-dir -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check nexusrag/ scripts/
+
+      - name: Mypy type check
+        run: mypy --ignore-missing-imports nexusrag/
+
+  # ── Security audit ────────────────────────────────────────────────────────
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -e ".[dev]"
+
+      - name: pip-audit (dependency vulnerabilities)
+        run: pip-audit --progress-spinner off --format json --output /tmp/pip-audit.json
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: /tmp/pip-audit.json
+
+  # ── Tests ─────────────────────────────────────────────────────────────────
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: nexusrag
+          POSTGRES_PASSWORD: nexusrag
+          POSTGRES_DB: nexusrag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexusrag"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://nexusrag:nexusrag@localhost:5432/nexusrag
+      REDIS_URL: redis://localhost:6379/0
+      AUTH_ENABLED: "false"
+      AUTH_DEV_BYPASS: "true"
+      RATE_LIMIT_ENABLED: "false"
+      LLM_PROVIDER: fake
+      TTS_PROVIDER: fake
+      PERF_FAKE_PROVIDER_MODE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -e ".[dev]"
+
+      - name: Run Alembic migrations
+        run: alembic upgrade head
+
+      - name: Run unit tests
+        run: pytest nexusrag/tests/unit/ -q --tb=short
+
+      - name: Run integration tests
+        run: pytest nexusrag/tests/integration/ -q --tb=short -x
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: .pytest_cache/

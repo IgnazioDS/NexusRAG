@@ -128,10 +128,11 @@ def create_app() -> FastAPI:
         response.headers.setdefault("X-Request-Id", request_id)
         # Mark legacy routes with deprecation headers to guide clients to /v1.
         if not request.url.path.startswith(_LEGACY_EXEMPT_PREFIXES):
-            sunset_at = datetime.now(timezone.utc) + timedelta(days=_LEGACY_SUNSET_DAYS)
-            response.headers["Deprecation"] = "true"
-            response.headers["Sunset"] = format_datetime(sunset_at)
-            response.headers["Link"] = '</v1/docs>; rel=\"successor-version\"'
+            if request.url.path != "/":
+                sunset_at = datetime.now(timezone.utc) + timedelta(days=_LEGACY_SUNSET_DAYS)
+                response.headers["Deprecation"] = "true"
+                response.headers["Sunset"] = format_datetime(sunset_at)
+                response.headers["Link"] = '</v1/docs>; rel=\"successor-version\"'
         return response
 
     @app.exception_handler(StarletteHTTPException)
@@ -228,6 +229,10 @@ def create_app() -> FastAPI:
     async def v1_docs() -> HTMLResponse:
         return get_swagger_ui_html(openapi_url="/v1/openapi.json", title="NexusRAG API v1")
 
+    @app.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/v1/docs")
+
     @app.get("/docs", include_in_schema=False)
     async def docs_redirect() -> RedirectResponse:
         return RedirectResponse(url="/v1/docs")
@@ -241,11 +246,12 @@ def create_app() -> FastAPI:
             version=API_VERSION,
             routes=app.routes,
         )
-        schema["servers"] = [{"url": "http://localhost:8000"}]
+        # Use a relative server URL so deployed docs target the current origin.
+        schema["servers"] = [{"url": "/"}]
         components = schema.setdefault("components", {})
         security_schemes = components.setdefault("securitySchemes", {})
         security_schemes["BearerAuth"] = {"type": "http", "scheme": "bearer"}
-        public_paths = {"/v1/health", "/v1/audio/{audio_id}.mp3"}
+        public_paths = {"/v1/health", "/v1/metrics", "/v1/audio/{audio_id}.mp3"}
         for path, operations in schema.get("paths", {}).items():
             if path in public_paths:
                 continue

@@ -228,6 +228,20 @@ async def test_openapi_contains_v1_and_security(monkeypatch) -> None:
         assert "/v1/health" in schema.get("paths", {})
         security = schema.get("components", {}).get("securitySchemes", {})
         assert "BearerAuth" in security
+        assert schema.get("servers") == [{"url": "/"}]
         documents = schema["paths"].get("/v1/documents", {})
         get_op = documents.get("get", {})
         assert get_op.get("security")
+
+
+@pytest.mark.asyncio
+async def test_root_redirects_to_v1_docs_without_legacy_headers(monkeypatch) -> None:
+    _apply_env(monkeypatch)
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
+        response = await client.get("/")
+        assert response.status_code in {302, 307}
+        assert response.headers.get("location") == "/v1/docs"
+        assert response.headers.get("Deprecation") is None
+        assert response.headers.get("Link") is None

@@ -1,11 +1,65 @@
-# NexusRAG (vertical slice)
+# NexusRAG
 
-NexusRAG is a multi-cloud, stateful, streaming RAG agent platform. This repo bootstraps a working vertical slice with:
+**NexusRAG** is a production-grade, multi-tenant, multi-cloud RAG agent platform. It exposes a single streaming `/run` endpoint backed by a stateful LangGraph agent, with enterprise-ready primitives layered on top: RBAC + ABAC authorization, SSO/SCIM provisioning, envelope encryption, SLA enforcement, cost governance, multi-region failover, and SOC 2 compliance automation.
 
-- FastAPI + SSE `/run`
-- Postgres + pgvector retrieval
-- LangGraph state machine
-- Gemini via Vertex AI (streaming)
+## Feature Matrix
+
+| Feature | Status | Key Config Flag |
+|---|---|---|
+| Streaming RAG (`/v1/run`, SSE) | ✅ | `LLM_PROVIDER` |
+| Multi-cloud retrieval routing | ✅ | per-corpus `provider_config_json` |
+| Postgres + pgvector (local) | ✅ | `DATABASE_URL` |
+| AWS Bedrock Knowledge Bases | ✅ | corpus `provider: aws_bedrock_kb` |
+| GCP Vertex AI Search | ✅ | corpus `provider: gcp_vertex` |
+| API key auth + RBAC | ✅ | `AUTH_ENABLED` |
+| ABAC policy engine | ✅ | `AUTHZ_ABAC_ENABLED` |
+| Document ACLs | ✅ | `AUTHZ_DEFAULT_DENY` |
+| Enterprise SSO (OIDC) | ✅ | `SSO_ENABLED` |
+| SCIM 2.0 provisioning | ✅ | `SCIM_ENABLED` |
+| Redis token-bucket rate limiting | ✅ | `RATE_LIMIT_ENABLED` |
+| Idempotency keys (write endpoints) | ✅ | `IDEMPOTENCY_ENABLED` |
+| Async document ingestion (ARQ) | ✅ | `INGEST_EXECUTION_MODE` |
+| Cost governance + chargeback | ✅ | `COST_GOVERNANCE_ENABLED` |
+| SLA engine + load shedding | ✅ | `SLA_ENGINE_ENABLED` |
+| Circuit breakers (external calls) | ✅ | `CB_FAILURE_THRESHOLD` |
+| Kill switches (per feature) | ✅ | `KILL_RUN`, `KILL_INGEST`, … |
+| Envelope encryption (AES-256-GCM) | ✅ | `CRYPTO_ENABLED` |
+| Key rotation + KMS | ✅ | `CRYPTO_PROVIDER` |
+| Multi-region failover | ✅ | `FAILOVER_ENABLED` |
+| Encrypted + signed backups | ✅ | `BACKUP_ENABLED` |
+| SOC 2 compliance automation | ✅ | `COMPLIANCE_ENABLED` |
+| DSAR / data governance | ✅ | `GOVERNANCE_POLICY_ENGINE_ENABLED` |
+| Audit log (tamper-evident) | ✅ | always on |
+| Operability alerts + incidents | ✅ | `ALERTING_ENABLED` |
+| Autoscaling recommendations | ✅ | `AUTOSCALING_ENABLED` |
+| Prometheus metrics (`/v1/metrics`) | ✅ | always on |
+| TTS audio output (OpenAI) | ✅ | `TTS_PROVIDER=openai` |
+| Python + TypeScript SDKs | ✅ | `make sdk-generate` |
+| BFF endpoints (`/v1/ui/*`) | ✅ | always on |
+
+## Architecture Overview
+
+```
+                         ┌──────────────────────────────────────────────┐
+                         │              NexusRAG API (FastAPI)           │
+                         │                                              │
+Client ──Bearer──▶  Auth │  Rate Limit ─▶ RBAC ─▶ ABAC ─▶ Doc ACL     │
+                         │                          │                   │
+                         │              LangGraph Agent (/v1/run, SSE)  │
+                         │             /       │         \              │
+                         │      pgvector   Bedrock KB  Vertex AI Search │
+                         │             \       │         /              │
+                         │              Gemini / Vertex AI              │
+                         └──────────────────────────────────────────────┘
+                                          │
+                          ┌───────────────┴───────────────┐
+                          │                               │
+                     Postgres (pgvector)             Redis
+                     Alembic migrations          Rate limits
+                     Audit log                   Idempotency
+                     Compliance evidence         Circuit breakers
+                     Encrypted blobs             ARQ job queues
+```
 
 ## Prerequisites
 
@@ -2093,6 +2147,58 @@ CLI helpers:
 
 - `python scripts/rotate_api_key.py <old_key_id> [--keep-old-active]`
 - `python scripts/list_api_keys.py --tenant t1 --inactive-only`
+
+## Production Deployment Checklist
+
+Before going live, ensure all of the following environment variables are explicitly set. The application **will refuse to start** if the marked items are missing when `AUTH_DEV_BYPASS=false`.
+
+### Required secrets (startup-enforced)
+
+| Variable | Purpose |
+|---|---|
+| `UI_CURSOR_SECRET` | Signs pagination cursor tokens. Must not be the default value. |
+| `BACKUP_ENCRYPTION_KEY` | Encrypts backup artifacts (required when `BACKUP_ENCRYPTION_ENABLED=true`). |
+| `BACKUP_SIGNING_KEY` | HMAC key for backup manifest signatures (required when `BACKUP_SIGNING_ENABLED=true`). |
+| `BILLING_WEBHOOK_SECRET` | HMAC for webhook payloads (required when `BILLING_WEBHOOK_ENABLED=true`). |
+| `KEYRING_MASTER_KEY` | Master KEK for the platform keyring (required when `KEYRING_MASTER_KEY_REQUIRED=true`). |
+
+### Infrastructure
+
+| Variable | Example | Notes |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+asyncpg://user:pass@host/db` | Postgres 16+ with pgvector extension |
+| `REDIS_URL` | `redis://host:6379/0` | Redis 7+ |
+| `AUTH_ENABLED` | `true` | Must be `true` in production |
+| `AUTH_DEV_BYPASS` | `false` | Must be `false` in production |
+
+### Cloud providers (set whichever you use)
+
+| Variable | Notes |
+|---|---|
+| `GOOGLE_CLOUD_PROJECT` | Required for Vertex AI LLM and GCP retrieval |
+| `GOOGLE_CLOUD_LOCATION` | GCP region (e.g. `us-central1`) |
+| `OPENAI_API_KEY` | Required when `TTS_PROVIDER=openai` |
+
+### Run the preflight check
+
+```bash
+python scripts/preflight.py --output-json var/ops/preflight.json
+```
+
+### Monitoring
+
+The Prometheus scrape endpoint is available at `/v1/metrics` with no authentication required.
+Recommended scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: nexusrag
+    static_configs:
+      - targets: ["your-api-host:8000"]
+    metrics_path: /v1/metrics
+```
+
+---
 
 ## Release process
 

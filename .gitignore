@@ -10,12 +10,27 @@ __pycache__/
 
 # Test artifacts
 .pytest_cache/
+.mypy_cache/
 
 # Editable install artifacts
 *.egg-info/
 
+# Build artifacts
+build/
+dist/
+
+# Dependency lock (generated; not needed for deployment)
+uv.lock
+
 # Editor settings
 .vscode/
+.DS_Store
+
+# Python version pin (local dev only)
+.python-version
+
+# Firebase debug log (local emulator artifact)
+firebase-debug.log
 
 # Local runtime artifacts
 var/
