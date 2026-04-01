@@ -1,0 +1,19 @@
+# CODEOWNERS — every PR must be approved by a listed owner before merge.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: all files require review from the repo owner
+*                           @IgnazioDS
+
+# CI / deployment pipeline — extra scrutiny
+.github/                    @IgnazioDS
+Dockerfile                  @IgnazioDS
+docker-compose*.yml         @IgnazioDS
+vercel.json                 @IgnazioDS
+pyproject.toml              @IgnazioDS
+
+# Core backend security surfaces
+nexusrag/core/config.py     @IgnazioDS
+nexusrag/apps/api/          @IgnazioDS
+
+# Frontend
+frontend/                   @IgnazioDS
