@@ -57,3 +57,4 @@ frontend/.env.local
 var/security/pip-audit.txt
 .gitignore
 .vercel
+.claude/launch.json
