@@ -4,7 +4,18 @@ import asyncio
 import time
 from typing import Any
 
-from botocore.exceptions import BotoCoreError, ClientError
+# botocore is an optional dependency (installed via the `aws` extra). The
+# Vercel API-skeleton deploy ships without it; on that runtime the AWS code
+# paths are dormant and the exception types are unreachable. Stub them so
+# module load succeeds and the isinstance() guards downstream stay valid.
+try:
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:  # pragma: no cover
+    class BotoCoreError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class ClientError(Exception):  # type: ignore[no-redef]
+        pass
 
 from nexusrag.core.errors import AwsAuthError, AwsConfigMissingError, AwsRetrievalError
 from nexusrag.services.audit import record_system_event
