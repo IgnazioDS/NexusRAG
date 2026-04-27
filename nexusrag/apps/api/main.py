@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 import json
+import logging
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -40,6 +42,7 @@ from nexusrag.apps.api.routes.scim import router as scim_router
 from nexusrag.apps.api.routes.self_serve import router as self_serve_router
 from nexusrag.apps.api.routes.sla_admin import router as sla_admin_router
 from nexusrag.apps.api.routes.sso import router as sso_router
+from nexusrag.apps.api.routes.stats import router as stats_router
 from nexusrag.apps.api.routes.ui import router as ui_router
 from nexusrag.core.logging import configure_logging
 from nexusrag.apps.api.errors import (
@@ -52,6 +55,8 @@ from nexusrag.apps.api.errors import (
 from nexusrag.apps.api.response import API_VERSION, is_versioned_request
 from nexusrag.apps.api.rate_limit import route_class_for_request
 from nexusrag.services.telemetry import record_request
+from nexusrag.persistence.db import SessionLocal
+from nexusrag.persistence.repos.query_log import record_query
 from nexusrag.persistence.guards import TenantPredicateError
 
 
@@ -61,12 +66,43 @@ _LEGACY_EXEMPT_PREFIXES = (
     "/docs",
     "/openapi.json",
     "/redoc",
+    "/api/stats",
 )
 _ENVELOPE_EXEMPT_PREFIXES = (
     "/v1/openapi.json",
     "/v1/docs",
     "/v1/redoc",
 )
+
+# Path prefixes whose requests count as "queries" for the public /api/stats
+# aggregator. Each request to one of these paths produces one query_log row.
+_QUERY_PATH_PREFIXES = ("/v1/run", "/run")
+
+_telemetry_log = logging.getLogger("nexusrag.telemetry.query_log")
+
+
+async def _record_query_async(
+    *,
+    query_id: UUID,
+    started_at: datetime,
+    completed_at: datetime,
+    retrieved_chunks: int,
+    status: str,
+) -> None:
+    # Fire-and-forget DB write. Telemetry must never break the request path,
+    # so we open our own session and swallow any failure.
+    try:
+        async with SessionLocal() as session:
+            await record_query(
+                session,
+                query_id=query_id,
+                started_at=started_at,
+                completed_at=completed_at,
+                retrieved_chunks=retrieved_chunks,
+                status=status,
+            )
+    except Exception as exc:  # noqa: BLE001 - telemetry failure must not propagate
+        _telemetry_log.warning("query_log insert failed", exc_info=exc)
 
 
 def create_app() -> FastAPI:
@@ -79,7 +115,9 @@ def create_app() -> FastAPI:
         request_id = request.headers.get("X-Request-Id") or str(uuid4())
         request.state.request_id = request_id
         start = time.monotonic()
+        started_at_dt = datetime.now(timezone.utc)
         response = await call_next(request)
+        completed_at_dt = datetime.now(timezone.utc)
         latency_ms = (time.monotonic() - start) * 1000.0
         route_class, _cost = route_class_for_request(request)
         record_request(
@@ -88,6 +126,25 @@ def create_app() -> FastAPI:
             status_code=response.status_code,
             latency_ms=latency_ms,
         )
+        # Persist a query_log row for every request that hits a query path,
+        # so the public /api/stats aggregator returns real counters that
+        # survive cold starts. Routes can populate request.state.retrieved_chunks
+        # to surface the actual chunk count; otherwise we record 0.
+        if request.url.path.startswith(_QUERY_PATH_PREFIXES):
+            chunks_attr = getattr(request.state, "retrieved_chunks", 0)
+            try:
+                retrieved_chunks = int(chunks_attr)
+            except (TypeError, ValueError):
+                retrieved_chunks = 0
+            asyncio.create_task(
+                _record_query_async(
+                    query_id=uuid4(),
+                    started_at=started_at_dt,
+                    completed_at=completed_at_dt,
+                    retrieved_chunks=retrieved_chunks,
+                    status="ok" if response.status_code < 400 else "error",
+                )
+            )
         # Wrap versioned JSON responses in the standardized success envelope.
         if (
             is_versioned_request(request)
@@ -154,6 +211,12 @@ def create_app() -> FastAPI:
     @app.exception_handler(TenantPredicateError)
     async def _tenant_predicate_exception_handler(request: Request, exc: TenantPredicateError):
         return await tenant_predicate_exception_handler(request, exc)
+
+    # Public, unauthenticated /api/stats endpoint for the Production
+    # Telemetry panel on https://eleventh.dev. Mounted before the versioned
+    # v1 routes so the path is canonical and not subject to /v1 routing
+    # rules. See docs/TELEMETRY_SCHEMA reference.
+    app.include_router(stats_router)
 
     # Mount versioned v1 API routes.
     app.include_router(audio_router, prefix=f"/{API_VERSION}")

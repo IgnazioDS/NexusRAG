@@ -2206,3 +2206,100 @@ scrape_configs:
 - Bump version: update `pyproject.toml` and add a new entry in `CHANGELOG.md`
 - Tag release: `git tag vX.Y.Z`
 - Use the repo's default branch name (e.g., `main`); do not assume a specific remote.
+
+---
+
+## Production telemetry
+
+This deployment exposes public, aggregate metrics at `/api/stats`. The
+endpoint is consumed by the Production Telemetry panel on
+https://eleventh.dev. The schema is documented at
+https://github.com/IgnazioDS/IgnazioDS/blob/main/TELEMETRY_SCHEMA.md.
+
+NexusRAG runs in **Tier A** (`mode: "live"`) — counters reflect real
+end-to-end RAG queries written to the `query_log` table by the FastAPI
+middleware (`nexusrag/apps/api/main.py:request_context_middleware`).
+Persistence on the existing pgvector Postgres means the counters survive
+Vercel cold starts.
+
+### Sample response
+
+```bash
+$ curl -i https://nexusrag-lyart.vercel.app/api/stats
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: public, max-age=30, stale-while-revalidate=60
+Access-Control-Allow-Origin: *
+
+{
+  "system":             "nexusrag",
+  "mode":               "live",
+  "status":             "operational",
+  "uptime_pct_30d":     100.0,
+  "last_deployed_at":   "2026-04-28T01:30:00Z",
+  "last_active_at":     "2026-04-28T02:00:00Z",
+  "metrics": {
+    "queries_total":      1234,
+    "queries_24h":        42,
+    "queries_7d":         300,
+    "p50_latency_ms":     480,
+    "p95_latency_ms":     910,
+    "avg_retrieval_size": 6,
+    "indexed_chunks":     12034
+  },
+  "schema_version":     1,
+  "generated_at":       "2026-04-28T02:11:42Z"
+}
+```
+
+### How the counters are populated
+
+The FastAPI middleware fires for every request. When the request path
+matches a query prefix (`/v1/run`, `/run`), the middleware schedules a
+fire-and-forget task that writes one row to `query_log` with
+`(query_id, started_at, completed_at, latency_ms, retrieved_chunks,
+status)`. Telemetry failures never propagate to the request path; if
+the DB is unreachable, the insert is logged and dropped.
+
+Routes can populate `request.state.retrieved_chunks` to surface the
+actual chunk count for the row; otherwise the field is recorded as 0.
+
+### Aggregation
+
+`/api/stats` runs a small set of windowed queries on `query_log`,
+indexed on `completed_at DESC`:
+
+- `queries_total` — `COUNT(*) FROM query_log`
+- `queries_24h` / `queries_7d` — windowed `COUNT(*)` on `completed_at`
+- `p50_latency_ms` / `p95_latency_ms` — `percentile_cont(0.50 / 0.95)
+  WITHIN GROUP (ORDER BY latency_ms)` over the 24h window
+- `avg_retrieval_size` — `AVG(retrieved_chunks)` over the 24h window
+- `indexed_chunks` — `COUNT(*) FROM chunks` (the pgvector table)
+- `last_active_at` — `MAX(completed_at) WHERE status = 'ok'`
+
+All counters are clamped by `SAFETY_CAPS` in
+`nexusrag/persistence/repos/query_log.py` to prevent runaway exposure.
+
+### Privacy
+
+`query_log` stores **only** `id`, `query_id`, `started_at`,
+`completed_at`, `latency_ms`, `retrieved_chunks`, and `status`. It does
+not store prompt text, model output, tenant identifiers, or user
+identifiers. The `/api/stats` endpoint never returns row-level data —
+only counts and percentiles.
+
+### Failure handling
+
+`/api/stats` never returns HTTP 5xx. If the aggregator raises (DB
+unreachable, schema drift, etc.), the response status flips to
+`"degraded"` and metrics zero out, while the JSON envelope stays
+contract-compliant. Internal error messages never appear in the
+response body.
+
+### Migration
+
+```bash
+alembic upgrade head
+```
+
+Adds the `query_log` table (revision `0031_query_log`).

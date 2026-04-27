@@ -4,7 +4,18 @@ import asyncio
 import time
 from typing import Any
 
-from google.api_core.exceptions import GoogleAPICallError, RetryError
+# google-api-core is an optional dependency (installed via the `vertex`
+# extra). On the Vercel API-skeleton deploy it isn't present; stub the
+# exception types so module load succeeds and the isinstance() guard
+# below stays valid (and never matches because no Google call is made there).
+try:
+    from google.api_core.exceptions import GoogleAPICallError, RetryError
+except ImportError:  # pragma: no cover
+    class GoogleAPICallError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class RetryError(Exception):  # type: ignore[no-redef]
+        pass
 
 from nexusrag.core.errors import (
     VertexRetrievalAuthError,

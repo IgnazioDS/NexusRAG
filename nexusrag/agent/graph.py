@@ -4,8 +4,6 @@ import asyncio
 import time
 from typing import Callable
 
-from langgraph.graph import END, StateGraph
-
 from nexusrag.agent.prompts import build_messages
 from nexusrag.domain.state import AgentState
 from nexusrag.persistence.repos.messages import list_messages
@@ -23,6 +21,11 @@ def build_graph(
     max_output_tokens: int | None = None,
     token_estimator_ratio: float | None = None,
 ):
+    # Lazy import so module load on Vercel cold-start does not require the
+    # full langgraph dependency tree (~30 MB). Heavy deps live in the
+    # `agent` optional install group.
+    from langgraph.graph import END, StateGraph
+
     graph = StateGraph(AgentState)
 
     async def load_history(state: AgentState) -> dict:
