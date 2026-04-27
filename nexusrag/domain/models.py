@@ -1501,3 +1501,21 @@ Index("ix_dsar_requests_tenant_status", DsarRequest.tenant_id, DsarRequest.statu
 Index("ix_dsar_requests_created_at", DsarRequest.created_at.desc())
 Index("ix_policy_rules_rule_priority", PolicyRule.rule_key, PolicyRule.priority.desc())
 Index("ix_governance_retention_runs_tenant_started", GovernanceRetentionRun.tenant_id, GovernanceRetentionRun.started_at.desc())
+
+
+class QueryLog(Base):
+    # Persisted record of each end-to-end RAG query. The public /api/stats
+    # aggregator reads from this table on every request — counters survive
+    # cold starts because they are derived here, not held in memory.
+    __tablename__ = "query_log"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    query_id: Mapped[UUID] = mapped_column(nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    retrieved_chunks: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+Index("ix_query_log_completed_at_desc", QueryLog.completed_at.desc())
