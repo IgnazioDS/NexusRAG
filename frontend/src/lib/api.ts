@@ -1,12 +1,11 @@
 // Typed wrappers around NexusRAG BFF endpoints.
-// All calls go through the Next.js rewrite proxy at /api/* → /v1/*.
+// Versioned routes go through the Next.js rewrite proxy at /api/* → /v1/*.
+// The public telemetry endpoint at /api/stats stays canonical (no /v1 prefix).
 
 const API_KEY =
-  typeof window !== "undefined"
-    ? process.env.NEXT_PUBLIC_API_KEY ?? ""
-    : "";
+  typeof window !== "undefined" ? process.env.NEXT_PUBLIC_API_KEY ?? "" : "";
 
-function headers(): HeadersInit {
+function authedHeaders(): HeadersInit {
   return {
     "Content-Type": "application/json",
     Authorization: `Bearer ${API_KEY}`,
@@ -16,21 +15,37 @@ function headers(): HeadersInit {
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
-    headers: { ...headers(), ...(init?.headers ?? {}) },
+    headers: { ...authedHeaders(), ...(init?.headers ?? {}) },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${text}`);
+    throw new Error(`API ${res.status}: ${text || res.statusText}`);
   }
   const json = await res.json();
-  // Unwrap the standard success envelope { data: ..., meta: ... }
+  // Unwrap the standard success envelope { data: ..., meta: ... } when present.
   return ("data" in json ? json.data : json) as T;
+}
+
+async function publicFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+  });
+  if (!res.ok) {
+    throw new Error(`Public API ${res.status}: ${res.statusText}`);
+  }
+  return res.json() as Promise<T>;
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface BootstrapData {
-  principal: { tenant_id: string; role: string; api_key_id: string; subject_id: string };
+  principal: {
+    tenant_id: string;
+    role: string;
+    api_key_id: string;
+    subject_id: string;
+  };
   plan: { plan_id: string; plan_name: string | null };
   entitlements: Record<string, { enabled: boolean }>;
   quota_snapshot: {
@@ -44,7 +59,7 @@ export interface BootstrapData {
   api: Record<string, string>;
 }
 
-export interface StatCard {
+export interface StatCardData {
   id: string;
   title: string;
   value: string;
@@ -58,7 +73,7 @@ export interface DashboardAlert {
 }
 
 export interface DashboardData {
-  cards: StatCard[];
+  cards: StatCardData[];
   charts: Record<string, { id: string; points: unknown[] }>;
   alerts: DashboardAlert[];
 }
@@ -74,7 +89,10 @@ export interface DocumentRow {
   last_reindexed_at: string | null;
 }
 
-export interface FacetValue { value: string; count: number }
+export interface FacetValue {
+  value: string;
+  count: number;
+}
 
 export interface PagedResponse<T> {
   items: T[];
@@ -100,6 +118,27 @@ export interface ReindexResponse {
   accepted_at: string;
   optimistic: { entity: string; id: string; patch: Record<string, string> };
   poll_url: string;
+}
+
+/** Public telemetry contract — Tier-A NexusRAG response. See TELEMETRY_SCHEMA.md. */
+export interface PublicStats {
+  system: string;
+  mode?: "live" | "showcase";
+  status: "operational" | "degraded" | "down";
+  uptime_pct_30d?: number;
+  last_deployed_at: string | null;
+  last_active_at: string | null;
+  metrics: {
+    queries_total: number;
+    queries_24h: number;
+    queries_7d: number;
+    p50_latency_ms: number;
+    p95_latency_ms: number;
+    avg_retrieval_size: number;
+    indexed_chunks: number;
+  };
+  schema_version: number;
+  generated_at: string;
 }
 
 // ── Fetchers ──────────────────────────────────────────────────────────────────
@@ -141,4 +180,9 @@ export function reindexDocument(documentId: string): Promise<ReindexResponse> {
     method: "POST",
     body: JSON.stringify({ document_id: documentId }),
   });
+}
+
+/** Public telemetry — no auth required. Goes through the rewrite to /api/stats. */
+export function fetchPublicStats(): Promise<PublicStats> {
+  return publicFetch<PublicStats>("/api/stats");
 }

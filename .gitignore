@@ -58,3 +58,5 @@ var/security/pip-audit.txt
 .gitignore
 .vercel
 .claude/launch.json
+frontend/tsconfig.tsbuildinfo
+frontend/.vercel/

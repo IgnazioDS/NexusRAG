@@ -1,65 +1,100 @@
 "use client";
-import { useEffect, useState } from "react";
-import { RefreshCw, Wifi } from "lucide-react";
-import { fetchBootstrap, type BootstrapData } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
-export function TopBar({ title }: { title: string }) {
+import { useEffect, useState } from "react";
+import { fetchBootstrap, type BootstrapData } from "@/lib/api";
+import { StatusDot } from "@/components/ui/status-dot";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ThemeToggle } from "./ThemeToggle";
+import { UserMenu } from "./UserMenu";
+import { Breadcrumbs } from "./Breadcrumbs";
+
+interface TopBarProps {
+  /** Page title shown when there's no breadcrumb context (i.e. on the root). */
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;
+}
+
+/**
+ * TopBar — sticky page header. Carries breadcrumbs (or page title on root),
+ * API status indicator, theme toggle, and user menu. Frosted via backdrop
+ * blur so it floats over the dot-grid backgrounds.
+ */
+export function TopBar({ title, description, actions }: TopBarProps) {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [connected, setConnected] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetchBootstrap()
-      .then((d) => { setBootstrap(d); setConnected(true); })
+      .then((d) => {
+        setBootstrap(d);
+        setConnected(true);
+      })
       .catch(() => setConnected(false));
   }, []);
 
   const tenant = bootstrap?.principal.tenant_id ?? "—";
-  const role = bootstrap?.principal.role ?? "—";
+  const role = bootstrap?.principal.role ?? "viewer";
 
   return (
-    <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#080810]/80 px-5 backdrop-blur-xl">
-      <div className="flex items-center gap-2">
-        <h1 className="text-[13px] font-semibold text-zinc-100 tracking-tight">{title}</h1>
+    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-background/85 px-5 backdrop-blur">
+      <div className="flex min-w-0 items-center gap-3">
+        <Breadcrumbs />
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold tracking-tight text-foreground truncate">
+            {title}
+          </h1>
+          {description && (
+            <p className="text-2xs text-foreground-subtle truncate">
+              {description}
+            </p>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        {/* API status */}
-        <div className="flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-1">
-          <span
-            className={cn(
-              "relative h-1.5 w-1.5 rounded-full",
-              connected === true
-                ? "bg-emerald-400 pulse-dot text-emerald-400"
-                : connected === false
-                ? "bg-red-400"
-                : "bg-zinc-600"
-            )}
-          />
-          <span className="text-[11px] font-medium text-zinc-500 hidden sm:inline">
-            {connected === true ? "API connected" : connected === false ? "Disconnected" : "Connecting…"}
-          </span>
-        </div>
+      <div className="flex items-center gap-2">
+        {actions}
 
-        <div className="h-3.5 w-px bg-white/[0.08]" />
+        {/* API status pill */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1">
+              <StatusDot
+                tone={
+                  connected === true
+                    ? "success"
+                    : connected === false
+                    ? "danger"
+                    : "muted"
+                }
+                pulse={connected === true}
+                size="sm"
+              />
+              <span className="text-2xs font-medium text-foreground-muted hidden md:inline">
+                {connected === true
+                  ? "Connected"
+                  : connected === false
+                  ? "Offline"
+                  : "Connecting"}
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            {connected === true
+              ? "API reachable"
+              : connected === false
+              ? "Could not reach the API"
+              : "Establishing connection…"}
+          </TooltipContent>
+        </Tooltip>
 
-        {/* Tenant + role */}
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-mono text-zinc-500">{tenant}</span>
-          <span className="rounded-md border border-indigo-500/20 bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-400">
-            {role}
-          </span>
-        </div>
+        <div className="h-4 w-px bg-border" aria-hidden />
 
-        <div className="h-3.5 w-px bg-white/[0.08]" />
+        <ThemeToggle />
 
-        <button
-          onClick={() => window.location.reload()}
-          className="rounded-md p-1.5 text-zinc-600 transition-all hover:bg-white/[0.05] hover:text-zinc-300"
-          title="Refresh"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-        </button>
+        <div className="h-4 w-px bg-border" aria-hidden />
+
+        <UserMenu tenantId={tenant} role={role} />
       </div>
     </header>
   );

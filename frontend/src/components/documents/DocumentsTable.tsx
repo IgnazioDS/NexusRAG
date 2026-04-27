@@ -1,13 +1,35 @@
 "use client";
+
 import { useCallback, useEffect, useState } from "react";
-import { Search, RefreshCw, ChevronLeft, ChevronRight, RotateCcw, FileText } from "lucide-react";
-import { fetchDocuments, reindexDocument, type DocumentRow } from "@/lib/api";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  RefreshCw,
+  RotateCcw,
+  Search,
+} from "lucide-react";
+import { toast } from "sonner";
+import {
+  fetchDocuments,
+  reindexDocument,
+  type DocumentRow,
+} from "@/lib/api";
 import { StatusBadge } from "./StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDate } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useDebounce } from "@/lib/hooks";
+import { formatDate, truncate } from "@/lib/utils";
 
 const STATUS_OPTIONS = ["all", "queued", "processing", "succeeded", "failed"];
 
@@ -15,6 +37,7 @@ export function DocumentsTable() {
   const [rows, setRows] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const debouncedQ = useDebounce(q, 250);
   const [status, setStatus] = useState("all");
   const [cursor, setCursor] = useState<string | undefined>();
   const [cursorStack, setCursorStack] = useState<string[]>([]);
@@ -28,7 +51,7 @@ export function DocumentsTable() {
       setError(null);
       try {
         const res = await fetchDocuments({
-          q: q || undefined,
+          q: debouncedQ || undefined,
           status: status !== "all" ? status : undefined,
           cursor: cur,
           limit: 20,
@@ -42,7 +65,7 @@ export function DocumentsTable() {
         setLoading(false);
       }
     },
-    [q, status]
+    [debouncedQ, status],
   );
 
   useEffect(() => {
@@ -68,8 +91,14 @@ export function DocumentsTable() {
     try {
       await reindexDocument(id);
       setRows((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, status: "queued" } : r))
+        prev.map((r) => (r.id === id ? { ...r, status: "queued" } : r)),
       );
+      toast.success("Reindex queued", {
+        description: `Document ${truncate(id, 16)} will be re-embedded shortly.`,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Reindex failed";
+      toast.error("Reindex failed", { description: msg });
     } finally {
       setReindexing((s) => {
         const next = new Set(s);
@@ -82,18 +111,18 @@ export function DocumentsTable() {
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-48">
-          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-600 pointer-events-none" />
+          <Search className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-foreground-faint pointer-events-none" />
           <Input
             placeholder="Search documents…"
-            className="pl-9 bg-white/[0.03] border-white/[0.08] text-zinc-200 placeholder:text-zinc-700 focus:border-indigo-500/40 focus:bg-white/[0.05]"
+            className="pl-8"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
         </div>
         <Select value={status} onValueChange={setStatus}>
-          <SelectTrigger className="w-36 bg-white/[0.03] border-white/[0.08] text-zinc-300">
+          <SelectTrigger className="w-36">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
@@ -105,10 +134,9 @@ export function DocumentsTable() {
           </SelectContent>
         </Select>
         <Button
-          variant="outline"
-          size="sm"
+          variant="secondary"
+          size="default"
           onClick={() => load(undefined)}
-          className="border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200 gap-1.5"
         >
           <RefreshCw className="h-3.5 w-3.5" />
           Refresh
@@ -117,106 +145,149 @@ export function DocumentsTable() {
 
       {/* Error */}
       {error && (
-        <div className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/[0.07] px-4 py-3 text-[13px] text-red-400">
-          <span className="h-1.5 w-1.5 rounded-full bg-red-400 shrink-0" />
+        <div className="flex items-center gap-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+          <span className="h-1.5 w-1.5 rounded-full bg-danger shrink-0" />
           {error}
         </div>
       )}
 
       {/* Table */}
-      <div className="glow-card overflow-hidden rounded-xl">
+      <Card className="overflow-hidden">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-white/[0.06]">
-              <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-700">Filename</th>
-              <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-700">Corpus</th>
-              <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-700">Status</th>
-              <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-700 hidden md:table-cell">Created</th>
-              <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-700">Actions</th>
+            <tr className="border-b border-border">
+              <th className="px-4 py-2.5 text-left text-2xs font-medium uppercase tracking-wider text-foreground-faint">
+                Filename
+              </th>
+              <th className="px-4 py-2.5 text-left text-2xs font-medium uppercase tracking-wider text-foreground-faint">
+                Corpus
+              </th>
+              <th className="px-4 py-2.5 text-left text-2xs font-medium uppercase tracking-wider text-foreground-faint">
+                Status
+              </th>
+              <th className="px-4 py-2.5 text-left text-2xs font-medium uppercase tracking-wider text-foreground-faint hidden md:table-cell">
+                Created
+              </th>
+              <th className="px-4 py-2.5 text-right text-2xs font-medium uppercase tracking-wider text-foreground-faint">
+                Actions
+              </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/[0.04]">
+          <tbody className="divide-y divide-border-subtle">
             {loading
               ? Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i}>
-                    <td className="px-4 py-3.5">
+                    <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
-                        <Skeleton className="h-7 w-7 rounded-lg" />
+                        <Skeleton className="h-7 w-7 rounded-md" />
                         <div className="space-y-1.5">
-                          <Skeleton className="h-3.5 w-40" />
+                          <Skeleton className="h-3 w-40" />
                           <Skeleton className="h-2.5 w-24" />
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3.5"><Skeleton className="h-3.5 w-16" /></td>
-                    <td className="px-4 py-3.5"><Skeleton className="h-5 w-22 rounded-full" /></td>
-                    <td className="px-4 py-3.5 hidden md:table-cell"><Skeleton className="h-3.5 w-28" /></td>
-                    <td className="px-4 py-3.5" />
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-3 w-16" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-20 rounded-full" />
+                    </td>
+                    <td className="px-4 py-3 hidden md:table-cell">
+                      <Skeleton className="h-3 w-24" />
+                    </td>
+                    <td className="px-4 py-3" />
                   </tr>
                 ))
               : rows.length === 0
               ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-16 text-center">
-                    <FileText className="mx-auto mb-3 h-8 w-8 text-zinc-800" />
-                    <p className="text-[13px] text-zinc-700">No documents found</p>
+                  <td colSpan={5} className="p-0">
+                    <EmptyState
+                      icon={FileText}
+                      title="No documents"
+                      description={
+                        q || status !== "all"
+                          ? "No documents match your filters."
+                          : "Once you ingest your first document it'll appear here."
+                      }
+                    />
                   </td>
                 </tr>
               )
               : rows.map((row) => (
-                  <tr key={row.id} className="group hover:bg-white/[0.025] transition-colors">
-                    <td className="px-4 py-3.5">
+                  <tr
+                    key={row.id}
+                    className="group hover:bg-surface-2 transition-colors"
+                  >
+                    <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-2 text-foreground-faint">
                           <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-[13px] font-medium text-zinc-200 truncate max-w-xs leading-tight">
+                          <p className="text-sm font-medium text-foreground truncate max-w-xs leading-tight">
                             {row.filename}
                           </p>
-                          <p className="mt-0.5 font-mono text-[10px] text-zinc-700 truncate">{row.id}</p>
+                          <p className="mt-0.5 font-mono text-2xs text-foreground-faint truncate">
+                            {truncate(row.id, 18)}
+                          </p>
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3.5 font-mono text-[12px] text-zinc-500">{row.corpus_id}</td>
-                    <td className="px-4 py-3.5"><StatusBadge status={row.status} /></td>
-                    <td className="px-4 py-3.5 text-[12px] text-zinc-600 hidden md:table-cell">
+                    <td className="px-4 py-3 font-mono text-xs text-foreground-muted">
+                      {row.corpus_id}
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={row.status} />
+                    </td>
+                    <td className="px-4 py-3 text-xs text-foreground-subtle hidden md:table-cell">
                       {formatDate(row.created_at)}
                     </td>
-                    <td className="px-4 py-3.5 text-right">
-                      <button
+                    <td className="px-4 py-3 text-right">
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
                         onClick={() => handleReindex(row.id)}
                         disabled={reindexing.has(row.id)}
                         title="Reindex"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-zinc-700 transition-all hover:bg-indigo-500/10 hover:text-indigo-400 disabled:opacity-50"
                       >
-                        <RotateCcw className={`h-3.5 w-3.5 ${reindexing.has(row.id) ? "animate-spin" : ""}`} />
-                      </button>
+                        <RotateCcw
+                          className={
+                            reindexing.has(row.id) ? "animate-spin" : ""
+                          }
+                        />
+                      </Button>
                     </td>
                   </tr>
                 ))}
           </tbody>
         </table>
-      </div>
+      </Card>
 
       {/* Pagination */}
       <div className="flex items-center justify-between px-1">
-        <p className="text-[11px] text-zinc-700">{rows.length} documents</p>
+        <p className="text-xs text-foreground-subtle tabular-nums">
+          {rows.length} {rows.length === 1 ? "document" : "documents"}
+        </p>
         <div className="flex items-center gap-1.5">
-          <button
+          <Button
+            size="sm"
+            variant="outline"
             onClick={prevPage}
             disabled={cursorStack.length === 0}
-            className="inline-flex h-7 items-center gap-1 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-[11px] text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            <ChevronLeft className="h-3.5 w-3.5" /> Prev
-          </button>
-          <button
+            <ChevronLeft />
+            Prev
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             onClick={nextPage}
             disabled={!hasMore}
-            className="inline-flex h-7 items-center gap-1 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-[11px] text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            Next <ChevronRight className="h-3.5 w-3.5" />
-          </button>
+            Next
+            <ChevronRight />
+          </Button>
         </div>
       </div>
     </div>

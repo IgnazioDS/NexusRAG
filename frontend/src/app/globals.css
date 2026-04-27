@@ -2,152 +2,237 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Design tokens — calibrated for a Vercel-grade dashboard.
+
+   Discipline: neutral surfaces + a single brand accent fired sparingly.
+   Indigo only for active state, brand mark, and primary CTA. Everything
+   else lives in calibrated grays.
+   ────────────────────────────────────────────────────────────────────────── */
 @layer base {
-  :root {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 6%;
-    --card-foreground: 0 0% 98%;
-    --primary: 238 84% 67%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 5% 12%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 5% 15%;
-    --muted-foreground: 240 5% 55%;
-    --accent: 240 5% 15%;
-    --accent-foreground: 0 0% 98%;
-    --border: 240 5% 13%;
-    --input: 240 5% 13%;
-    --ring: 238 84% 67%;
-    --radius: 0.75rem;
+  :root,
+  [data-theme="dark"] {
+    /* Surfaces — true near-black with imperceptible cool tilt */
+    --background:        240 10% 3.5%;
+    --surface:           240 8% 6%;
+    --surface-2:         240 7% 9%;
+    --surface-3:         240 6% 12%;
+
+    /* Text tiers */
+    --foreground:        0 0% 96%;
+    --foreground-muted:  240 5% 64%;
+    --foreground-subtle: 240 5% 46%;
+    --foreground-faint:  240 5% 32%;
+
+    /* Borders — three calibrated weights */
+    --border:            240 6% 14%;
+    --border-strong:     240 6% 22%;
+    --border-subtle:     240 6% 9%;
+
+    /* Brand */
+    --brand:             238 84% 67%;
+    --brand-strong:      238 84% 60%;
+    --brand-foreground:  0 0% 100%;
+    --ring:              238 84% 67%;
+
+    /* Semantic */
+    --success: 158 64% 52%;
+    --warning: 38 92% 50%;
+    --danger:  0 72% 60%;
+    --info:    199 89% 48%;
+
+    /* Radii — tight Vercel-style */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+    --radius:    var(--radius-lg);
   }
 
-  * { @apply border-border box-border; }
+  [data-theme="light"] {
+    --background:        0 0% 100%;
+    --surface:           0 0% 100%;
+    --surface-2:         240 5% 98%;
+    --surface-3:         240 5% 95%;
+    --foreground:        240 10% 8%;
+    --foreground-muted:  240 5% 36%;
+    --foreground-subtle: 240 5% 50%;
+    --foreground-faint:  240 5% 64%;
+    --border:            240 6% 90%;
+    --border-strong:     240 6% 84%;
+    --border-subtle:     240 6% 94%;
+    --ring:              238 84% 67%;
+  }
 
-  html { @apply scroll-smooth; }
+  *,
+  *::before,
+  *::after {
+    @apply border-border box-border;
+  }
+
+  html {
+    @apply scroll-smooth;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  }
 
   body {
-    @apply bg-[#080810] text-zinc-100 antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    @apply bg-background text-foreground antialiased font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.2); border-radius: 99px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.4); }
+  ::selection {
+    background: hsl(var(--brand) / 0.4);
+    color: hsl(var(--foreground));
+  }
+
+  /* Scrollbars — minimal, only visible when needed */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--foreground-faint));
+    background-clip: padding-box;
+  }
+
+  /* Focus — visible but quiet */
+  :focus-visible {
+    @apply outline-none ring-1 ring-ring ring-offset-1 ring-offset-background;
+  }
+
+  /* Tabular numbers everywhere — dashboards live and die on alignment */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-/* ── Dot-grid background ───────────────────────────────────────── */
-.dot-grid {
-  background-image: radial-gradient(circle, rgba(99,102,241,0.12) 1px, transparent 1px);
-  background-size: 28px 28px;
+/* ──────────────────────────────────────────────────────────────────────────
+   Utility classes — short, composable, no business logic
+   ────────────────────────────────────────────────────────────────────────── */
+@layer components {
+  /* Subtle dot grid — used as a faint background ornament */
+  .dot-grid {
+    background-image: radial-gradient(
+      hsl(var(--foreground) / 0.05) 1px,
+      transparent 1px
+    );
+    background-size: 24px 24px;
+    background-position: 0 0;
+  }
+
+  /* Linear gradient over the dot grid for stronger framing */
+  .grid-fade {
+    mask-image: radial-gradient(
+      ellipse at center,
+      black 40%,
+      transparent 80%
+    );
+  }
+
+  /* Surface helper — used by Card/Popover. Keeps consistent stacking. */
+  .surface {
+    @apply bg-surface border border-border rounded-lg;
+  }
+
+  /* Skeleton shimmer */
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--surface-2)) 0%,
+      hsl(var(--surface-3)) 50%,
+      hsl(var(--surface-2)) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+
+  /* Pulse halo — for status dots indicating live activity */
+  .pulse-halo {
+    position: relative;
+  }
+  .pulse-halo::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+    animation: pulse-ring 1.6s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  }
+
+  /* Inline keyboard chip */
+  .kbd {
+    @apply inline-flex items-center justify-center min-w-[1.25rem] h-5
+           px-1 rounded-sm bg-surface-2 border border-border-strong
+           font-mono text-2xs font-medium text-foreground-muted;
+  }
+
+  /* Code-grade gradient text — used VERY sparingly (logo only) */
+  .text-gradient-brand {
+    background: linear-gradient(
+      135deg,
+      hsl(var(--brand)) 0%,
+      hsl(var(--brand-strong)) 100%
+    );
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Subtle elevated card hover treatment */
+  .card-interactive {
+    @apply transition-[border-color,background-color,transform] duration-200 ease-out-expo;
+  }
+  .card-interactive:hover {
+    @apply border-border-strong;
+  }
+
+  /* Page transition wrapper applied to every route's root */
+  .page-enter {
+    animation: fade-up 320ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
 }
 
-/* ── Glow card border ──────────────────────────────────────────── */
-.glow-card {
-  position: relative;
-  background: linear-gradient(135deg, rgba(99,102,241,0.05) 0%, rgba(139,92,246,0.03) 100%);
-  border: 1px solid rgba(99,102,241,0.12);
+/* sonner overrides to match Vercel-grade palette */
+[data-sonner-toaster] {
+  --normal-bg: hsl(var(--surface-2));
+  --normal-border: hsl(var(--border-strong));
+  --normal-text: hsl(var(--foreground));
+  --success-bg: hsl(var(--surface-2));
+  --success-border: hsl(var(--success) / 0.4);
+  --success-text: hsl(var(--success));
+  --error-bg: hsl(var(--surface-2));
+  --error-border: hsl(var(--danger) / 0.4);
+  --error-text: hsl(var(--danger));
 }
 
-.glow-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(135deg, rgba(99,102,241,0.3), transparent 60%);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
+/* cmdk styling — match the rest of the design system */
+[cmdk-root] {
+  font-family: inherit;
 }
-
-/* ── Accent left border on stat cards ─────────────────────────── */
-.stat-card-accent {
-  position: relative;
-  overflow: hidden;
+[cmdk-input] {
+  @apply outline-none border-0 bg-transparent text-foreground placeholder:text-foreground-faint;
 }
-
-.stat-card-accent::after {
-  content: '';
-  position: absolute;
-  top: 20%;
-  left: 0;
-  width: 2px;
-  height: 60%;
-  background: linear-gradient(to bottom, transparent, #6366f1, transparent);
-  border-radius: 0 2px 2px 0;
+[cmdk-item] {
+  @apply px-3 py-2 rounded-md text-sm cursor-pointer flex items-center gap-3
+         text-foreground-muted transition-colors;
 }
-
-/* ── Gradient text ─────────────────────────────────────────────── */
-.gradient-text {
-  background: linear-gradient(135deg, #a5b4fc 0%, #818cf8 50%, #6366f1 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+[cmdk-item][data-selected="true"] {
+  @apply bg-surface-3 text-foreground;
 }
-
-/* ── Pulse dot ─────────────────────────────────────────────────── */
-@keyframes pulse-ring {
-  0% { transform: scale(0.8); opacity: 0.8; }
-  100% { transform: scale(1.6); opacity: 0; }
+[cmdk-empty] {
+  @apply px-3 py-6 text-center text-sm text-foreground-subtle;
 }
-
-.pulse-dot::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: pulse-ring 1.4s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+[cmdk-group-heading] {
+  @apply px-3 pt-3 pb-1 text-2xs font-medium uppercase tracking-wider text-foreground-faint;
 }
-
-/* ── Shimmer skeleton ──────────────────────────────────────────── */
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-.skeleton-shimmer {
-  background: linear-gradient(90deg,
-    rgba(255,255,255,0.03) 25%,
-    rgba(255,255,255,0.07) 50%,
-    rgba(255,255,255,0.03) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.8s infinite;
-}
-
-/* ── Sidebar active glow ───────────────────────────────────────── */
-.nav-active {
-  background: linear-gradient(90deg, rgba(99,102,241,0.18) 0%, rgba(99,102,241,0.05) 100%);
-  border-right: 2px solid #6366f1;
-}
-
-/* ── Gradient progress bar ─────────────────────────────────────── */
-.progress-gradient {
-  background: linear-gradient(90deg, #4f46e5, #818cf8);
-  box-shadow: 0 0 12px rgba(99,102,241,0.5);
-}
-
-.progress-gradient-warn {
-  background: linear-gradient(90deg, #d97706, #f59e0b);
-  box-shadow: 0 0 12px rgba(245,158,11,0.4);
-}
-
-/* ── Chat message fade in ──────────────────────────────────────── */
-@keyframes msg-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.msg-enter { animation: msg-in 0.2s ease-out forwards; }
-
-/* ── Number count up ───────────────────────────────────────────── */
-@keyframes count-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.count-in { animation: count-in 0.4s ease-out forwards; }
