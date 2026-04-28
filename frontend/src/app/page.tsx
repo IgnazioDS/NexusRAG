@@ -3,9 +3,13 @@
 import { useEffect, useState } from "react";
 import {
   Activity,
+  ArrowRight,
   ExternalLink,
   FileText,
   Gauge,
+  Github,
+  Layers,
+  Sparkles,
   TrendingUp,
 } from "lucide-react";
 import {
@@ -23,12 +27,19 @@ import { StatCard } from "@/components/dashboard/StatCard";
 import { QuotaBar } from "@/components/dashboard/QuotaBar";
 import { AlertBanner } from "@/components/dashboard/AlertBanner";
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Sparkline } from "@/components/ui/sparkline";
 import { formatRelative, formatDuration } from "@/lib/utils";
+import { PROJECT } from "@/lib/project";
 
 /**
  * Build a synthetic 10-point trend sparkline anchored on the current value.
@@ -99,6 +110,58 @@ export default function DashboardPage() {
           {dashboard?.alerts && dashboard.alerts.length > 0 && (
             <AlertBanner alerts={dashboard.alerts} />
           )}
+
+          {/* Pitch banner — strategic narrative above the live metrics */}
+          <Card className="overflow-hidden border-brand/20 bg-gradient-to-br from-surface via-surface to-brand/5">
+            <CardContent className="space-y-4 p-6">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="success">{PROJECT.stage}</Badge>
+                <Badge variant="outline">{PROJECT.category}</Badge>
+                <Badge variant="outline">{PROJECT.track}</Badge>
+                <Badge variant="muted" className="ml-auto">
+                  Tier-A telemetry
+                </Badge>
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+                  {PROJECT.summary}
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-foreground-muted">
+                  <span className="text-foreground font-medium">Problem.</span>{" "}
+                  {PROJECT.problem}
+                </p>
+                <p className="mt-1.5 text-sm leading-relaxed text-foreground-muted">
+                  <span className="text-foreground font-medium">Why now.</span>{" "}
+                  {PROJECT.why_now}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Button asChild size="sm" variant="default">
+                  <a href="/capabilities">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Capabilities
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </a>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <a href="/architecture">
+                    <Layers className="h-3.5 w-3.5" />
+                    Architecture
+                  </a>
+                </Button>
+                <Button asChild size="sm" variant="ghost">
+                  <a
+                    href={PROJECT.github_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Github className="h-3.5 w-3.5" />
+                    GitHub
+                  </a>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Stat row — now wired to real /api/stats values */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
