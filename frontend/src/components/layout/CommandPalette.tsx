@@ -9,6 +9,7 @@ import {
   Gauge,
   Key,
   LayoutDashboard,
+  Map as MapIcon,
   Moon,
   Play,
   Settings,
@@ -112,6 +113,16 @@ export function CommandPaletteProvider({
                     Try It
                     <kbd className="kbd ml-auto">G R</kbd>
                   </Command.Item>
+                  <Command.Item onSelect={() => navigate("/capabilities")}>
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Capabilities
+                    <kbd className="kbd ml-auto">G C</kbd>
+                  </Command.Item>
+                  <Command.Item onSelect={() => navigate("/roadmap")}>
+                    <MapIcon className="h-3.5 w-3.5" />
+                    Roadmap
+                    <kbd className="kbd ml-auto">G M</kbd>
+                  </Command.Item>
                   <Command.Item onSelect={() => navigate("/api-keys")}>
                     <Key className="h-3.5 w-3.5" />
                     API Keys
@@ -193,6 +204,8 @@ export function useGoToShortcuts() {
         t: "/telemetry",
         d: "/documents",
         r: "/run",
+        c: "/capabilities",
+        m: "/roadmap",
       };
       const path = dest[e.key.toLowerCase()];
       if (path) {

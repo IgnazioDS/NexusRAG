@@ -7,10 +7,12 @@ import {
   FileText,
   Key,
   LayoutDashboard,
+  Map as MapIcon,
   Play,
   Search,
   Settings,
   Shield,
+  Sparkles,
   Zap,
 } from "lucide-react";
 import { useCommandPalette } from "./CommandPalette";
@@ -30,6 +32,11 @@ const PRIMARY: NavItem[] = [
   { href: "/telemetry", label: "Telemetry", icon: Activity, desc: "Live /api/stats" },
   { href: "/documents", label: "Documents", icon: FileText, desc: "Corpus" },
   { href: "/run", label: "Try It", icon: Play, desc: "Live RAG query" },
+];
+
+const PROJECT_NAV: NavItem[] = [
+  { href: "/capabilities", label: "Capabilities", icon: Sparkles, desc: "What's shipping" },
+  { href: "/roadmap", label: "Roadmap", icon: MapIcon, desc: "Stage & direction" },
 ];
 
 const SECONDARY: NavItem[] = [
@@ -133,6 +140,11 @@ export function Sidebar() {
           Workspace
         </p>
         {PRIMARY.map(renderItem)}
+
+        <p className="mt-4 px-2.5 mb-1 text-2xs font-medium uppercase tracking-wider text-foreground-faint">
+          Project
+        </p>
+        {PROJECT_NAV.map(renderItem)}
 
         <p className="mt-4 px-2.5 mb-1 text-2xs font-medium uppercase tracking-wider text-foreground-faint">
           Account
