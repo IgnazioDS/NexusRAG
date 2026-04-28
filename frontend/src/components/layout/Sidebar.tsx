@@ -4,9 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  BookOpen,
   FileText,
+  GitBranch,
   Key,
+  Layers,
   LayoutDashboard,
+  ListChecks,
   Map as MapIcon,
   Play,
   Search,
@@ -36,7 +40,11 @@ const PRIMARY: NavItem[] = [
 
 const PROJECT_NAV: NavItem[] = [
   { href: "/capabilities", label: "Capabilities", icon: Sparkles, desc: "What's shipping" },
+  { href: "/architecture", label: "Architecture", icon: Layers, desc: "System design" },
+  { href: "/feature-matrix", label: "Feature Matrix", icon: ListChecks, desc: "Catalog" },
+  { href: "/compliance", label: "Compliance", icon: BookOpen, desc: "SOC 2 + audit" },
   { href: "/roadmap", label: "Roadmap", icon: MapIcon, desc: "Stage & direction" },
+  { href: "/changelog", label: "Changelog", icon: GitBranch, desc: "Release timeline" },
 ];
 
 const SECONDARY: NavItem[] = [

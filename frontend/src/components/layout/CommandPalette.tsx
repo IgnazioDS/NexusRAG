@@ -5,10 +5,14 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useRouter } from "next/navigation";
 import {
   Activity,
+  BookOpen,
   FileText,
   Gauge,
+  GitBranch,
   Key,
+  Layers,
   LayoutDashboard,
+  ListChecks,
   Map as MapIcon,
   Moon,
   Play,
@@ -118,10 +122,30 @@ export function CommandPaletteProvider({
                     Capabilities
                     <kbd className="kbd ml-auto">G C</kbd>
                   </Command.Item>
+                  <Command.Item onSelect={() => navigate("/architecture")}>
+                    <Layers className="h-3.5 w-3.5" />
+                    Architecture
+                    <kbd className="kbd ml-auto">G A</kbd>
+                  </Command.Item>
+                  <Command.Item onSelect={() => navigate("/feature-matrix")}>
+                    <ListChecks className="h-3.5 w-3.5" />
+                    Feature Matrix
+                    <kbd className="kbd ml-auto">G F</kbd>
+                  </Command.Item>
+                  <Command.Item onSelect={() => navigate("/compliance")}>
+                    <BookOpen className="h-3.5 w-3.5" />
+                    Compliance
+                    <kbd className="kbd ml-auto">G P</kbd>
+                  </Command.Item>
                   <Command.Item onSelect={() => navigate("/roadmap")}>
                     <MapIcon className="h-3.5 w-3.5" />
                     Roadmap
                     <kbd className="kbd ml-auto">G M</kbd>
+                  </Command.Item>
+                  <Command.Item onSelect={() => navigate("/changelog")}>
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Changelog
+                    <kbd className="kbd ml-auto">G L</kbd>
                   </Command.Item>
                   <Command.Item onSelect={() => navigate("/api-keys")}>
                     <Key className="h-3.5 w-3.5" />
@@ -205,7 +229,11 @@ export function useGoToShortcuts() {
         d: "/documents",
         r: "/run",
         c: "/capabilities",
+        a: "/architecture",
+        f: "/feature-matrix",
+        p: "/compliance",
         m: "/roadmap",
+        l: "/changelog",
       };
       const path = dest[e.key.toLowerCase()];
       if (path) {
