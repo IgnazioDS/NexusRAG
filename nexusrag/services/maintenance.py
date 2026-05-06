@@ -25,6 +25,11 @@ from nexusrag.services.backup import (
     run_backup_job,
     run_restore_drill,
 )
+from nexusrag.services.compliance.maintenance import (
+    compliance_bundle_periodic as compliance_bundle_periodic,
+    compliance_evaluate_scheduled as compliance_evaluate_scheduled,
+    compliance_prune_old_evidence as compliance_prune_old_evidence,
+)
 from nexusrag.services.governance import LEGAL_HOLD_SCOPE_BACKUP_SET, run_retention_for_tenant
 
 MaintenanceTask = Literal[
