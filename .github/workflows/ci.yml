@@ -111,6 +111,12 @@ jobs:
       AUTH_ENABLED: "true"
       AUTH_DEV_BYPASS: "false"
       UI_CURSOR_SECRET: "ci-test-cursor-secret-not-for-production"
+      # Disable optional production features that demand secrets the test
+      # environment doesn't provide. With AUTH_DEV_BYPASS=false the Settings
+      # validator enforces secrets for any feature whose *_ENABLED flag is on.
+      BACKUP_ENCRYPTION_ENABLED: "false"
+      BACKUP_SIGNING_ENABLED: "false"
+      BILLING_WEBHOOK_ENABLED: "false"
       RATE_LIMIT_ENABLED: "false"
       LLM_PROVIDER: fake
       TTS_PROVIDER: fake
