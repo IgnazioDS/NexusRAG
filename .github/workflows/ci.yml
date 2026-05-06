@@ -102,11 +102,11 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://nexusrag:nexusrag@localhost:5432/nexusrag
       REDIS_URL: redis://localhost:6379/0
       # Tests provision real API keys via create_test_api_key and authenticate via
-      # bearer token. AUTH_ENABLED must be true so the bearer path runs; setting
-      # it false routes through dev-bypass which requires X-Tenant-Id headers
-      # the tests don't supply.
+      # bearer token, so AUTH_ENABLED must be true. AUTH_DEV_BYPASS=true waives
+      # the production-secret validators (UI_CURSOR_SECRET etc.) — it does NOT
+      # change the auth flow when AUTH_ENABLED=true; the bearer path still runs.
       AUTH_ENABLED: "true"
-      AUTH_DEV_BYPASS: "false"
+      AUTH_DEV_BYPASS: "true"
       RATE_LIMIT_ENABLED: "false"
       LLM_PROVIDER: fake
       TTS_PROVIDER: fake
