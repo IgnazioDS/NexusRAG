@@ -30,6 +30,9 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
     # Force missing Vertex configuration to validate error mapping without external calls.
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    # Route the LLM through Vertex so the missing-config check actually fires;
+    # CI sets LLM_PROVIDER=fake by default which would short-circuit Vertex entirely.
+    monkeypatch.setenv("LLM_PROVIDER", "vertex_gemini")
     # Clear settings cache so the application reads the updated environment.
     get_settings.cache_clear()
 
@@ -118,6 +121,8 @@ async def test_run_emits_error_when_vertex_missing(monkeypatch) -> None:
             await db_session.execute(delete(Session).where(Session.id == session_id))
             await db_session.execute(delete(Corpus).where(Corpus.id == corpus_id))
             await db_session.commit()
+        # Reset the settings cache so the next test re-reads the un-monkeypatched env.
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
