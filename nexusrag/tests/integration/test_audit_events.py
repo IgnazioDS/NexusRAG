@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 
 from nexusrag.apps.api.main import create_app
-from nexusrag.domain.models import AuditEvent, ApiKey, User
+from nexusrag.domain.models import ApiKey, AuditEvent, User
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.audit import record_event
 from nexusrag.tests.utils.auth import create_test_api_key

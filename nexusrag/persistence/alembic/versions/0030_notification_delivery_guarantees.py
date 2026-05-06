@@ -7,10 +7,9 @@ Create Date: 2026-02-18
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
-
 
 revision = "0030_notify_delivery_guarantees"
 down_revision = "0029_notify_routing_dlq"

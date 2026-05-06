@@ -6,8 +6,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
-from nexusrag.apps.api.main import create_app
 from nexusrag.apps.api import rate_limit
+from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import AuditEvent, Corpus, TenantFeatureOverride, TenantPlanAssignment
 from nexusrag.persistence.db import SessionLocal

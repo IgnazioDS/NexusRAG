@@ -17,24 +17,23 @@ from nexusrag.apps.api.deps import (
     require_role,
 )
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.errors import RetrievalConfigError
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.providers.retrieval.config import normalize_provider_config
 from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.services.entitlements import (
     FEATURE_CORPORA_PATCH_PROVIDER,
     require_feature,
     require_retrieval_provider,
 )
+from nexusrag.services.governance import enforce_policy
 from nexusrag.services.idempotency import (
     build_replay_response,
     check_idempotency,
     compute_request_hash,
     store_idempotency_response,
 )
-from nexusrag.services.governance import enforce_policy
-
 
 router = APIRouter(prefix="/corpora", tags=["corpora"], responses=DEFAULT_ERROR_RESPONSES)
 

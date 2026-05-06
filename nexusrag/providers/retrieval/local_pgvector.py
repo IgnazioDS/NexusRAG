@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import EMBED_DIM
 from nexusrag.core.errors import RetrievalError

@@ -7,10 +7,9 @@ Create Date: 2026-02-17
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
-
 
 revision = "0021_sla_policy_autoscale"
 down_revision = "0020_cost_intel_chargeback"

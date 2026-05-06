@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from alembic import op
 
-
 revision = "0022_perf_index_tuning"
 down_revision = "0021_sla_policy_autoscale"
 branch_labels = None

@@ -4,7 +4,6 @@ import re
 import subprocess
 from pathlib import Path
 
-
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("openai_api_key", re.compile(r"OPENAI_API_KEY\s*=\s*['\"]?[A-Za-z0-9_\-]{16,}")),
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),

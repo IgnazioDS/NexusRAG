@@ -14,9 +14,9 @@ from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import (
     ApiKey,
+    AuditEvent,
     AutoscalingAction,
     AutoscalingProfile,
-    AuditEvent,
     Checkpoint,
     Corpus,
     Message,

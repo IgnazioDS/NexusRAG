@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Protocol
 from uuid import uuid4
 
@@ -29,17 +29,15 @@ from nexusrag.domain.models import (
     PlanLimit,
     RestoreDrill,
     TenantFeatureOverride,
-    TenantPlanAssignment,
     TenantKey,
+    TenantPlanAssignment,
     UsageCounter,
     User,
 )
 from nexusrag.services.audit import record_event, record_system_event
 from nexusrag.services.crypto import CRYPTO_RESOURCE_BACKUP_MANIFEST, store_encrypted_blob
 from nexusrag.services.crypto.envelope import EnvelopeResult, decrypt_payload
-from nexusrag.services.crypto.service import get_active_key
 from nexusrag.services.rollouts import get_rollout_state
-
 
 BackupType = Literal["full", "schema", "metadata", "all"]
 BackupComponent = Literal["db_full", "db_schema", "metadata"]

@@ -16,7 +16,6 @@ from nexusrag.services.security import (
     rotate_platform_key,
 )
 
-
 router = APIRouter(prefix="/admin/keyring", tags=["security"], responses=DEFAULT_ERROR_RESPONSES)
 
 

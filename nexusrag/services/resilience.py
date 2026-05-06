@@ -14,7 +14,6 @@ from nexusrag.core.config import get_settings
 from nexusrag.core.errors import IntegrationUnavailableError
 from nexusrag.services.telemetry import increment_counter, set_gauge
 
-
 logger = logging.getLogger(__name__)
 
 

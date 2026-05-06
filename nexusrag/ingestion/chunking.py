@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Iterable
 
-
 # Chunking constants keep ingestion deterministic across runs.
 CHUNK_SIZE_CHARS = 1200
 CHUNK_OVERLAP_CHARS = 150

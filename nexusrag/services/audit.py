@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -10,7 +10,6 @@ from starlette.requests import Request
 
 from nexusrag.domain.models import AuditEvent
 from nexusrag.persistence.db import SessionLocal
-
 
 logger = logging.getLogger(__name__)
 

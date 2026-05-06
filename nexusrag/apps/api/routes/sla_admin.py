@@ -41,7 +41,6 @@ from nexusrag.services.sla.policy import (
 )
 from nexusrag.services.sla.signals import window_seconds_for_label
 
-
 router = APIRouter(prefix="/admin/sla", tags=["sla"], responses=DEFAULT_ERROR_RESPONSES)
 
 _VALID_ROUTE_CLASSES = {"run", "read", "mutation", "ingest", "ops", "admin"}

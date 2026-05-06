@@ -24,11 +24,11 @@ from nexusrag.domain.models import (
 )
 from nexusrag.services.audit import record_event, sanitize_metadata
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, get_effective_entitlements
-from nexusrag.services.notifications.routing import resolve_destinations
 from nexusrag.services.notifications.receiver_contract import (
     compute_signature,
     payload_sha256,
 )
+from nexusrag.services.notifications.routing import resolve_destinations
 from nexusrag.services.rollouts import resolve_kill_switch
 from nexusrag.services.security.keyring import decrypt_keyring_secret, encrypt_keyring_secret
 

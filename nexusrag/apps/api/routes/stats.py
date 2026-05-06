@@ -28,7 +28,6 @@ from nexusrag.persistence.repos.query_log import (
     zero_metrics,
 )
 
-
 _log = logging.getLogger(__name__)
 router = APIRouter()
 

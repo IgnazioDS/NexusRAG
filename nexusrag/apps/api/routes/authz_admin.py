@@ -32,7 +32,6 @@ from nexusrag.services.idempotency import (
     store_idempotency_response,
 )
 
-
 router = APIRouter(prefix="/admin/authz", tags=["authz"], responses=DEFAULT_ERROR_RESPONSES)
 
 _ALLOWED_RESOURCE_TYPES = {"document", "corpus", "run", "admin", "ops", "audit", "*"}

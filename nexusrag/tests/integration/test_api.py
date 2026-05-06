@@ -168,15 +168,15 @@ async def test_run_emits_audio_ready_with_fake_tts(monkeypatch) -> None:
                     if line:
                         lines.append(line)
                     # Stop after we see audio.ready.
-                    if any("audio.ready" in l for l in lines):
+                    if any("audio.ready" in entry for entry in lines):
                         break
 
-            data_lines = [l for l in lines if l.startswith("data: ")]
+            data_lines = [entry for entry in lines if entry.startswith("data: ")]
             assert data_lines
             audio_events = [
-                json.loads(l.removeprefix("data: ").strip())
-                for l in data_lines
-                if "audio.ready" in l
+                json.loads(entry.removeprefix("data: ").strip())
+                for entry in data_lines
+                if "audio.ready" in entry
             ]
             assert audio_events
             audio_payload = audio_events[-1]["data"]

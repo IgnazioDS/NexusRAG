@@ -4,18 +4,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from nexusrag.services.backup import (
-    create_backup_job,
-    prune_backups,
-    run_backup_job,
-    run_restore_drill,
-)
-from nexusrag.services.compliance.maintenance import (
-    compliance_bundle_periodic,
-    compliance_evaluate_scheduled,
-    compliance_prune_old_evidence,
-)
-
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,8 +19,13 @@ from nexusrag.domain.models import (
     UiAction,
     UsageCounter,
 )
+from nexusrag.services.backup import (
+    create_backup_job,
+    prune_backups,
+    run_backup_job,
+    run_restore_drill,
+)
 from nexusrag.services.governance import LEGAL_HOLD_SCOPE_BACKUP_SET, run_retention_for_tenant
-
 
 MaintenanceTask = Literal[
     "prune_idempotency",

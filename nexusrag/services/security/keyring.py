@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
 from base64 import urlsafe_b64encode
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
-import secrets
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PlatformKey
-
 
 _ALLOWED_PURPOSES = {
     "signing",

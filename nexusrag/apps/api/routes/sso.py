@@ -24,8 +24,8 @@ from nexusrag.services.auth.oidc import (
     append_query_params,
     build_authorize_url,
     build_code_challenge,
-    exchange_code_for_tokens,
     ensure_tenant_user,
+    exchange_code_for_tokens,
     extract_claims,
     generate_nonce,
     generate_pkce_verifier,
@@ -43,7 +43,6 @@ from nexusrag.services.entitlements import (
     FEATURE_IDENTITY_SSO,
     require_feature,
 )
-
 
 router = APIRouter(prefix="/auth/sso", tags=["sso"], responses=DEFAULT_ERROR_RESPONSES)
 
@@ -463,7 +462,7 @@ async def oidc_callback(
             commit=True,
             best_effort=True,
         )
-        raise _jit_disabled()
+        raise _jit_disabled() from None
     except TenantUserDisabled:
         await db.rollback()
         await record_event(
@@ -487,7 +486,7 @@ async def oidc_callback(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "AUTH_FORBIDDEN", "message": "Tenant user disabled"},
-        )
+        ) from None
     except HTTPException:
         await db.rollback()
         await record_event(

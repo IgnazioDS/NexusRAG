@@ -5,7 +5,6 @@ from typing import Any
 
 from nexusrag.core.config import get_settings
 
-
 VALID_ROUTE_CLASSES = {"run", "read", "mutation", "ingest", "ops", "admin"}
 VALID_ENFORCEMENT_MODES = {"observe", "warn", "enforce"}
 

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -17,7 +17,6 @@ from nexusrag.domain.models import (
     TenantFeatureOverride,
     TenantPlanAssignment,
 )
-
 
 logger = logging.getLogger(__name__)
 

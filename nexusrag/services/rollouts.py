@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from nexusrag.core.config import get_settings
 from nexusrag.services.resilience import get_resilience_redis
-
 
 logger = logging.getLogger(__name__)
 

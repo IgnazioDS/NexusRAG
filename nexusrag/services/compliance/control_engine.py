@@ -24,7 +24,6 @@ from nexusrag.services.failover import get_failover_status
 from nexusrag.services.governance import governance_status_snapshot
 from nexusrag.services.telemetry import availability, counters_snapshot, gauges_snapshot
 
-
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
 STATUS_FAIL = "fail"
@@ -72,9 +71,9 @@ def _resolve_path(data: Any, path: str | None) -> Any:
 
 def _apply_operator(value: Any, operator: str, threshold: Any) -> bool:
     if operator == "eq":
-        return value == threshold
+        return bool(value == threshold)
     if operator == "ne":
-        return value != threshold
+        return bool(value != threshold)
     if operator == "gt":
         return value is not None and value > threshold
     if operator == "gte":
@@ -263,14 +262,16 @@ async def _dr_readiness(session: AsyncSession) -> dict[str, Any]:
             .limit(1)
         )
     ).scalar_one_or_none()
+    backup_completed_at = last_backup.completed_at if last_backup else None
+    drill_completed_at = last_drill.completed_at if last_drill else None
     return {
         "backup": {
-            "last_success_at": last_backup.completed_at.isoformat() if last_backup else None,
+            "last_success_at": backup_completed_at.isoformat() if backup_completed_at else None,
             "last_status": last_backup.status if last_backup else "unknown",
         },
         "restore_drill": {
             "last_result": last_drill.status if last_drill else "unknown",
-            "last_drill_at": last_drill.completed_at.isoformat() if last_drill else None,
+            "last_drill_at": drill_completed_at.isoformat() if drill_completed_at else None,
         },
     }
 

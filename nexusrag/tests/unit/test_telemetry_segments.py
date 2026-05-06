@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nexusrag.services.telemetry import request_segment_latency_by_class, record_segment_timing
+from nexusrag.services.telemetry import record_segment_timing, request_segment_latency_by_class
 
 
 def test_segment_latency_aggregation() -> None:

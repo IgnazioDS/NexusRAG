@@ -23,11 +23,15 @@ from nexusrag.domain.models import (
     User,
 )
 from nexusrag.persistence.db import SessionLocal
+from nexusrag.services.notifications.routing import resolve_destinations
 from nexusrag.services.operability import actions as actions_module
 from nexusrag.services.operability import notifications as notifications_module
 from nexusrag.services.operability import worker as worker_module
-from nexusrag.services.notifications.routing import resolve_destinations
-from nexusrag.services.operability.notifications import dedupe_window_start, retry_backoff_ms, send_operability_notification
+from nexusrag.services.operability.notifications import (
+    dedupe_window_start,
+    retry_backoff_ms,
+    send_operability_notification,
+)
 from nexusrag.services.operability.worker import acquire_evaluator_lock, release_evaluator_lock
 from nexusrag.tests.utils.auth import create_test_api_key
 

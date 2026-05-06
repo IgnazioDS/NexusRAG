@@ -4,7 +4,6 @@ from typing import Any
 
 from nexusrag.core.errors import RetrievalConfigError
 
-
 DEFAULT_PROVIDER = "local_pgvector"
 DEFAULT_TOP_K = 5
 ALLOWED_PROVIDERS = {"local_pgvector", "aws_bedrock_kb", "gcp_vertex"}

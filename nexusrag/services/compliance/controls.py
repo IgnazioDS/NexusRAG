@@ -109,7 +109,7 @@ def _check_redaction() -> tuple[str, dict[str, Any]]:
 def _check_ops_routes() -> tuple[str, dict[str, Any]]:
     from nexusrag.apps.api.routes.ops import router as ops_router
 
-    route_paths = {route.path for route in ops_router.routes}
+    route_paths = {getattr(route, "path", None) for route in ops_router.routes}
     required = {"/ops/metrics", "/ops/slo"}
     missing = sorted(required - route_paths)
     return ("pass" if not missing else "fail", {"missing": missing})

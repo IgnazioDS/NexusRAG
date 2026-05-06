@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,9 +13,14 @@ from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import ChargebackReport, TenantBudget
-from nexusrag.services.costs.aggregation import build_summary, breakdown_costs, current_year_month, month_bounds, timeseries
+from nexusrag.services.costs.aggregation import (
+    breakdown_costs,
+    build_summary,
+    current_year_month,
+    month_bounds,
+    timeseries,
+)
 from nexusrag.services.entitlements import get_effective_entitlements
-
 
 router = APIRouter(prefix="/self-serve/costs", tags=["self-serve"], responses=DEFAULT_ERROR_RESPONSES)
 

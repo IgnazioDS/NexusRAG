@@ -17,7 +17,6 @@ from nexusrag.services.compliance import (
     list_compliance_snapshots,
 )
 
-
 router = APIRouter(prefix="/admin/compliance", tags=["compliance"], responses=DEFAULT_ERROR_RESPONSES)
 
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from nexusrag.apps.api.main import create_app
 from nexusrag.core.config import get_settings
@@ -17,6 +17,8 @@ from nexusrag.domain.models import (
     EncryptedBlob,
     KeyRotationJob,
     Message,
+)
+from nexusrag.domain.models import (
     Session as SessionRow,
 )
 from nexusrag.persistence.db import SessionLocal

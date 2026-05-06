@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,7 +19,6 @@ from nexusrag.ingestion.embeddings import embed_text
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.costs.metering import estimate_tokens, record_cost_event
 from nexusrag.services.telemetry import record_segment_timing, set_gauge
-
 
 logger = logging.getLogger(__name__)
 

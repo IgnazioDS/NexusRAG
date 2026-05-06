@@ -1,21 +1,19 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-import logging
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.core.config import get_settings
 from nexusrag.domain.models import UsageCostEvent
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.audit import record_event
 from nexusrag.services.costs.pricing import PricingRate, rate_metadata, select_pricing_rate
-
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +107,6 @@ async def record_cost_event(
 ) -> Decimal:
     # Persist a cost event without blocking the caller on failures.
     occurred = occurred_at or _utc_now()
-    settings = get_settings()
     estimated = False
 
     async def _write(session_to_use: AsyncSession) -> Decimal:

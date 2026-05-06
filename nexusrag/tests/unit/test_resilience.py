@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
+from nexusrag.core.config import get_settings
+from nexusrag.core.errors import IntegrationUnavailableError
+from nexusrag.services import rollouts
 from nexusrag.services.resilience import (
     CircuitBreaker,
     CircuitBreakerConfig,
@@ -11,9 +12,6 @@ from nexusrag.services.resilience import (
     deterministic_canary,
     retry_async,
 )
-from nexusrag.core.errors import IntegrationUnavailableError
-from nexusrag.services import rollouts
-from nexusrag.core.config import get_settings
 
 
 @pytest.mark.asyncio

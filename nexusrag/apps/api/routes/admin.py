@@ -33,13 +33,28 @@ from nexusrag.services.entitlements import (
     list_plan_catalog,
     list_plan_features,
 )
-from nexusrag.services.quota import parse_period_start
+from nexusrag.services.governance import enforce_policy, get_or_create_retention_policy
 from nexusrag.services.idempotency import (
     build_replay_response,
     check_idempotency,
     compute_request_hash,
     store_idempotency_response,
 )
+from nexusrag.services.maintenance import (
+    backup_create_scheduled,
+    backup_prune_retention,
+    cleanup_ui_actions,
+    compliance_bundle_periodic,
+    compliance_evaluate_scheduled,
+    compliance_prune_old_evidence,
+    prune_audit_events,
+    prune_idempotency,
+    prune_retention_all,
+    prune_usage_counters,
+    record_retention_run,
+    restore_drill_scheduled,
+)
+from nexusrag.services.quota import parse_period_start
 from nexusrag.services.rollouts import (
     CANARY_KEYS,
     KILL_SWITCH_KEYS,
@@ -48,22 +63,6 @@ from nexusrag.services.rollouts import (
     set_canary_percentages,
     set_kill_switches,
 )
-from nexusrag.services.maintenance import (
-    cleanup_ui_actions,
-    backup_create_scheduled,
-    backup_prune_retention,
-    prune_audit_events,
-    prune_idempotency,
-    prune_usage_counters,
-    restore_drill_scheduled,
-    compliance_evaluate_scheduled,
-    compliance_bundle_periodic,
-    compliance_prune_old_evidence,
-    prune_retention_all,
-    record_retention_run,
-)
-from nexusrag.services.governance import enforce_policy, get_or_create_retention_policy
-
 
 router = APIRouter(prefix="/admin", tags=["admin"], responses=DEFAULT_ERROR_RESPONSES)
 

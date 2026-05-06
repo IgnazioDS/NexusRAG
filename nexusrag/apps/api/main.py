@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from email.utils import format_datetime
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,27 +16,36 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import StreamingResponse
 
-from nexusrag.apps.api.routes.audio import router as audio_router
+from nexusrag.apps.api.errors import (
+    http_exception_handler,
+    starlette_http_exception_handler,
+    tenant_predicate_exception_handler,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
+from nexusrag.apps.api.rate_limit import route_class_for_request
+from nexusrag.apps.api.response import API_VERSION, is_versioned_request
 from nexusrag.apps.api.routes.admin import router as admin_router
-from nexusrag.apps.api.routes.audit import router as audit_router
 from nexusrag.apps.api.routes.api_keys_admin import router as api_keys_admin_router
+from nexusrag.apps.api.routes.audio import router as audio_router
+from nexusrag.apps.api.routes.audit import router as audit_router
 from nexusrag.apps.api.routes.authz_admin import router as authz_admin_router
-from nexusrag.apps.api.routes.corpora import router as corpora_router
-from nexusrag.apps.api.routes.documents import router as documents_router
-from nexusrag.apps.api.routes.compliance_admin import router as compliance_admin_router
 from nexusrag.apps.api.routes.compliance import router as compliance_router
+from nexusrag.apps.api.routes.compliance_admin import router as compliance_admin_router
 from nexusrag.apps.api.routes.compliance_ops import router as compliance_ops_router
+from nexusrag.apps.api.routes.corpora import router as corpora_router
 from nexusrag.apps.api.routes.costs_admin import router as costs_admin_router
 from nexusrag.apps.api.routes.costs_self_serve import router as costs_self_serve_router
 from nexusrag.apps.api.routes.crypto_admin import router as crypto_admin_router
+from nexusrag.apps.api.routes.documents import router as documents_router
 from nexusrag.apps.api.routes.governance_admin import router as governance_admin_router
 from nexusrag.apps.api.routes.governance_ops import router as governance_ops_router
 from nexusrag.apps.api.routes.health import router as health_router
 from nexusrag.apps.api.routes.identity_admin import router as identity_admin_router
 from nexusrag.apps.api.routes.keyring_admin import router as keyring_admin_router
 from nexusrag.apps.api.routes.keys_admin import router as keys_admin_router
-from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.operability_admin import router as operability_admin_router
+from nexusrag.apps.api.routes.ops import router as ops_router
 from nexusrag.apps.api.routes.run import router as run_router
 from nexusrag.apps.api.routes.scim import router as scim_router
 from nexusrag.apps.api.routes.self_serve import router as self_serve_router
@@ -45,20 +54,10 @@ from nexusrag.apps.api.routes.sso import router as sso_router
 from nexusrag.apps.api.routes.stats import router as stats_router
 from nexusrag.apps.api.routes.ui import router as ui_router
 from nexusrag.core.logging import configure_logging
-from nexusrag.apps.api.errors import (
-    http_exception_handler,
-    starlette_http_exception_handler,
-    validation_exception_handler,
-    unhandled_exception_handler,
-    tenant_predicate_exception_handler,
-)
-from nexusrag.apps.api.response import API_VERSION, is_versioned_request
-from nexusrag.apps.api.rate_limit import route_class_for_request
-from nexusrag.services.telemetry import record_request
 from nexusrag.persistence.db import SessionLocal
-from nexusrag.persistence.repos.query_log import record_query
 from nexusrag.persistence.guards import TenantPredicateError
-
+from nexusrag.persistence.repos.query_log import record_query
+from nexusrag.services.telemetry import record_request
 
 _LEGACY_SUNSET_DAYS = 90
 _LEGACY_EXEMPT_PREFIXES = (

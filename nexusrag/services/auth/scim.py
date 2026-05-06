@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from nexusrag.domain.models import ScimGroup, ScimGroupMembership, ScimIdentity, TenantUser
+from nexusrag.domain.models import ScimGroup, ScimIdentity, TenantUser
 from nexusrag.services.auth.api_keys import ROLE_ORDER, normalize_role
-
 
 SCIM_SCHEMA_USER = "urn:ietf:params:scim:schemas:core:2.0:User"
 SCIM_SCHEMA_GROUP = "urn:ietf:params:scim:schemas:core:2.0:Group"

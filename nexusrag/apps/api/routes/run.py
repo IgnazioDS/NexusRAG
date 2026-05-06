@@ -12,12 +12,19 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from nexusrag.agent.graph import run_graph
+from nexusrag.apps.api.deps import (
+    Principal,
+    get_db,
+    reject_tenant_id_in_body,
+    require_role,
+)
+from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.core.config import get_settings
 from nexusrag.core.errors import (
     AwsAuthError,
@@ -28,8 +35,8 @@ from nexusrag.core.errors import (
     ProviderConfigError,
     RetrievalConfigError,
     RetrievalError,
-    SessionTenantMismatchError,
     ServiceBusyError,
+    SessionTenantMismatchError,
     TTSAuthError,
     TTSConfigMissingError,
     TTSError,
@@ -64,13 +71,6 @@ from nexusrag.services.rollouts import resolve_canary_percentage, resolve_kill_s
 from nexusrag.services.sla.evaluator import evaluate_tenant_sla
 from nexusrag.services.sla.signals import record_sla_observation
 from nexusrag.services.telemetry import increment_counter, record_segment_timing, record_stream_duration
-from nexusrag.apps.api.deps import (
-    Principal,
-    get_db,
-    reject_tenant_id_in_body,
-    require_role,
-)
-from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["run"], responses=DEFAULT_ERROR_RESPONSES)

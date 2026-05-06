@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import io
 import json
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
-import zipfile
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +14,6 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import AuditEvent, ComplianceSnapshot
 from nexusrag.services.audit import sanitize_metadata
 from nexusrag.services.compliance.controls import evaluate_controls
-
 
 _REQUIRED_BUNDLE_FILES = (
     "snapshot.json",

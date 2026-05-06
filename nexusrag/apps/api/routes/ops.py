@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 import asyncio
+import math
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,7 +18,7 @@ from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import BackupJob, Document, RestoreDrill
-from nexusrag.services.ingest import queue as ingest_queue
+from nexusrag.persistence.db import SessionLocal, pool_stats
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.backup import (
     create_backup_job,
@@ -26,8 +26,7 @@ from nexusrag.services.backup import (
     run_backup_job,
     run_restore_drill,
 )
-from nexusrag.persistence.db import SessionLocal
-from nexusrag.persistence.db import pool_stats
+from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 from nexusrag.services.failover import (
     FailoverTransitionResult,
     evaluate_readiness,
@@ -37,7 +36,7 @@ from nexusrag.services.failover import (
     rollback_failover,
     set_write_freeze,
 )
-from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
+from nexusrag.services.ingest import queue as ingest_queue
 from nexusrag.services.operability import trigger_runtime_alert
 from nexusrag.services.operability.notifications import notification_queue_summary
 from nexusrag.services.operability.worker import get_operability_worker_heartbeat
@@ -48,11 +47,10 @@ from nexusrag.services.telemetry import (
     external_latency_by_integration,
     gauges_snapshot,
     p95_latency,
-    request_segment_latency_by_class,
     request_latency_by_class,
+    request_segment_latency_by_class,
     stream_duration_stats,
 )
-
 
 router = APIRouter(prefix="/ops", tags=["ops"], responses=DEFAULT_ERROR_RESPONSES)
 

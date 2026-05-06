@@ -297,7 +297,8 @@ async def verify_evidence_bundle(
 
     with tarfile.open(bundle_path, "r:gz") as tar:
         manifest_member = tar.getmember("manifest.json")
-        manifest_bytes = tar.extractfile(manifest_member).read() if manifest_member else None
+        manifest_handle = tar.extractfile(manifest_member) if manifest_member else None
+        manifest_bytes = manifest_handle.read() if manifest_handle else None
     if not manifest_bytes:
         return False, "manifest missing"
     manifest_payload = json.loads(manifest_bytes.decode("utf-8"))

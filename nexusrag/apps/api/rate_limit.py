@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import logging
 import math
 import random
 import time
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from fastapi import HTTPException, Request, Response, status
@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.core.config import get_settings
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.telemetry import increment_counter
-
 
 logger = logging.getLogger(__name__)
 

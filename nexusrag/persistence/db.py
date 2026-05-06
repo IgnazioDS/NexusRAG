@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from nexusrag.core.config import get_settings
 
-
 settings = get_settings()
 _engine_kwargs: dict[str, Any] = {"pool_pre_ping": True}
 # Configure bounded asyncpg pools for predictable latency under load.

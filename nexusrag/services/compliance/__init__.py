@@ -21,7 +21,6 @@ from nexusrag.services.compliance.evidence_collector import (
     verify_evidence_bundle,
 )
 
-
 __all__ = [
     "ControlEvaluationResult",
     "EvidenceBundleResult",

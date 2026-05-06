@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 from nexusrag.apps.api.main import create_app
 from nexusrag.persistence.repos.query_log import QueryAggregates
 
-
 _REQUIRED_TOP_FIELDS = {
     "system",
     "mode",

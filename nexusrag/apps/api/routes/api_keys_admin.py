@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -14,7 +13,6 @@ from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.domain.models import ApiKey, User
 from nexusrag.services.audit import get_request_context, record_event
-
 
 router = APIRouter(prefix="/admin/api-keys", tags=["security"], responses=DEFAULT_ERROR_RESPONSES)
 

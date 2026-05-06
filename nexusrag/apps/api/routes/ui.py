@@ -19,21 +19,21 @@ from nexusrag.domain.models import (
     AuditEvent,
     Document,
     Plan,
+    PlanLimit,
     UiAction,
     UsageCounter,
-    PlanLimit,
 )
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.authz.abac import authorize_document_action, filter_documents_for_principal
 from nexusrag.services.entitlements import (
+    DEFAULT_PLAN_ID,
     FEATURE_AUDIT,
     FEATURE_BILLING_WEBHOOK_TEST,
     FEATURE_OPS_ADMIN,
     FEATURE_TTS,
     FeatureEntitlement,
-    DEFAULT_PLAN_ID,
     get_active_plan_assignment,
     get_effective_entitlements,
     require_feature,
@@ -59,7 +59,6 @@ from nexusrag.services.ui_query import (
     validate_cursor_payload,
 )
 from nexusrag.services.usage_dashboard import aggregate_request_counts, build_timeseries_points
-
 
 router = APIRouter(tags=["ui"], responses=DEFAULT_ERROR_RESPONSES)
 

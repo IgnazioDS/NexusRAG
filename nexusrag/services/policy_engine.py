@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PolicyRule
 
-
 POLICY_ACTION_ALLOW = "allow"
 POLICY_ACTION_DENY = "deny"
 POLICY_ACTION_REDACT_FIELDS = "redact_fields"

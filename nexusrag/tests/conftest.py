@@ -7,16 +7,19 @@ from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
 
 from nexusrag.domain.models import (
+    AlertEvent,
+    AlertRule,
     ComplianceArtifact,
+    ComplianceSnapshot,
+    ControlEvaluation,
     DsarRequest,
     EncryptedBlob,
+    EvidenceBundle,
     FailoverClusterState,
     FailoverEvent,
     FailoverToken,
     GovernanceRetentionRun,
-    ComplianceSnapshot,
-    ControlEvaluation,
-    EvidenceBundle,
+    IncidentTimelineEvent,
     KeyRotationJob,
     LegalHold,
     NotificationAttempt,
@@ -24,18 +27,14 @@ from nexusrag.domain.models import (
     NotificationJob,
     NotificationRoute,
     OpsIncident,
-    IncidentTimelineEvent,
-    AlertEvent,
-    AlertRule,
     PlatformKey,
     PolicyRule,
     RegionStatus,
-    RetentionRun,
     RetentionPolicy,
+    RetentionRun,
     TenantKey,
 )
-from nexusrag.persistence.db import SessionLocal
-from nexusrag.persistence.db import engine
+from nexusrag.persistence.db import SessionLocal, engine
 
 
 @pytest.fixture(scope="session")

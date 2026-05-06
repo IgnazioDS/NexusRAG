@@ -22,8 +22,8 @@ from nexusrag.domain.models import (
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.auth.api_keys import normalize_role
 from nexusrag.services.auth.scim import (
-    ScimUserInput,
     SCIM_SCHEMA_PATCH,
+    ScimUserInput,
     apply_active_status,
     apply_scim_group_patch,
     apply_scim_user_patch,
@@ -37,7 +37,6 @@ from nexusrag.services.auth.scim import (
     resolve_role_from_groups,
 )
 from nexusrag.services.entitlements import FEATURE_IDENTITY_SCIM, require_feature
-
 
 router = APIRouter(prefix="/scim/v2", tags=["scim"], responses=DEFAULT_ERROR_RESPONSES)
 

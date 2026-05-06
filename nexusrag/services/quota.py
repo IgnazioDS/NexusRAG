@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
 import logging
 import random
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from fastapi import HTTPException, Request, Response, status
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexusrag.core.config import get_settings
 from nexusrag.domain.models import PlanLimit, QuotaSoftCapEvent, UsageCounter
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.billing_webhook import build_billing_signature, send_billing_webhook_event
 from nexusrag.services.telemetry import increment_counter
-
 
 logger = logging.getLogger(__name__)
 

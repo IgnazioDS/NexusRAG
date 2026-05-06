@@ -6,10 +6,10 @@ Create Date: 2026-02-01 18:10:00.000000
 """
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+from alembic import op
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects import postgresql
 
 from nexusrag.core.config import EMBED_DIM
 

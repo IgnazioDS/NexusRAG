@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.domain.models import SsoSession, TenantUser
 from nexusrag.services.auth.api_keys import normalize_role
-
 
 TOKEN_PREFIX = "nrgss_"
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta, timezone, datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException

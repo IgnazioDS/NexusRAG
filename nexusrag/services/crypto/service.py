@@ -17,7 +17,6 @@ from nexusrag.services.crypto.kms import get_kms_provider
 from nexusrag.services.crypto.utils import b64decode_str, b64encode_bytes
 from nexusrag.services.telemetry import increment_counter, set_gauge
 
-
 logger = logging.getLogger(__name__)
 
 CRYPTO_RESOURCE_AUDIO = "audio_blob"
@@ -92,7 +91,6 @@ def _build_envelope_from_blob(blob: EncryptedBlob, *, key_ref: str, key_version:
 
 
 def _choose_storage_path(resource_type: str, resource_id: str) -> Path | None:
-    settings = get_settings()
     if resource_type != CRYPTO_RESOURCE_AUDIO:
         return None
     # Keep audio ciphertext on disk to avoid large DB rows.

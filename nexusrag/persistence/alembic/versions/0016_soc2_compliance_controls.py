@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
-
 
 revision = "0016_soc2_compliance_controls"
 down_revision = "0015_tenant_encryption_keys"

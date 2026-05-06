@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import hmac
 import json
-from pathlib import Path
 import shutil
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -35,11 +35,10 @@ from nexusrag.domain.models import (
     TenantKey,
     User,
 )
-from nexusrag.services.audit import record_event
 from nexusrag.services import backup as backup_service
+from nexusrag.services.audit import record_event
 from nexusrag.services.crypto import CRYPTO_RESOURCE_DSAR, ensure_encryption_available, store_encrypted_blob
 from nexusrag.services.policy_engine import PolicyDecision, evaluate_policy, redact_context_fields
-
 
 LEGAL_HOLD_SCOPE_TENANT = "tenant"
 LEGAL_HOLD_SCOPE_DOCUMENT = "document"
@@ -201,7 +200,7 @@ async def enforce_policy(
     if decision.require_encryption:
         try:
             ensure_encryption_available()
-        except HTTPException as exc:
+        except HTTPException:
             await record_event(
                 session=session,
                 tenant_id=tenant_id,

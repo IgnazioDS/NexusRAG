@@ -15,12 +15,11 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import ComplianceArtifact, ControlCatalog, ControlEvaluation, EvidenceBundle
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.compliance import (
-    evaluate_controls,
     evaluate_all_controls,
+    evaluate_controls,
     generate_evidence_bundle,
     verify_evidence_bundle,
 )
-
 
 router = APIRouter(prefix="/admin/compliance", tags=["compliance"], responses=DEFAULT_ERROR_RESPONSES)
 
@@ -146,7 +145,7 @@ async def list_controls(
     "/evaluate",
     response_model=SuccessEnvelope[ComplianceEvaluateResponse] | ComplianceEvaluateResponse,
 )
-async def evaluate_controls(
+async def evaluate_controls_endpoint(
     request: Request,
     payload: ComplianceEvaluateRequest,
     principal: Principal = Depends(require_role("admin")),

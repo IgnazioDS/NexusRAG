@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -37,15 +37,14 @@ from nexusrag.services.entitlements import (
     get_effective_entitlements,
     require_feature,
 )
-from nexusrag.services.self_serve import enforce_key_limit
-from nexusrag.services.usage_dashboard import aggregate_request_counts, build_timeseries_points
 from nexusrag.services.idempotency import (
     build_replay_response,
     check_idempotency,
     compute_request_hash,
     store_idempotency_response,
 )
-
+from nexusrag.services.self_serve import enforce_key_limit
+from nexusrag.services.usage_dashboard import aggregate_request_counts, build_timeseries_points
 
 router = APIRouter(prefix="/self-serve", tags=["self-serve"], responses=DEFAULT_ERROR_RESPONSES)
 

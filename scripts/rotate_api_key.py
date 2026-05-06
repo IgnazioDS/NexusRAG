@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
 import sys
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from nexusrag.domain.models import ApiKey
 from nexusrag.persistence.db import SessionLocal
-from nexusrag.services.auth.api_keys import generate_api_key
 from nexusrag.services.audit import record_event
+from nexusrag.services.auth.api_keys import generate_api_key
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
 import secrets
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -25,7 +25,6 @@ from nexusrag.domain.models import (
 from nexusrag.services.audit import record_event
 from nexusrag.services.resilience import get_resilience_redis
 from nexusrag.services.telemetry import increment_counter, set_gauge
-
 
 logger = logging.getLogger(__name__)
 

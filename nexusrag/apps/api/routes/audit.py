@@ -14,7 +14,6 @@ from nexusrag.apps.api.response import SuccessEnvelope
 from nexusrag.persistence.repos import audit as audit_repo
 from nexusrag.services.entitlements import FEATURE_AUDIT, require_feature
 
-
 router = APIRouter(prefix="/audit", tags=["audit"], responses=DEFAULT_ERROR_RESPONSES)
 
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timedelta, timezone
 import sys
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 

@@ -10,7 +10,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from nexusrag.apps.api.response import error_response, is_versioned_request
 from nexusrag.persistence.guards import TenantPredicateError
 
-
 _DEFAULT_ERROR_CODES: dict[int, str] = {
     400: "BAD_REQUEST",
     401: "AUTH_UNAUTHORIZED",

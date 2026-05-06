@@ -9,7 +9,13 @@ from nexusrag.domain.models import EncryptedBlob, TenantKey
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.crypto.envelope import EnvelopeResult, decrypt_payload, encrypt_payload
 from nexusrag.services.crypto.kms.local import LocalKmsProvider
-from nexusrag.services.crypto.service import create_rotation_job, get_active_key, rotate_key, run_rotation_job, store_encrypted_blob
+from nexusrag.services.crypto.service import (
+    create_rotation_job,
+    get_active_key,
+    rotate_key,
+    run_rotation_job,
+    store_encrypted_blob,
+)
 
 
 def _set_crypto_env(monkeypatch) -> None:

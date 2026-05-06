@@ -6,7 +6,6 @@ from uuid import uuid4
 from fastapi import Request
 from pydantic import BaseModel, Field
 
-
 API_VERSION = "v1"
 
 T = TypeVar("T")

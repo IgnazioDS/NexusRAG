@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 
-from prometheus_client import CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 from prometheus_client.metrics_core import (
     CounterMetricFamily,
     GaugeMetricFamily,

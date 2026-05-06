@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.core.config import get_settings
 from nexusrag.services.crypto import CRYPTO_RESOURCE_AUDIO, store_encrypted_blob
 
-
 AUDIO_DIR = Path("var") / "audio"
 
 

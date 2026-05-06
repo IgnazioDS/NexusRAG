@@ -13,7 +13,6 @@ from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 from nexusrag.services.governance import governance_evidence, governance_status_snapshot
 
-
 router = APIRouter(prefix="/ops/governance", tags=["ops"], responses=DEFAULT_ERROR_RESPONSES)
 
 

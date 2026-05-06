@@ -7,11 +7,10 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from nexusrag.domain.models import Chunk, Corpus
 from nexusrag.core.config import EMBED_DIM
+from nexusrag.domain.models import Chunk, Corpus
 from nexusrag.ingestion.embeddings import embed_text
 from nexusrag.persistence.db import SessionLocal
-
 
 DEMO_TENANT_ID = "t1"
 DEMO_CORPUS_ID = "c1"

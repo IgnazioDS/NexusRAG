@@ -12,7 +12,6 @@ from nexusrag.services.ingest.queue import (
     set_worker_heartbeat,
 )
 
-
 logger = logging.getLogger(__name__)
 
 

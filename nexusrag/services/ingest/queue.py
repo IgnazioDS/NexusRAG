@@ -7,19 +7,18 @@ from typing import Literal
 
 from arq import Retry, create_pool
 from arq.connections import RedisSettings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from nexusrag.core.config import get_settings
+from nexusrag.core.errors import ServiceBusyError
 from nexusrag.persistence.db import SessionLocal
 from nexusrag.persistence.repos import documents as documents_repo
 from nexusrag.services.ingest.ingestion import (
     ingest_document_from_storage,
     write_text_to_storage,
 )
-from nexusrag.core.errors import ServiceBusyError
 from nexusrag.services.resilience import get_ingest_bulkhead
 from nexusrag.services.telemetry import increment_counter, record_segment_timing, set_gauge
-
 
 logger = logging.getLogger(__name__)
 

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import asyncio
 import base64
 import hashlib
 import json
 import logging
 import secrets
-from typing import Any
-from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
-import asyncio
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 import jwt
@@ -20,7 +20,6 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import IdentityProvider, ScimGroup, ScimGroupMembership, TenantUser
 from nexusrag.services.auth.api_keys import ROLE_ORDER, normalize_role
 from nexusrag.services.resilience import get_resilience_redis
-
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest

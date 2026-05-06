@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import delete
 
-from nexusrag.persistence.db import SessionLocal
 from nexusrag.domain.models import TenantUser
+from nexusrag.persistence.db import SessionLocal
 from nexusrag.services.auth.oidc import JitProvisioningDisabled, OidcClaims, ensure_tenant_user
 
 

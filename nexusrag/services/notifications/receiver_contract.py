@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import hmac
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock
 from typing import Mapping, Protocol
-
 
 _HEADER_NOTIFICATION_ID = "x-notification-id"
 _HEADER_NOTIFICATION_ATTEMPT = "x-notification-attempt"

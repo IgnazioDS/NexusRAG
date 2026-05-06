@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 
 from fastapi import Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
@@ -11,13 +11,13 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from nexusrag.apps.api.rate_limit import enforce_rate_limit, route_class_for_request
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import ApiKey, User
 from nexusrag.persistence.db import SessionLocal, get_session
+from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.auth.api_keys import hash_api_key, normalize_role, role_allows
 from nexusrag.services.auth.sso_sessions import is_sso_session_token, resolve_sso_session
-from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.apps.api.rate_limit import enforce_rate_limit, route_class_for_request
 from nexusrag.services.failover import enforce_write_gate
 from nexusrag.services.quota import enforce_quota
 from nexusrag.services.telemetry import record_segment_timing

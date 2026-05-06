@@ -4,7 +4,6 @@ import hashlib
 import secrets
 from uuid import uuid4
 
-
 ROLE_ORDER: dict[str, int] = {
     "reader": 1,
     "editor": 2,

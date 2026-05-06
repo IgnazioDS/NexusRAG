@@ -34,27 +34,30 @@ from nexusrag.apps.api.deps import (
     require_role,
 )
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
+from nexusrag.apps.api.response import SuccessEnvelope, is_versioned_request, success_response
 from nexusrag.core.config import get_settings
+from nexusrag.core.errors import ServiceBusyError
 from nexusrag.domain.models import Chunk, Document, DocumentLabel, DocumentPermission
 from nexusrag.ingestion.chunking import CHUNK_OVERLAP_CHARS, CHUNK_SIZE_CHARS
 from nexusrag.persistence.repos import corpora as corpora_repo
 from nexusrag.persistence.repos import documents as documents_repo
-from nexusrag.services.ingest.ingestion import write_text_to_storage
-from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestion_job
-from nexusrag.core.errors import ServiceBusyError
 from nexusrag.services.audit import get_request_context, record_event
-from nexusrag.services.costs.budget_guardrails import cost_headers, evaluate_budget_guardrail
-from nexusrag.services.costs.metering import estimate_cost, estimate_tokens, record_cost_event
-from nexusrag.apps.api.response import SuccessEnvelope, is_versioned_request, success_response
 from nexusrag.services.authz.abac import (
     authorize_document_action,
     authorize_document_create,
     filter_documents_for_principal,
 )
+from nexusrag.services.costs.budget_guardrails import cost_headers, evaluate_budget_guardrail
+from nexusrag.services.costs.metering import estimate_cost, estimate_tokens, record_cost_event
 from nexusrag.services.entitlements import (
     FEATURE_COST_CONTROLS,
     FEATURE_COST_VISIBILITY,
     get_effective_entitlements,
+)
+from nexusrag.services.governance import (
+    LEGAL_HOLD_SCOPE_DOCUMENT,
+    enforce_no_legal_hold,
+    enforce_policy,
 )
 from nexusrag.services.idempotency import (
     build_replay_response,
@@ -62,16 +65,12 @@ from nexusrag.services.idempotency import (
     compute_request_hash,
     store_idempotency_response,
 )
+from nexusrag.services.ingest.ingestion import write_text_to_storage
+from nexusrag.services.ingest.queue import IngestionJobPayload, enqueue_ingestion_job
 from nexusrag.services.rollouts import resolve_kill_switch
 from nexusrag.services.sla.evaluator import evaluate_tenant_sla
 from nexusrag.services.sla.signals import record_sla_observation
 from nexusrag.services.telemetry import increment_counter
-from nexusrag.services.governance import (
-    LEGAL_HOLD_SCOPE_DOCUMENT,
-    enforce_no_legal_hold,
-    enforce_policy,
-)
-
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"], responses=DEFAULT_ERROR_RESPONSES)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import hmac
 import json
-import time
 import logging
+import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -14,7 +14,6 @@ from nexusrag.core.config import get_settings
 from nexusrag.services.audit import record_system_event
 from nexusrag.services.resilience import CircuitBreaker, get_resilience_redis, retry_async
 from nexusrag.services.telemetry import record_external_call
-
 
 logger = logging.getLogger(__name__)
 

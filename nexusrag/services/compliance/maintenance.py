@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
@@ -93,11 +94,15 @@ async def compliance_prune_old_evidence(session: AsyncSession) -> int:
     if hold is not None:
         # Skip pruning if an active tenant-wide legal hold exists.
         return 0
-    deleted_evals = await session.execute(
-        delete(ControlEvaluation).where(ControlEvaluation.evaluated_at < cutoff)
+    deleted_evals = cast(
+        CursorResult[Any],
+        await session.execute(delete(ControlEvaluation).where(ControlEvaluation.evaluated_at < cutoff)),
     )
-    deleted_bundles = await session.execute(
-        delete(EvidenceBundle).where(EvidenceBundle.generated_at.is_not(None), EvidenceBundle.generated_at < cutoff)
+    deleted_bundles = cast(
+        CursorResult[Any],
+        await session.execute(
+            delete(EvidenceBundle).where(EvidenceBundle.generated_at.is_not(None), EvidenceBundle.generated_at < cutoff)
+        ),
     )
     deleted_total = (deleted_evals.rowcount or 0) + (deleted_bundles.rowcount or 0)
     await record_event(

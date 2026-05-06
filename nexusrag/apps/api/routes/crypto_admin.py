@@ -23,7 +23,6 @@ from nexusrag.services.crypto import (
     run_rotation_job,
 )
 
-
 router = APIRouter(prefix="/admin/crypto", tags=["crypto"], responses=DEFAULT_ERROR_RESPONSES)
 
 

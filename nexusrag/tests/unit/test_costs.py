@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 
 from nexusrag.domain.models import (
     AuditEvent,
@@ -16,7 +16,7 @@ from nexusrag.domain.models import (
     UsageCostEvent,
 )
 from nexusrag.persistence.db import SessionLocal
-from nexusrag.services.costs.aggregation import build_summary, breakdown_costs
+from nexusrag.services.costs.aggregation import breakdown_costs, build_summary
 from nexusrag.services.costs.budget_guardrails import evaluate_budget_guardrail
 from nexusrag.services.costs.metering import estimate_tokens
 from nexusrag.services.costs.pricing import select_pricing_rate

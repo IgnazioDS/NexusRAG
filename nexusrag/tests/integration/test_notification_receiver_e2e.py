@@ -9,7 +9,8 @@ import httpx
 import pytest
 from sqlalchemy import delete, select
 
-from nexusrag.apps.notify_receiver.app import ReceiverSettings, create_app as create_receiver_app
+from nexusrag.apps.notify_receiver.app import ReceiverSettings
+from nexusrag.apps.notify_receiver.app import create_app as create_receiver_app
 from nexusrag.core.config import get_settings
 from nexusrag.domain.models import (
     AlertEvent,

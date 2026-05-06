@@ -14,7 +14,14 @@ from nexusrag.apps.api.deps import Principal, get_db, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
 from nexusrag.core.config import get_settings
-from nexusrag.domain.models import DsarRequest, EncryptedBlob, GovernanceRetentionRun, LegalHold, PolicyRule, RetentionRun
+from nexusrag.domain.models import (
+    DsarRequest,
+    EncryptedBlob,
+    GovernanceRetentionRun,
+    LegalHold,
+    PolicyRule,
+    RetentionRun,
+)
 from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.crypto import decrypt_blob
 from nexusrag.services.governance import (
@@ -31,7 +38,6 @@ from nexusrag.services.governance import (
     submit_dsar_request,
 )
 from nexusrag.services.maintenance import prune_retention_all, record_retention_run
-
 
 router = APIRouter(prefix="/admin/governance", tags=["governance"], responses=DEFAULT_ERROR_RESPONSES)
 

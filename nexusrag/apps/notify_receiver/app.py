@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import logging
 import os
 import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
 
@@ -20,7 +20,6 @@ from nexusrag.services.notifications.receiver_contract import (
     payload_sha256,
     verify_signature,
 )
-
 
 logger = logging.getLogger("nexusrag.notify_receiver")
 

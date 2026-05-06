@@ -67,7 +67,6 @@ class VertexAIRetriever:
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
-        start = time.monotonic()
         try:
             from google.cloud.discoveryengine_v1 import SearchServiceClient
         except Exception as exc:  # pragma: no cover - environment-specific import

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 import time
 
 import httpx
@@ -94,7 +93,7 @@ class OpenAITTSProvider:
             await breaker.record_failure()
         if response.status_code >= 400:
             error = TTSError(f"OpenAI TTS error: {response.status_code}")
-            setattr(error, "status_code", response.status_code)
+            error.status_code = response.status_code
             record_external_call(
                 integration="tts.openai",
                 latency_ms=(time.monotonic() - start) * 1000.0,

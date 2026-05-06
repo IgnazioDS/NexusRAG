@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 # Keep embedding dimension centralized to prevent drift across DB and retrieval logic.
 EMBED_DIM = 768

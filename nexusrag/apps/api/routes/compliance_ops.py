@@ -6,13 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.apps.api.deps import Principal, get_db, require_role
-from nexusrag.core.config import get_settings
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
-from nexusrag.services.audit import get_request_context, record_event
+from nexusrag.core.config import get_settings
 from nexusrag.domain.models import EvidenceBundle
+from nexusrag.services.audit import get_request_context, record_event
 from nexusrag.services.compliance import get_latest_control_statuses
-
 
 router = APIRouter(prefix="/ops/compliance", tags=["ops"], responses=DEFAULT_ERROR_RESPONSES)
 

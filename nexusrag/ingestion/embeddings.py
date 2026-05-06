@@ -5,6 +5,7 @@ import math
 import re
 
 from nexusrag.core.config import EMBED_DIM
+
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 

@@ -6,7 +6,6 @@ from nexusrag.services.crypto.kms.base import KmsProvider
 from nexusrag.services.crypto.kms.gcp import GcpKmsProvider
 from nexusrag.services.crypto.kms.local import LocalKmsProvider
 
-
 _KMS_PROVIDERS: dict[str, type[KmsProvider]] = {
     "local_kms": LocalKmsProvider,
     "aws_kms": AwsKmsProvider,

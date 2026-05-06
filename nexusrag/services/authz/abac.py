@@ -32,7 +32,6 @@ from nexusrag.services.authz.evaluator import (
     validate_condition,
 )
 
-
 _ACTION_PERMISSIONS: dict[str, set[str]] = {
     # Allow broader permissions to satisfy read actions.
     "read": {"read", "write", "delete", "reindex", "owner"},

@@ -19,7 +19,6 @@ from nexusrag.services.auth.api_keys import ROLE_ORDER, normalize_role
 from nexusrag.services.auth.scim import compute_token_expiry, generate_scim_token
 from nexusrag.services.entitlements import FEATURE_IDENTITY_SCIM, FEATURE_IDENTITY_SSO, require_feature
 
-
 router = APIRouter(prefix="/admin/identity", tags=["identity"], responses=DEFAULT_ERROR_RESPONSES)
 
 

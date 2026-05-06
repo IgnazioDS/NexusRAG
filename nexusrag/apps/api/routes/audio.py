@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -13,7 +11,6 @@ from nexusrag.core.config import get_settings
 from nexusrag.domain.models import EncryptedBlob
 from nexusrag.services.audio.storage import AUDIO_DIR
 from nexusrag.services.crypto import CRYPTO_RESOURCE_AUDIO, decrypt_blob
-
 
 router = APIRouter(tags=["audio"], responses=DEFAULT_ERROR_RESPONSES)
 

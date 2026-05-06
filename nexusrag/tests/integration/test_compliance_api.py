@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import io
 import json
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
-import zipfile
 
 import pytest
 from httpx import ASGITransport, AsyncClient

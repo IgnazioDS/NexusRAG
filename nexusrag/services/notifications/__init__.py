@@ -1,7 +1,3 @@
-from nexusrag.services.notifications.routing import (
-    ResolvedNotificationDestination,
-    resolve_destinations,
-)
 from nexusrag.services.notifications.receiver_contract import (
     InMemoryNotificationDedupeStore,
     NotificationDedupeStore,
@@ -9,14 +5,18 @@ from nexusrag.services.notifications.receiver_contract import (
     ReceiverHeaders,
     SQLiteNotificationDedupeStore,
     VerificationResult,
-    compute_signature,
     compute_hmac_sha256_hex,
     compute_payload_sha256_hex,
+    compute_signature,
     parse_required_headers,
     parse_signature,
     payload_sha256,
     verify_signature,
     verify_signature_legacy,
+)
+from nexusrag.services.notifications.routing import (
+    ResolvedNotificationDestination,
+    resolve_destinations,
 )
 
 __all__ = [

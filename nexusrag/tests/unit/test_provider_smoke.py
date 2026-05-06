@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from nexusrag.core.errors import AwsAuthError, RetrievalConfigError
 import scripts.provider_smoke as provider_smoke
+from nexusrag.core.errors import AwsAuthError, RetrievalConfigError
 
 
 class DummySession:

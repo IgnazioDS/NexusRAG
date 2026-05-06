@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import Principal, get_db, idempotency_key_header, require_role
 from nexusrag.apps.api.openapi import DEFAULT_ERROR_RESPONSES
 from nexusrag.apps.api.response import SuccessEnvelope, success_response
+from nexusrag.services.audit import record_event
 from nexusrag.services.entitlements import FEATURE_OPS_ADMIN, require_feature
 from nexusrag.services.idempotency import (
     build_replay_response,
@@ -29,23 +30,22 @@ from nexusrag.services.operability import (
 )
 from nexusrag.services.operability.incidents import assign_incident
 from nexusrag.services.operability.notifications import (
-    create_notification_route,
     create_notification_destination,
-    delete_notification_route,
+    create_notification_route,
     delete_notification_destination,
+    delete_notification_route,
     get_notification_dead_letter,
     get_notification_job,
-    list_notification_dead_letters,
     list_notification_attempts,
-    list_notification_routes,
+    list_notification_dead_letters,
     list_notification_destinations,
     list_notification_jobs,
-    patch_notification_route,
+    list_notification_routes,
     patch_notification_destination,
+    patch_notification_route,
     replay_dead_letter,
     retry_notification_job_now,
 )
-from nexusrag.services.audit import record_event
 
 router = APIRouter(prefix="/admin", tags=["operability"], responses=DEFAULT_ERROR_RESPONSES)
 

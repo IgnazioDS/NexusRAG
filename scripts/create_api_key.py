@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timedelta, timezone
 import sys
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from nexusrag.domain.models import ApiKey, User
 from nexusrag.persistence.db import SessionLocal
-from nexusrag.services.auth.api_keys import generate_api_key, normalize_role
 from nexusrag.services.audit import record_event
+from nexusrag.services.auth.api_keys import generate_api_key, normalize_role
 
 
 def _build_parser() -> argparse.ArgumentParser:

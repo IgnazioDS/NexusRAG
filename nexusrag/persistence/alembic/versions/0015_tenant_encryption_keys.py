@@ -7,10 +7,9 @@ Create Date: 2026-02-15
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
-
 
 revision = "0015_tenant_encryption_keys"
 down_revision = "0014_governance_compliance"

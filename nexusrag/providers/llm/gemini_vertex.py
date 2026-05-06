@@ -56,10 +56,10 @@ class GeminiVertexProvider:
         timeout_s = max(1, int(self._settings.vertex_stream_timeout_s))
 
         try:
+            from google.api_core.exceptions import PermissionDenied, Unauthenticated
+            from google.auth.exceptions import DefaultCredentialsError, RefreshError
             from vertexai import init
             from vertexai.generative_models import GenerativeModel
-            from google.auth.exceptions import DefaultCredentialsError, RefreshError
-            from google.api_core.exceptions import PermissionDenied, Unauthenticated
         except Exception as exc:  # pragma: no cover - import errors are environment-specific
             raise ProviderConfigError(
                 "Vertex AI SDK not available. Install google-cloud-aiplatform."

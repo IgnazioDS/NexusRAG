@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import math
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
-import math
 from statistics import mean
 from typing import Deque
 
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexusrag.core.config import get_settings
