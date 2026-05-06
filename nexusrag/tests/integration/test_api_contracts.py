@@ -241,12 +241,15 @@ async def test_openapi_contains_v1_and_security(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_root_redirects_to_v1_docs_without_legacy_headers(monkeypatch) -> None:
+async def test_legacy_docs_redirects_to_v1_docs_without_deprecation_headers(monkeypatch) -> None:
+    # In the unified Vercel deployment, "/" is owned by the Next.js dashboard
+    # so the FastAPI app no longer handles it. The "/docs" redirect remains
+    # as a stable backward-compat alias for direct API consumers.
     _apply_env(monkeypatch)
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-        response = await client.get("/")
+        response = await client.get("/docs")
         assert response.status_code in {302, 307}
         assert response.headers.get("location") == "/v1/docs"
         assert response.headers.get("Deprecation") is None
