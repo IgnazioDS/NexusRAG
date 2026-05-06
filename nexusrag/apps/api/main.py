@@ -106,7 +106,11 @@ async def _record_query_async(
 
 def create_app() -> FastAPI:
     configure_logging()
-    app = FastAPI(title="NexusRAG API")
+    # Disable FastAPI's default /docs and /openapi.json so the canonical
+    # versioned paths (/v1/docs, /v1/openapi.json) and the /docs redirect
+    # are the single source of truth. Without this, FastAPI's default
+    # /docs serves Swagger UI directly (200) and shadows our redirect.
+    app = FastAPI(title="NexusRAG API", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):  # type: ignore[override]
@@ -292,12 +296,16 @@ def create_app() -> FastAPI:
         return get_swagger_ui_html(openapi_url="/v1/openapi.json", title="NexusRAG API v1")
 
     # NOTE: in the unified Vercel deployment the dashboard (Next.js) owns "/".
-    # We keep "/docs" pointing at the canonical /v1/docs for direct API hits and
-    # backward compatibility, but the FastAPI app no longer registers a "/"
-    # handler — Next.js handles the root.
+    # We keep "/docs" and "/openapi.json" pointing at the canonical /v1/* paths
+    # for direct API hits and backward compatibility, but the FastAPI app no
+    # longer registers a "/" handler — Next.js handles the root.
     @app.get("/docs", include_in_schema=False)
     async def docs_redirect() -> RedirectResponse:
         return RedirectResponse(url="/v1/docs")
+
+    @app.get("/openapi.json", include_in_schema=False)
+    async def openapi_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/v1/openapi.json")
 
     def custom_openapi() -> dict:
         # Inject bearer auth and version metadata into the OpenAPI schema.
