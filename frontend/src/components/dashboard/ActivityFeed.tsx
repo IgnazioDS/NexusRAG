@@ -1,77 +1,84 @@
+import { Activity } from "lucide-react";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { StatusDot } from "@/components/ui/status-dot";
+import { EmptyState } from "@/components/ui/empty-state";
 import { formatRelative } from "@/lib/utils";
 import type { ActivityItem } from "@/lib/api";
 
-const OUTCOME_DOT: Record<string, string> = {
-  success: "bg-emerald-400",
-  failure: "bg-red-400",
-  error:   "bg-red-400",
+const OUTCOME_TONE: Record<
+  string,
+  { dot: "success" | "danger" | "muted" | "warning"; badge: "success" | "danger" | "muted" | "warning" }
+> = {
+  success: { dot: "success", badge: "success" },
+  failure: { dot: "danger", badge: "danger" },
+  error: { dot: "danger", badge: "danger" },
+  warning: { dot: "warning", badge: "warning" },
 };
 
-const OUTCOME_LABEL: Record<string, string> = {
-  success: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20",
-  failure: "text-red-400 bg-red-400/10 border-red-400/20",
-  error:   "text-red-400 bg-red-400/10 border-red-400/20",
-};
-
-export function ActivityFeed({ items, loading }: { items?: ActivityItem[]; loading?: boolean }) {
+export function ActivityFeed({
+  items,
+  loading,
+}: {
+  items?: ActivityItem[];
+  loading?: boolean;
+}) {
   return (
-    <div className="glow-card rounded-xl">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/[0.05] px-5 py-4">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-600">Recent Activity</p>
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between border-b border-border-subtle">
+        <CardTitle>Recent activity</CardTitle>
         {!loading && items && (
-          <span className="text-[11px] text-zinc-700">{items.length} events</span>
+          <span className="text-2xs text-foreground-faint tabular-nums">
+            {items.length} events
+          </span>
         )}
-      </div>
-
-      {/* Content */}
+      </CardHeader>
       {loading ? (
-        <div className="space-y-0 p-5">
+        <CardContent className="space-y-3 pt-4">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="flex items-start gap-3 py-2.5">
-              <div className="flex flex-col items-center mt-1 gap-0.5">
-                <Skeleton className="h-2 w-2 rounded-full" />
-                {i < 4 && <div className="w-px h-6 bg-white/[0.04]" />}
-              </div>
+            <div key={i} className="flex items-start gap-3">
+              <Skeleton className="h-2 w-2 mt-1.5 rounded-full" />
               <div className="flex-1 space-y-1.5">
-                <Skeleton className="h-3.5 w-3/4" />
-                <Skeleton className="h-3 w-1/3" />
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-2.5 w-1/3" />
               </div>
               <Skeleton className="h-4 w-14 rounded-full" />
             </div>
           ))}
-        </div>
+        </CardContent>
       ) : !items?.length ? (
-        <p className="px-5 py-8 text-center text-[13px] text-zinc-700">No recent activity</p>
+        <EmptyState
+          icon={Activity}
+          title="No activity yet"
+          description="Once requests start flowing, they'll appear here."
+          className="py-8"
+        />
       ) : (
-        <ul className="p-3">
-          {items.map((item, idx) => {
-            const dot = OUTCOME_DOT[item.outcome] ?? "bg-zinc-600";
-            const label = OUTCOME_LABEL[item.outcome] ?? "text-zinc-500 bg-zinc-500/10 border-zinc-500/20";
-            const isLast = idx === items.length - 1;
-
+        <ul className="px-2 py-2">
+          {items.map((item) => {
+            const tone =
+              OUTCOME_TONE[item.outcome.toLowerCase()] ??
+              ({ dot: "muted", badge: "muted" } as const);
             return (
-              <li key={item.id} className="group flex items-start gap-3 rounded-lg px-2 py-2.5 hover:bg-white/[0.03] transition-colors">
-                {/* Timeline connector */}
-                <div className="flex shrink-0 flex-col items-center pt-1">
-                  <span className={cn("h-1.5 w-1.5 rounded-full", dot, idx === 0 ? "ring-2 ring-offset-1 ring-offset-[#0d0d18] ring-current" : "")} />
-                  {!isLast && <div className="mt-1 w-px flex-1 min-h-[16px] bg-white/[0.05]" />}
+              <li
+                key={item.id}
+                className="group flex items-start gap-3 rounded-md px-3 py-2 hover:bg-surface-2 transition-colors"
+              >
+                <div className="pt-1.5">
+                  <StatusDot tone={tone.dot} size="sm" />
                 </div>
-
-                {/* Content */}
                 <div className="min-w-0 flex-1">
-                  <p className="text-[12px] font-medium text-zinc-300 leading-snug">{item.summary}</p>
-                  <p className="mt-0.5 font-mono text-[10px] text-zinc-700">{item.event_type}</p>
+                  <p className="text-sm font-medium text-foreground leading-snug">
+                    {item.summary}
+                  </p>
+                  <p className="mt-0.5 font-mono text-2xs text-foreground-faint truncate">
+                    {item.event_type}
+                  </p>
                 </div>
-
-                {/* Right side */}
-                <div className="flex shrink-0 flex-col items-end gap-1.5">
-                  <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold", label)}>
-                    {item.outcome}
-                  </span>
-                  <span className="text-[10px] text-zinc-700 group-hover:text-zinc-600 transition-colors">
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <Badge variant={tone.badge}>{item.outcome}</Badge>
+                  <span className="text-2xs text-foreground-subtle tabular-nums">
                     {formatRelative(item.occurred_at)}
                   </span>
                 </div>
@@ -80,6 +87,6 @@ export function ActivityFeed({ items, loading }: { items?: ActivityItem[]; loadi
           })}
         </ul>
       )}
-    </div>
+    </Card>
   );
 }

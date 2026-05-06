@@ -1,5 +1,5 @@
+import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Zap } from "lucide-react";
 
 export type MessageRole = "user" | "assistant" | "system";
 
@@ -16,9 +16,9 @@ export function MessageBubble({ message }: { message: Message }) {
 
   if (isSystem) {
     return (
-      <div className="msg-enter flex justify-center py-1">
-        <span className="flex items-center gap-1.5 rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-[11px] text-zinc-600">
-          <span className="h-1 w-1 rounded-full bg-indigo-500/60" />
+      <div className="animate-fade-up flex justify-center py-1">
+        <span className="flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-3 py-1 text-2xs text-foreground-subtle">
+          <span className="h-1 w-1 rounded-full bg-brand/60" />
           {message.content}
         </span>
       </div>
@@ -26,30 +26,42 @@ export function MessageBubble({ message }: { message: Message }) {
   }
 
   return (
-    <div className={cn("msg-enter flex gap-2.5", isUser ? "flex-row-reverse" : "flex-row")}>
+    <div
+      className={cn(
+        "animate-fade-up flex gap-2.5",
+        isUser ? "flex-row-reverse" : "flex-row",
+      )}
+    >
       {/* Avatar */}
       {isUser ? (
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">
-          U
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-3 text-2xs font-semibold text-foreground-muted">
+          You
         </div>
       ) : (
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-500/20">
-          <Zap className="h-3.5 w-3.5 text-white" strokeWidth={2.5} />
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand">
+          <Sparkles className="h-3.5 w-3.5" strokeWidth={2} />
         </div>
       )}
 
       {/* Bubble */}
       <div
         className={cn(
-          "max-w-[78%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed",
+          "max-w-[78%] px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
           isUser
-            ? "rounded-tr-sm bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
-            : "rounded-tl-sm border border-white/[0.07] bg-white/[0.04] text-zinc-200"
+            ? "rounded-2xl rounded-tr-sm bg-brand/15 border border-brand/20 text-foreground"
+            : "rounded-2xl rounded-tl-sm border border-border bg-surface text-foreground-muted",
         )}
       >
-        {message.content || (message.streaming && <span className="text-zinc-600">…</span>)}
+        {message.content || (
+          message.streaming && (
+            <span className="text-foreground-faint">…</span>
+          )
+        )}
         {message.streaming && (
-          <span className="ml-0.5 inline-block h-[14px] w-[2px] animate-pulse rounded-sm bg-indigo-400 align-middle" />
+          <span
+            className="ml-0.5 inline-block h-3 w-px animate-pulse rounded-sm bg-brand align-middle"
+            aria-hidden
+          />
         )}
       </div>
     </div>
