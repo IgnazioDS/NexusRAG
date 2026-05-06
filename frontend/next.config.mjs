@@ -1,10 +1,12 @@
 // Rewrite the local /api/* path to the FastAPI BFF.
-// In production we point at the deployed NexusRAG API. In development
-// the same host can be overridden with NEXT_PUBLIC_API_BASE / NEXUSRAG_API_URL.
+// In the unified Vercel deployment the FastAPI app is co-located with the
+// dashboard (vercel.json routes /v1/* to api/index.py on the same origin),
+// so the default base is empty (same-origin). For local dev, override with
+// NEXT_PUBLIC_API_BASE or NEXUSRAG_API_URL to point at a remote backend.
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ||
   process.env.NEXUSRAG_API_URL ||
-  "https://nexusrag-lyart.vercel.app";
+  "";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

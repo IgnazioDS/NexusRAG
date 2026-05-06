@@ -291,10 +291,10 @@ def create_app() -> FastAPI:
     async def v1_docs() -> HTMLResponse:
         return get_swagger_ui_html(openapi_url="/v1/openapi.json", title="NexusRAG API v1")
 
-    @app.get("/", include_in_schema=False)
-    async def root_redirect() -> RedirectResponse:
-        return RedirectResponse(url="/v1/docs")
-
+    # NOTE: in the unified Vercel deployment the dashboard (Next.js) owns "/".
+    # We keep "/docs" pointing at the canonical /v1/docs for direct API hits and
+    # backward compatibility, but the FastAPI app no longer registers a "/"
+    # handler — Next.js handles the root.
     @app.get("/docs", include_in_schema=False)
     async def docs_redirect() -> RedirectResponse:
         return RedirectResponse(url="/v1/docs")

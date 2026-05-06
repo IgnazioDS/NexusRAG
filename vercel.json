@@ -1,15 +1,20 @@
 {
   "version": 2,
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/api/index.py"
-    }
-  ],
   "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/next"
+    },
     {
       "src": "api/index.py",
       "use": "@vercel/python"
     }
+  ],
+  "routes": [
+    { "src": "/v1/(.*)", "dest": "/api/index.py" },
+    { "src": "/api/stats", "dest": "/api/index.py" },
+    { "src": "/api/health", "dest": "/api/index.py" },
+    { "src": "/openapi.json", "dest": "/api/index.py" },
+    { "src": "/health", "dest": "/api/index.py" }
   ]
 }
