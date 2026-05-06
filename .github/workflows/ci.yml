@@ -122,7 +122,9 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install --no-cache-dir -e ".[dev]"
+        # Tests exercise the agent graph (build_graph imports langgraph),
+        # so the agent extra must be installed alongside dev.
+        run: pip install --no-cache-dir -e ".[dev,agent]"
 
       - name: Run Alembic migrations
         run: alembic upgrade head
