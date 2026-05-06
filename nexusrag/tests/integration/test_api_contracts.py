@@ -96,8 +96,11 @@ async def test_v1_error_envelope_feature_not_enabled(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_v1_rate_limited_error_envelope(monkeypatch) -> None:
     tenant_id = f"t-contract-{uuid4().hex}"
+    # CI sets RATE_LIMIT_ENABLED=false globally for perf; this test needs
+    # the limiter ON (with burst=1) to verify the 429 envelope shape.
     _apply_env(
         monkeypatch,
+        RATE_LIMIT_ENABLED="true",
         RL_KEY_READ_RPS=0,
         RL_KEY_READ_BURST=1,
         RL_TENANT_READ_RPS=0,
@@ -126,8 +129,11 @@ async def test_v1_rate_limited_error_envelope(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_v1_quota_exceeded_error_envelope(monkeypatch) -> None:
     tenant_id = f"t-contract-{uuid4().hex}"
+    # Enable the limiter with permissive thresholds so it doesn't fire — this
+    # lets the request reach the quota gate and verifies the 429 quota envelope.
     _apply_env(
         monkeypatch,
+        RATE_LIMIT_ENABLED="true",
         RL_KEY_READ_RPS=100,
         RL_KEY_READ_BURST=200,
         RL_TENANT_READ_RPS=100,
