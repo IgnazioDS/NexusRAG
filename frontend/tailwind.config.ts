@@ -76,13 +76,20 @@ const config: Config = {
         xl: "var(--radius-xl)",
       },
       boxShadow: {
-        // Subtle, layered. Vercel uses these heavily on hover states.
-        "subtle": "0 1px 2px 0 rgb(0 0 0 / 0.6), 0 0 0 1px hsl(var(--border) / 0.5)",
+        // Dark-theme-tuned: low-opacity drops + crisp 1px borders. The
+        // border layer carries most of the visual weight; the drop is a
+        // gentle hint, not a dark halo. Bump the opacities only if a
+        // particular surface really needs to read as floating.
+        "subtle": "0 1px 1px 0 rgb(0 0 0 / 0.25), 0 0 0 1px hsl(var(--border) / 0.5)",
         "elevated":
-          "0 4px 12px -2px rgb(0 0 0 / 0.5), 0 0 0 1px hsl(var(--border) / 0.8)",
+          "0 2px 6px -2px rgb(0 0 0 / 0.25), 0 0 0 1px hsl(var(--border) / 0.6)",
+        // Popovers/dialogs still need to read as floating-above-content,
+        // so this one stays a touch heavier than the rest.
         "popover":
-          "0 12px 32px -8px rgb(0 0 0 / 0.7), 0 0 0 1px hsl(var(--border) / 0.8)",
-        "glow-brand": "0 0 24px -4px hsl(var(--brand) / 0.4)",
+          "0 8px 24px -8px rgb(0 0 0 / 0.4), 0 0 0 1px hsl(var(--border) / 0.6)",
+        // Brand glow halved and tightened. Apply selectively (hover/focus)
+        // rather than as an always-on accent.
+        "glow-brand": "0 0 16px -6px hsl(var(--brand) / 0.2)",
       },
       keyframes: {
         "accordion-down": {

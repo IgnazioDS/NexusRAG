@@ -23,7 +23,7 @@ const buttonVariants = cva(
         default:
           "bg-foreground text-background hover:bg-foreground/90 active:scale-[0.98]",
         primary:
-          "bg-brand text-brand-foreground hover:bg-brand-strong active:scale-[0.98] shadow-glow-brand",
+          "bg-brand text-brand-foreground hover:bg-brand-strong hover:shadow-glow-brand active:scale-[0.98]",
         secondary:
           "bg-surface-2 text-foreground border border-border hover:border-border-strong hover:bg-surface-3",
         ghost: "text-foreground-muted hover:bg-surface-2 hover:text-foreground",
