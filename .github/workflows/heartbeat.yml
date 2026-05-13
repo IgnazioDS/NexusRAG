@@ -5,9 +5,12 @@ name: Heartbeat
 # workflow is the only thing that can flip last_active_at outside of real
 # user traffic.
 #
-# To disable: either remove HEARTBEAT_SECRET from the Vercel project (server
-# returns 503 and the workflow goes red, alerting you), or comment out the
-# schedule below (workflow stops firing).
+# Activation: add a repo secret named HEARTBEAT_SECRET AND set the same
+# value as a Vercel env var on the nexusrag project. Until both are set
+# the workflow runs but skips the ping (warning annotation, green run).
+#
+# To deactivate after enabling: remove the GitHub secret. The endpoint
+# stays online for direct callers, the workflow stops pinging.
 
 on:
   schedule:
@@ -38,8 +41,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$HEARTBEAT_SECRET" ]; then
-            echo "::error::HEARTBEAT_SECRET secret is not set in the repo"
-            exit 1
+            # Opt-in feature, not yet configured. Skip with a visible warning
+            # annotation so the workflow run is green (no failure emails) but
+            # the state is obvious to anyone who opens the run.
+            echo "::warning::HEARTBEAT_SECRET not configured — skipping heartbeat. See workflow file header for setup."
+            exit 0
           fi
           # Use --fail-with-body so we get the response payload on non-2xx.
           # --max-time covers the curl total budget; the endpoint itself
