@@ -47,6 +47,11 @@ jobs:
             echo "::warning::HEARTBEAT_SECRET not configured — skipping heartbeat. See workflow file header for setup."
             exit 0
           fi
+          # Length check (debugging hint, no secret leak — only the byte count
+          # appears in logs). 64-char hex is the expected canonical shape; any
+          # other length usually means a trailing newline or wrapping char got
+          # into the stored secret on either side.
+          echo "Secret length received by runner: ${#HEARTBEAT_SECRET} bytes"
           # Use --fail-with-body so we get the response payload on non-2xx.
           # --max-time covers the curl total budget; the endpoint itself
           # should respond in <1s.
