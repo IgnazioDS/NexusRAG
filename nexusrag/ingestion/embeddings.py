@@ -97,14 +97,14 @@ def _embed_text_vertex(text: str) -> list[float]:
     which is exactly the kind of dishonest telemetry this system forbids.
     """
     model = _get_vertex_model()
-    from google.api_core.exceptions import PermissionDenied, Unauthenticated
-    from google.auth.exceptions import DefaultCredentialsError, RefreshError
-
     try:
         result = model.get_embeddings([text])
-    except (DefaultCredentialsError, RefreshError, PermissionDenied, Unauthenticated) as exc:
+    except Exception as exc:  # noqa: BLE001 - surface as config error, never fall back to fake
+        # Broad catch (auth, quota, network) re-raised as a config error. We do
+        # NOT import google's exception classes here: they are absent in the
+        # test env, and a hard import would break even the stubbed test path.
         raise ProviderConfigError(
-            "Vertex embeddings auth error: run `gcloud auth application-default login`."
+            f"Vertex embeddings request failed (check creds + model access): {exc}"
         ) from exc
 
     values = list(result[0].values)
