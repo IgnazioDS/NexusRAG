@@ -95,3 +95,27 @@ def test_vertex_provider_dim_mismatch_raises(monkeypatch) -> None:
 
     with pytest.raises(ValueError):
         embed_text("wrong dim")
+
+
+def test_openai_provider_missing_key_raises(monkeypatch) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    get_settings.cache_clear()
+
+    with pytest.raises(ProviderConfigError):
+        embed_text("needs openai key")
+
+
+def test_openai_provider_uses_real_embeddings_no_fallback(monkeypatch) -> None:
+    # When provider is "openai", embed_text MUST use the OpenAI path and never
+    # silently fall back to the fake (lexical) embedding.
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    get_settings.cache_clear()
+
+    sentinel = [0.321] * EMBED_DIM
+    monkeypatch.setattr(embeddings, "_embed_text_openai", lambda text: sentinel)
+
+    vec = embed_text("semantic please")
+    assert vec == sentinel
+    assert vec != embeddings._embed_text_fake("semantic please")

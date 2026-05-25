@@ -6,6 +6,8 @@ import math
 import re
 from typing import Any
 
+import httpx
+
 from nexusrag.core.config import EMBED_DIM, get_settings
 from nexusrag.core.errors import ProviderConfigError
 
@@ -116,15 +118,57 @@ def _embed_text_vertex(text: str) -> list[float]:
     return values
 
 
+def _embed_text_openai(text: str) -> list[float]:
+    """Real semantic embedding via the OpenAI embeddings REST API.
+
+    Uses httpx directly (no openai SDK dependency, matching the OpenAI TTS
+    provider) and requests dimensions=EMBED_DIM so the vector matches the
+    pgvector schema. Like the vertex path, it NEVER silently falls back to the
+    fake provider: it raises ProviderConfigError on a missing key / auth / HTTP
+    error and ValueError on a dimension mismatch.
+    """
+    settings = get_settings()
+    api_key = settings.openai_api_key
+    if not api_key:
+        raise ProviderConfigError("OPENAI_API_KEY is required for embedding_provider=openai.")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": settings.openai_embedding_model,
+                    "input": text,
+                    "dimensions": EMBED_DIM,
+                },
+            )
+    except httpx.HTTPError as exc:
+        raise ProviderConfigError(f"OpenAI embeddings request failed: {exc}") from exc
+    if resp.status_code in {401, 403}:
+        raise ProviderConfigError("OpenAI embeddings auth error: check OPENAI_API_KEY.")
+    if resp.status_code >= 400:
+        raise ProviderConfigError(f"OpenAI embeddings error: HTTP {resp.status_code}")
+    values = list(resp.json()["data"][0]["embedding"])
+    if len(values) != EMBED_DIM:
+        raise ValueError(
+            f"OpenAI embedding dim {len(values)} != EMBED_DIM {EMBED_DIM}; "
+            f"openai_embedding_model must support dimensions={EMBED_DIM}."
+        )
+    return values
+
+
 def embed_text(text: str) -> list[float]:
     """Embed text into a fixed EMBED_DIM vector.
 
-    Dispatches on settings.embedding_provider: "vertex" for real semantic
-    embeddings (requires GOOGLE_CLOUD_* creds), otherwise the deterministic
-    hashed-bag-of-words fallback. Same signature for every caller (ingestion
-    + query-time retrieval), so flipping the provider needs no call-site edits.
+    Dispatches on settings.embedding_provider: "openai" or "vertex" for real
+    semantic embeddings (each needs its own key/creds), otherwise the
+    deterministic hashed-bag-of-words fallback. Same signature for every caller
+    (ingestion + query-time retrieval), so flipping the provider needs no
+    call-site edits.
     """
     provider = (get_settings().embedding_provider or "fake").lower()
+    if provider == "openai":
+        return _embed_text_openai(text)
     if provider == "vertex":
         return _embed_text_vertex(text)
     return _embed_text_fake(text)
