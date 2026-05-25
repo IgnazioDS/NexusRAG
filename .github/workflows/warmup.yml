@@ -1,0 +1,31 @@
+name: warmup
+
+# Keep the NexusRAG lambda warm so public visitors don't hit the ~4s import-time
+# cold-start. The cold-start cost is import-time (25 routers + SQLAlchemy engine
+# load on every cold lambda), so the only available lever is preventing the
+# lambda from going cold between visits. This workflow is ADVISORY ONLY: it never
+# fails, so it produces no failure-email noise. Scheduled workflows run on the
+# default branch (main) only — after merge the cron activates automatically.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/4 9-21 * * *"   # every 4 min, 09:00-21:00 UTC (business window)
+    - cron: "*/11 * * * *"     # every 11 min, all hours (off-peak coverage)
+
+env:
+  # Canonical public URL. Same Vercel deployment as nexusrag-lyart.vercel.app;
+  # warming either domain warms the same lambda. Plan E adopts the custom domain.
+  WARMUP_BASE_URL: https://nexusrag.eleventh.dev
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping liveness + stats (advisory, never fails)
+        run: |
+          for path in /healthz /api/stats; do
+            result=$(curl -s -o /dev/null -w '%{http_code} %{time_total}s' \
+              --max-time 9 -A "warmup-bot" "${WARMUP_BASE_URL}${path}" || echo "no-response")
+            echo "${path} -> ${result}"
+          done
