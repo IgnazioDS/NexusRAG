@@ -1,7 +1,7 @@
 """add benchmark_runs table
 
-Revision ID: 0021_benchmark_runs
-Revises: 0020_cost_intel_chargeback
+Revision ID: 0032_benchmark_runs
+Revises: 0031_query_log
 Create Date: 2026-05-25
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0021_benchmark_runs"
-down_revision = "0020_cost_intel_chargeback"
+revision = "0032_benchmark_runs"
+down_revision = "0031_query_log"
 branch_labels = None
 depends_on = None
 
