@@ -30,6 +30,7 @@ from nexusrag.apps.api.routes.api_keys_admin import router as api_keys_admin_rou
 from nexusrag.apps.api.routes.audio import router as audio_router
 from nexusrag.apps.api.routes.audit import router as audit_router
 from nexusrag.apps.api.routes.authz_admin import router as authz_admin_router
+from nexusrag.apps.api.routes.benchmark import router as benchmark_router
 from nexusrag.apps.api.routes.compliance import router as compliance_router
 from nexusrag.apps.api.routes.compliance_admin import router as compliance_admin_router
 from nexusrag.apps.api.routes.compliance_ops import router as compliance_ops_router
@@ -66,6 +67,7 @@ _LEGACY_EXEMPT_PREFIXES = (
     "/openapi.json",
     "/redoc",
     "/api/stats",
+    "/api/benchmark-latest",
 )
 _ENVELOPE_EXEMPT_PREFIXES = (
     "/v1/openapi.json",
@@ -220,6 +222,8 @@ def create_app() -> FastAPI:
     # v1 routes so the path is canonical and not subject to /v1 routing
     # rules. See docs/TELEMETRY_SCHEMA reference.
     app.include_router(stats_router)
+    # Public, unauthenticated /api/benchmark-latest endpoint (Plan E Phase 4).
+    app.include_router(benchmark_router)
 
     # Mount versioned v1 API routes.
     app.include_router(audio_router, prefix=f"/{API_VERSION}")

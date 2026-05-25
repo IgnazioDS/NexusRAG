@@ -1520,3 +1520,26 @@ class QueryLog(Base):
 
 
 Index("ix_query_log_completed_at_desc", QueryLog.completed_at.desc())
+
+
+class BenchmarkRun(Base):
+    # One row per public benchmark run. /api/benchmark-latest reads the two
+    # most recent rows (latest + previous, for the delta). Every metric is
+    # computed from a fixed labeled fixture against live retrieval/generation;
+    # nothing is seeded. embedding_provider records whether the run used
+    # semantic (vertex) or lexical (fake hashed-BoW) embeddings, so retrieval
+    # quality is never read out of context.
+    __tablename__ = "benchmark_runs"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    fixture_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    case_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    artifact_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+Index("ix_benchmark_runs_generated_at_desc", BenchmarkRun.generated_at.desc())
