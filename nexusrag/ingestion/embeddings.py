@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
+from typing import Any
 
-from nexusrag.core.config import EMBED_DIM
+from nexusrag.core.config import EMBED_DIM, get_settings
+from nexusrag.core.errors import ProviderConfigError
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
@@ -18,7 +23,14 @@ def _hash_token(token: str) -> tuple[int, float]:
     return idx, sign * (0.2 + magnitude)
 
 
-def embed_text(text: str) -> list[float]:
+def _embed_text_fake(text: str) -> list[float]:
+    """Deterministic hashed-bag-of-words embedding.
+
+    NOT semantic: it captures lexical token overlap only (synonyms and
+    paraphrases hash to unrelated buckets). It requires no credentials, so
+    it is the default for local/dev/CI. Real semantic retrieval requires
+    embedding_provider="vertex".
+    """
     # Always allocate the full embedding dimension to match the DB schema.
     vector = [0.0] * EMBED_DIM
     tokens = _TOKEN_RE.findall(text.lower())
@@ -38,3 +50,81 @@ def embed_text(text: str) -> list[float]:
         # Defensive guard: retrieval expects a fixed-size vector.
         raise ValueError("embedding dimension mismatch")
     return normalized
+
+
+# Lazy, cached Vertex embedding model. init() + from_pretrained() are
+# expensive, so build once per process and reuse across calls.
+_vertex_model: Any = None
+_vertex_model_name: str | None = None
+
+
+def _get_vertex_model() -> Any:
+    global _vertex_model, _vertex_model_name
+    settings = get_settings()
+    project = settings.google_cloud_project
+    location = settings.google_cloud_location
+    model_name = settings.vertex_embedding_model
+    missing = []
+    if not project:
+        missing.append("GOOGLE_CLOUD_PROJECT")
+    if not location:
+        missing.append("GOOGLE_CLOUD_LOCATION")
+    if missing:
+        raise ProviderConfigError(
+            f"Vertex embeddings config missing: set {', '.join(missing)} in .env."
+        )
+    if _vertex_model is not None and _vertex_model_name == model_name:
+        return _vertex_model
+    try:
+        from vertexai import init
+        from vertexai.language_models import TextEmbeddingModel
+    except Exception as exc:  # pragma: no cover - environment-specific
+        raise ProviderConfigError(
+            "Vertex AI SDK not available. Install google-cloud-aiplatform."
+        ) from exc
+    init(project=project, location=location)
+    _vertex_model = TextEmbeddingModel.from_pretrained(model_name)
+    _vertex_model_name = model_name
+    return _vertex_model
+
+
+def _embed_text_vertex(text: str) -> list[float]:
+    """Real semantic embedding via Vertex AI text-embedding.
+
+    Raises ProviderConfigError when creds/SDK are missing and ValueError on a
+    dimension mismatch. It NEVER silently falls back to the fake provider: a
+    hidden fallback would publish lexical vectors as if they were semantic,
+    which is exactly the kind of dishonest telemetry this system forbids.
+    """
+    model = _get_vertex_model()
+    try:
+        result = model.get_embeddings([text])
+    except Exception as exc:  # noqa: BLE001 - surface as config error, never fall back to fake
+        # Broad catch (auth, quota, network) re-raised as a config error. We do
+        # NOT import google's exception classes here: they are absent in the
+        # test env, and a hard import would break even the stubbed test path.
+        raise ProviderConfigError(
+            f"Vertex embeddings request failed (check creds + model access): {exc}"
+        ) from exc
+
+    values = list(result[0].values)
+    if len(values) != EMBED_DIM:
+        raise ValueError(
+            f"Vertex embedding dim {len(values)} != EMBED_DIM {EMBED_DIM}; "
+            f"pick a {EMBED_DIM}-dim vertex_embedding_model."
+        )
+    return values
+
+
+def embed_text(text: str) -> list[float]:
+    """Embed text into a fixed EMBED_DIM vector.
+
+    Dispatches on settings.embedding_provider: "vertex" for real semantic
+    embeddings (requires GOOGLE_CLOUD_* creds), otherwise the deterministic
+    hashed-bag-of-words fallback. Same signature for every caller (ingestion
+    + query-time retrieval), so flipping the provider needs no call-site edits.
+    """
+    provider = (get_settings().embedding_provider or "fake").lower()
+    if provider == "vertex":
+        return _embed_text_vertex(text)
+    return _embed_text_fake(text)
