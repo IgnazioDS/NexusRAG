@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -21,6 +23,15 @@ async def health(request: Request) -> dict:
     # Keep health responses wrapped for consistent client parsing.
     payload = HealthResponse(status="ok")
     return success_response(request=request, data=payload)
+
+
+@router.get("/healthz", include_in_schema=False)
+async def healthz() -> dict:
+    # Lightweight liveness probe: no DB, no auth, sub-5ms warm. Used by the
+    # warmup workflow and load-balancer checks. Intentionally returns a bare
+    # dict (not the success envelope) to stay as cheap as possible. Note the
+    # cold-start cost is import-time and is unaffected by this route existing.
+    return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
 
 
 @router.get(
