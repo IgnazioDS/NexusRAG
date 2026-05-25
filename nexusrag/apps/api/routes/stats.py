@@ -1,4 +1,4 @@
-"""Public, unauthenticated /api/stats endpoint + /api/heartbeat self-pinger.
+"""Public, unauthenticated /api/stats endpoint + /api/heartbeat liveness check.
 
 Implements the Tier-A telemetry contract from
 https://github.com/IgnazioDS/IgnazioDS/blob/main/TELEMETRY_SCHEMA.md.
@@ -11,19 +11,16 @@ https://eleventh.dev. Polling cadence is ~30s. Contract guarantees:
 - CORS: wildcard origin (response is non-PII aggregates)
 - Cache: public, max-age=30, stale-while-revalidate=60
 
-The heartbeat endpoint is a shared-secret-protected POST that records one
-`query_log` row per call so a CI cron can keep `last_active_at` fresh
-between real user traffic.
+The heartbeat endpoint is a shared-secret-protected POST liveness check. It
+records NO workload data: /api/stats metrics reflect real /v1/run traffic only.
 """
 from __future__ import annotations
 
 import logging
 import os
-import random
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexusrag.apps.api.deps import get_db
 from nexusrag.persistence.repos.query_log import (
     aggregate,
-    record_query,
     to_metrics_dict,
     zero_metrics,
 )
@@ -133,16 +129,17 @@ async def stats(
 
 # ── Heartbeat ────────────────────────────────────────────────────────────────
 #
-# A scheduled GitHub Actions workflow POSTs to this endpoint every ~10 minutes
-# so the eleventh.dev widget never sees a stale `last_active_at` between
-# real user traffic spikes. Each call records exactly one `query_log` row.
+# A scheduled GitHub Actions workflow POSTs to this endpoint as an authenticated
+# liveness check. It records NO query_log row and writes NO metrics: the public
+# /api/stats workload figures must reflect real /v1/run traffic only. An earlier
+# version synthesized latency + retrieval rows here to keep the widget "looking
+# alive"; that fabrication was removed because the telemetry contract forbids
+# seeded plausible values.
 #
 # Auth: shared secret in the Authorization header. If `HEARTBEAT_SECRET` is
-# unset on the server, the endpoint disables itself (503) — this lets the
-# user kill the heartbeat by removing the env var, no code changes.
+# unset on the server, the endpoint disables itself (503).
 #
-# The endpoint is intentionally NOT included in the OpenAPI schema; it's an
-# operational hook, not part of the public API contract.
+# Not included in the OpenAPI schema; it's an operational hook.
 
 
 async def _check_heartbeat_auth(request: Request) -> bool:
@@ -156,11 +153,7 @@ async def _check_heartbeat_auth(request: Request) -> bool:
 
 
 @router.post("/api/heartbeat", include_in_schema=False)
-async def heartbeat(
-    request: Request,
-    response: Response,
-    session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+async def heartbeat(request: Request, response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
 
     if not os.environ.get("HEARTBEAT_SECRET"):
@@ -173,35 +166,8 @@ async def heartbeat(
         response.status_code = 403
         return {"error": "unauthorized"}
 
-    # Lognormal-ish latency: most calls in 200–1200ms, long tail to ~4.7s.
-    # Same shape as the seed batch and as real RAG traffic so the percentile
-    # cards don't drift over time as heartbeats accumulate.
-    synthetic_latency_ms = int(200 + (random.random() ** 2) * 4500)
-    completed_at = datetime.now(timezone.utc)
-    # Construct started_at from the latency so record_query computes the
-    # intended value rather than ~0ms (the two now() calls are microseconds
-    # apart).
-    started_at = completed_at - timedelta(milliseconds=synthetic_latency_ms)
-    # Vary retrieved_chunks across the typical top_k range so the
-    # avg_retrieval_size card stays realistic.
-    retrieved_chunks = random.randint(3, 8)
-
-    try:
-        await record_query(
-            session,
-            query_id=uuid4(),
-            started_at=started_at,
-            completed_at=completed_at,
-            retrieved_chunks=retrieved_chunks,
-            status="ok",
-        )
-    except Exception as exc:  # noqa: BLE001 - heartbeat must not raise
-        _log.warning("heartbeat record_query failed", exc_info=exc)
-        response.status_code = 500
-        return {"error": "record_failed"}
-
-    return {
-        "recorded_at": completed_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "synthetic_latency_ms": synthetic_latency_ms,
-        "retrieved_chunks": retrieved_chunks,
-    }
+    # Liveness acknowledgement ONLY. Deliberately records no query_log row and
+    # writes no metrics: /api/stats counts, latency percentiles, and retrieval
+    # size must reflect real /v1/run traffic exclusively. The 200 itself is the
+    # liveness signal; last_active_at stays driven by real work.
+    return {"status": "ok", "checked_at": _now_iso()}
