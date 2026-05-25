@@ -381,12 +381,14 @@ class Settings(BaseSettings):
     llm_provider: str = "vertex"
 
     # Embedding provider for indexing + query vectors: "fake" (deterministic
-    # hashed-bag-of-words, no creds, NOT semantic) or "vertex" (real semantic
-    # embeddings via Vertex AI text-embedding, needs GOOGLE_CLOUD_* creds).
-    # Defaults to "fake" so deploy behaviour is unchanged until creds are
-    # provisioned and this is flipped to "vertex" (then re-index the corpus).
+    # hashed-bag-of-words, no creds, NOT semantic), "openai" (real semantic via
+    # the OpenAI embeddings API, needs OPENAI_API_KEY), or "vertex" (real
+    # semantic via Vertex AI, needs GOOGLE_CLOUD_* creds). Defaults to "fake"
+    # so deploy behaviour is unchanged until a key is provisioned and this is
+    # flipped (then re-index the corpus).
     embedding_provider: str = "fake"
     vertex_embedding_model: str = "text-embedding-004"
+    openai_embedding_model: str = "text-embedding-3-small"
 
     # TTS provider selection: none/openai/fake for local development.
     tts_provider: str = "none"
