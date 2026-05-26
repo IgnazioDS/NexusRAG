@@ -14,9 +14,12 @@ on:
     - cron: "*/11 * * * *"     # every 11 min, all hours (off-peak coverage)
 
 env:
-  # Canonical public URL. Same Vercel deployment as nexusrag-lyart.vercel.app;
-  # warming either domain warms the same lambda. Plan E adopts the custom domain.
-  WARMUP_BASE_URL: https://nexusrag.eleventh.dev
+  # Use the .vercel.app origin, NOT the custom domain. nexusrag.eleventh.dev is
+  # Cloudflare-fronted and bot-challenges datacenter/CI IPs (403) like the GitHub
+  # Actions runner; the .vercel.app origin is the same deployment but bypasses
+  # Cloudflare, so automated pings actually reach the lambda. (Real-browser
+  # traffic to the custom domain is unaffected.)
+  WARMUP_BASE_URL: https://nexusrag-lyart.vercel.app
 
 jobs:
   warm:
