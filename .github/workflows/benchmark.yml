@@ -1,0 +1,104 @@
+name: benchmark
+
+# Public retrieval benchmark (Plan E Phase 4). Indexes the committed
+# examples/benchmark-v1 fixture into an ephemeral pgvector, runs the live
+# retrieval path, scores recall / precision / nDCG against the labeled
+# ground truth, and — only for a real semantic run (OPENAI_API_KEY present) —
+# commits the result artifact that /api/benchmark-latest serves.
+#
+# Without the key the job still runs end-to-end with the fake (lexical)
+# embedding to prove the harness works, but does NOT publish: lexical numbers
+# must never be read as semantic. Weekly + manual dispatch. Scheduled workflows
+# run from the default branch only, so this activates after merge.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: nexusrag
+          POSTGRES_PASSWORD: nexusrag
+          POSTGRES_DB: nexusrag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexusrag"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      # Mirror the CI test environment so Settings validation and the retrieval
+      # path behave identically to the test suite.
+      DATABASE_URL: postgresql+asyncpg://nexusrag:nexusrag@localhost:5432/nexusrag
+      REDIS_URL: redis://localhost:6379/0
+      AUTH_ENABLED: "true"
+      AUTH_DEV_BYPASS: "false"
+      UI_CURSOR_SECRET: "ci-benchmark-cursor-secret-not-for-production"
+      BACKUP_ENCRYPTION_ENABLED: "false"
+      BACKUP_SIGNING_ENABLED: "false"
+      BILLING_WEBHOOK_ENABLED: "false"
+      RATE_LIMIT_ENABLED: "false"
+      LLM_PROVIDER: fake
+      TTS_PROVIDER: fake
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -e ".[dev,agent]"
+
+      - name: Run Alembic migrations
+        run: alembic upgrade head
+
+      - name: Run benchmark
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY present -> semantic run (openai, 768-dim)"
+            export EMBEDDING_PROVIDER=openai
+          else
+            echo "No OPENAI_API_KEY -> lexical (fake) validation run; will NOT publish"
+            export EMBEDDING_PROVIDER=fake
+          fi
+          python -m nexusrag.benchmark.runner
+
+      - name: Publish artifact (semantic runs only)
+        if: ${{ env.OPENAI_API_KEY != '' }}
+        run: |
+          if git diff --quiet -- nexusrag/benchmark/data/latest_run.json; then
+            echo "Benchmark artifact unchanged; nothing to publish."
+            exit 0
+          fi
+          git config user.name "nexusrag-benchmark[bot]"
+          git config user.email "benchmark@eleventh.dev"
+          git add nexusrag/benchmark/data/latest_run.json
+          git commit -m "chore(benchmark): publish benchmark-v1 semantic run"
+          git push

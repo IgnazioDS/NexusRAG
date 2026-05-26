@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from uuid import uuid4
+import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
 
+import nexusrag.apps.api.routes.benchmark as benchmark_route
 from nexusrag.apps.api.main import create_app
-from nexusrag.domain.models import BenchmarkRun
-from nexusrag.persistence.db import SessionLocal
-
-
-async def _clear_runs() -> None:
-    async with SessionLocal() as session:
-        await session.execute(delete(BenchmarkRun))
-        await session.commit()
 
 
 async def _get_benchmark_latest() -> tuple[int, dict]:
@@ -27,8 +18,9 @@ async def _get_benchmark_latest() -> tuple[int, dict]:
 
 
 @pytest.mark.asyncio
-async def test_benchmark_latest_pending_when_empty() -> None:
-    await _clear_runs()
+async def test_benchmark_latest_pending_when_no_artifact(tmp_path, monkeypatch) -> None:
+    # No committed run yet -> honest "pending" (200), not an error.
+    monkeypatch.setattr(benchmark_route, "_ARTIFACT", tmp_path / "missing.json")
     status, body = await _get_benchmark_latest()
     assert status == 200
     assert body["system"] == "nexusrag"
@@ -39,36 +31,52 @@ async def test_benchmark_latest_pending_when_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_benchmark_latest_returns_latest_and_previous() -> None:
-    await _clear_runs()
-    async with SessionLocal() as session:
-        session.add_all(
-            [
-                BenchmarkRun(
-                    id=uuid4(),
-                    fixture_version="benchmark-v1",
-                    embedding_provider="fake",
-                    generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
-                    case_count=10,
-                    metrics={"recall_at_5": 0.5},
-                ),
-                BenchmarkRun(
-                    id=uuid4(),
-                    fixture_version="benchmark-v1",
-                    embedding_provider="fake",
-                    generated_at=datetime(2026, 5, 25, tzinfo=timezone.utc),
-                    case_count=10,
-                    metrics={"recall_at_5": 0.7},
-                ),
-            ]
-        )
-        await session.commit()
-    try:
-        status, body = await _get_benchmark_latest()
-        assert status == 200
-        assert body["status"] == "ok"
-        assert body["latest"]["metrics"]["recall_at_5"] == 0.7
-        assert body["latest"]["embedding_provider"] == "fake"
-        assert body["previous_run"]["metrics"]["recall_at_5"] == 0.5
-    finally:
-        await _clear_runs()
+async def test_benchmark_latest_serves_committed_artifact(tmp_path, monkeypatch) -> None:
+    artifact = tmp_path / "latest_run.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "system": "nexusrag",
+                "schema_version": 1,
+                "status": "ok",
+                "latest": {
+                    "run_id": "r2",
+                    "fixture_version": "benchmark-v1",
+                    "embedding_provider": "openai",
+                    "generated_at": "2026-05-26T00:00:00Z",
+                    "case_count": 18,
+                    "metrics": {"retrieval": {"recall_at_5": 0.93, "ndcg_at_10": 0.9}},
+                },
+                "previous_run": {
+                    "run_id": "r1",
+                    "fixture_version": "benchmark-v1",
+                    "embedding_provider": "fake",
+                    "generated_at": "2026-05-25T00:00:00Z",
+                    "case_count": 18,
+                    "metrics": {"retrieval": {"recall_at_5": 0.4}},
+                },
+                "generated_at": "2026-05-26T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(benchmark_route, "_ARTIFACT", artifact)
+    status, body = await _get_benchmark_latest()
+    assert status == 200
+    assert body["status"] == "ok"
+    assert body["latest"]["embedding_provider"] == "openai"
+    assert body["latest"]["metrics"]["retrieval"]["recall_at_5"] == 0.93
+    assert body["previous_run"]["metrics"]["retrieval"]["recall_at_5"] == 0.4
+    # The served-at stamp is refreshed by the endpoint, not the committed value.
+    assert body["generated_at"] != "2026-05-26T00:00:00Z" or body["generated_at"].endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_benchmark_latest_degraded_on_unreadable_artifact(tmp_path, monkeypatch) -> None:
+    artifact = tmp_path / "latest_run.json"
+    artifact.write_text("{ this is not valid json", encoding="utf-8")
+    monkeypatch.setattr(benchmark_route, "_ARTIFACT", artifact)
+    status, body = await _get_benchmark_latest()
+    assert status == 200  # public contract: never 5xx
+    assert body["status"] == "degraded"
+    assert body["latest"] is None
