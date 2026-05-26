@@ -17,12 +17,12 @@ import {
   Settings,
   Shield,
   Sparkles,
-  Zap,
 } from "lucide-react";
 import { useCommandPalette } from "./CommandPalette";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Kbd } from "@/components/ui/kbd";
 import { cn, isMac } from "@/lib/utils";
+import { EleventhBrandTile, EleventhFooter } from "@/components/brand/Eleventh";
 
 interface NavItem {
   href: string;
@@ -100,19 +100,16 @@ export function Sidebar() {
     <aside className="flex h-screen w-[216px] shrink-0 flex-col border-r border-border-subtle bg-surface">
       {/* Brand */}
       <div className="flex h-12 items-center gap-2 border-b border-border-subtle px-3">
+        <EleventhBrandTile />
+        <span className="shrink-0 text-sm text-foreground-faint">/</span>
         <Link
           href="/"
-          className="flex items-center gap-2 group"
+          className="flex min-w-0 items-center"
           aria-label="NexusRAG home"
         >
-          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-brand text-brand-foreground">
-            <Zap className="h-3.5 w-3.5" strokeWidth={2.5} />
-          </div>
-          <div className="leading-tight">
-            <p className="text-sm font-semibold tracking-tight text-foreground">
-              NexusRAG
-            </p>
-          </div>
+          <p className="text-sm font-semibold tracking-tight text-foreground truncate">
+            NexusRAG
+          </p>
         </Link>
         <span className="ml-auto rounded-sm border border-border bg-surface-2 px-1 py-px text-2xs font-medium uppercase tracking-wide text-foreground-faint">
           v2
@@ -161,7 +158,7 @@ export function Sidebar() {
       </nav>
 
       {/* Footer status */}
-      <div className="border-t border-border-subtle p-3">
+      <div className="border-t border-border-subtle p-3 space-y-2">
         <div className="flex items-center gap-2 rounded-md border border-success/20 bg-success/5 px-2.5 py-1.5">
           <Shield className="h-3 w-3 text-success shrink-0" />
           <div className="leading-none">
@@ -171,6 +168,7 @@ export function Sidebar() {
             </p>
           </div>
         </div>
+        <EleventhFooter />
       </div>
     </aside>
   );

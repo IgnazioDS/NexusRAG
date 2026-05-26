@@ -10,7 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/layout/Sidebar";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://nexusrag-lyart.vercel.app"),
+  metadataBase: new URL("https://nexusrag.eleventh.dev"),
   title: {
     default: "NexusRAG — Multi-tenant RAG agent platform",
     template: "%s · NexusRAG",
@@ -18,7 +18,12 @@ export const metadata: Metadata = {
   description:
     "Production-grade multi-tenant RAG platform with streaming agent responses, audit logging, and pluggable retrieval backends.",
   applicationName: "NexusRAG",
-  authors: [{ name: "Ignazio De Santis" }],
+  authors: [
+    { name: "Ignazio De Santis" },
+    { name: "Eleventh Solutions", url: "https://eleventh.dev" },
+  ],
+  creator: "Eleventh Solutions",
+  publisher: "Eleventh Solutions",
   keywords: [
     "RAG",
     "agent platform",
@@ -48,7 +53,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#08080d" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0b0d" },
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
   ],
 };

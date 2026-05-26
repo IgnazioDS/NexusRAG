@@ -25,6 +25,14 @@ export interface ProjectSpec {
   github_url: string;
   /** Slug returned by the system's `/api/stats` endpoint. */
   system_slug: string;
+  /** Parent brand — the Eleventh Solutions site. */
+  eleventh_url: string;
+  /** Canonical live deploy on the eleventh.dev zone. */
+  live_url: string;
+  /** The full six-system fleet index on eleventh.dev. */
+  fleet_url: string;
+  /** Builder attribution shown in the sidebar. */
+  builder: string;
 }
 
 export const PROJECT: ProjectSpec = {
@@ -64,4 +72,8 @@ export const PROJECT: ProjectSpec = {
   ],
   github_url: "https://github.com/IgnazioDS/NexusRAG",
   system_slug: "nexusrag",
+  eleventh_url: "https://eleventh.dev",
+  live_url: "https://nexusrag.eleventh.dev",
+  fleet_url: "https://eleventh.dev/work",
+  builder: "Eleventh Solutions",
 };
