@@ -113,6 +113,10 @@ async def stats(
     return {
         "system": SYSTEM_SLUG,
         "mode": "live",
+        # Real user-traffic workload (vs the prototypes' "benchmark"); lets the
+        # homepage render "live · production" distinctly. Per the TELEMETRY_SCHEMA
+        # workload field (IgnazioDS#2). Optional/additive, no schema_version bump.
+        "workload": "production",
         "status": status_value,
         # Vercel deploys are READY whenever the function responds; we treat
         # 30-day uptime as 100% by definition. The public schema documents
