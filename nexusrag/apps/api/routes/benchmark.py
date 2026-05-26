@@ -1,33 +1,38 @@
 """Public, unauthenticated /api/benchmark-latest endpoint.
 
-Publishes the most recent retrieval+generation benchmark run plus the
-previous run (for a delta), from the benchmark_runs table. Same public
-contract as /api/stats: HTTP 200 in every branch (never 5xx), CORS
-wildcard, cached.
+Serves the most recent public retrieval benchmark run from a committed JSON
+artifact (`nexusrag/benchmark/data/latest_run.json`) produced by the benchmark
+runner and version-controlled in the repo. Same public contract as /api/stats:
+HTTP 200 in every branch (never 5xx), CORS wildcard, cached.
 
-Honesty: results are real, computed from a fixed labeled fixture against
-live retrieval/generation — nothing seeded. `embedding_provider` on each
-run tells readers whether retrieval was semantic ("vertex") or lexical
-("fake"). Returns status "pending" (not an error) until the first run.
+Honesty: the artifact is computed by `python -m nexusrag.benchmark.runner` from
+the committed `examples/benchmark-v1` fixture against the live retrieval path,
+and every run is a git commit (fully inspectable, no prod DB write from CI).
+`embedding_provider` records whether retrieval was semantic ("openai"/"vertex")
+or lexical ("fake"). Returns status "pending" (not an error) until the first run
+is committed, and "degraded" only if a present artifact is unreadable.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from nexusrag.apps.api.deps import get_db
-from nexusrag.domain.models import BenchmarkRun
-from nexusrag.persistence.repos.benchmark import latest_runs
+from fastapi import APIRouter, Response
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
 
 SCHEMA_VERSION = 1
 SYSTEM_SLUG = "nexusrag"
+
+# Committed run artifact. From nexusrag/apps/api/routes/benchmark.py, parents[3]
+# is the nexusrag package root; the runner writes the same path. Kept as an
+# independent literal (not imported from the runner) so this public endpoint
+# does not pull the runner's heavy retrieval/db imports into the request path.
+_ARTIFACT = Path(__file__).resolve().parents[3] / "benchmark" / "data" / "latest_run.json"
 
 
 def _now_iso() -> str:
@@ -39,21 +44,6 @@ def _set_public_headers(response: Response) -> None:
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-
-
-def _serialize(run: BenchmarkRun) -> dict[str, Any]:
-    return {
-        "run_id": str(run.id),
-        "fixture_version": run.fixture_version,
-        "embedding_provider": run.embedding_provider,
-        "generated_at": (
-            run.generated_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            if run.generated_at is not None
-            else None
-        ),
-        "case_count": run.case_count,
-        "metrics": run.metrics or {},
-    }
 
 
 def _envelope(status: str, latest: dict[str, Any] | None, previous: dict[str, Any] | None) -> dict[str, Any]:
@@ -75,20 +65,20 @@ async def benchmark_latest_options(response: Response) -> Response:
 
 
 @router.get("/api/benchmark-latest")
-async def benchmark_latest(
-    response: Response,
-    session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+async def benchmark_latest(response: Response) -> dict[str, Any]:
     _set_public_headers(response)
+    if not _ARTIFACT.exists():
+        # No run has been committed yet. Honest "pending", not an error.
+        return _envelope("pending", None, None)
     try:
-        runs = await latest_runs(session, limit=2)
-    except Exception as exc:  # noqa: BLE001 - public contract forbids 5xx
-        _log.warning("benchmark-latest read failed", exc_info=exc)
+        data = json.loads(_ARTIFACT.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:  # public contract forbids 5xx
+        _log.warning("benchmark artifact unreadable", exc_info=exc)
         return _envelope("degraded", None, None)
 
-    if not runs:
-        return _envelope("pending", None, None)
-
-    latest = _serialize(runs[0])
-    previous = _serialize(runs[1]) if len(runs) > 1 else None
-    return _envelope("ok", latest, previous)
+    # Serve the committed run payloads as-is; only refresh the served-at stamp.
+    return _envelope(
+        str(data.get("status", "ok")),
+        data.get("latest"),
+        data.get("previous_run"),
+    )
