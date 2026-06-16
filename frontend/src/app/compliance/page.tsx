@@ -324,7 +324,7 @@ export default function CompliancePage() {
                 Trace the journey
               </CardTitle>
               <CardDescription>
-                The compliance posture wasn't bolted on. Audit log shipped in{" "}
+                The compliance posture wasn&apos;t bolted on. Audit log shipped in{" "}
                 <code className="font-mono text-foreground">0.8.0</code>;
                 envelope encryption in{" "}
                 <code className="font-mono text-foreground">1.9.0</code>; SOC 2
