@@ -77,7 +77,7 @@ export default function CapabilitiesPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                What's shipping
+                What&apos;s shipping
               </CardTitle>
               <CardDescription>
                 Production capabilities running today. Each item is wired to a

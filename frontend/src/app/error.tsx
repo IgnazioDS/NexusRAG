@@ -50,6 +50,11 @@ export default function Error({
             variant="outline"
             size="default"
           >
+            {/* Hard navigation (not next/link) is intentional: a full reload
+                guarantees the broken render tree is discarded. eslint-config-next
+                15 flags this for App Router, but a soft client nav can leave the
+                user stuck inside the error boundary. */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
             <a href="/">Go home</a>
           </Button>
         </div>
