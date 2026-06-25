@@ -8,13 +8,16 @@ name: benchmark
 #
 # Without the key the job still runs end-to-end with the fake (lexical)
 # embedding to prove the harness works, but does NOT publish: lexical numbers
-# must never be read as semantic. Weekly + manual dispatch. Scheduled workflows
-# run from the default branch only, so this activates after merge.
+# must never be read as semantic.
+#
+# Manual-only (2026-06-25): the weekly schedule was removed because the semantic
+# run needs a funded OPENAI_API_KEY, and the key's OpenAI account is currently
+# out of quota — every Monday run failed on `OpenAI embeddings error: HTTP 429`
+# and emailed the failure. Re-add the `schedule:` cron below once OpenAI billing
+# is restored; until then run on demand from the Actions tab.
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC
 
 permissions:
   contents: write
